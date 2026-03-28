@@ -1,0 +1,13 @@
+[package]
+name = "emstudio-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+egui.workspace = true
+emstudio-domain = { path = "../domain" }
+wgpu.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster = "0.4"

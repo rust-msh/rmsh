@@ -1,0 +1,10 @@
+[package]
+name = "emstudio-components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+egui.workspace = true
+egui_dock.workspace = true
+emstudio-domain = { path = "../domain" }
