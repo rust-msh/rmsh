@@ -4,7 +4,8 @@ mod wasm_app {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
 
-    use emstudio_app::EmStudioApp;
+    use emstudio_app::App;
+    use emstudio_infra::RunMode;
 
     #[wasm_bindgen(start)]
     pub async fn start() -> Result<(), JsValue> {
@@ -24,7 +25,7 @@ mod wasm_app {
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|_cc| Ok(Box::new(EmStudioApp::new_default()))),
+                Box::new(|_cc| Ok(Box::new(App::new(RunMode::LocalFirst)))),
             )
             .await
     }

@@ -8,5 +8,15 @@ license.workspace = true
 anyhow.workspace = true
 emstudio-domain = { path = "../domain" }
 emstudio-solver = { path = "../solver" }
+rmp-serde.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+web-sys = { workspace = true, features = ["Worker", "MessageEvent"] }
+js-sys.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

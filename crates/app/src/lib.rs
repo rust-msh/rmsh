@@ -12,9 +12,9 @@ use emstudio_components::ribbon::{
 use emstudio_components::status_bar::{self, StatusBarState};
 use emstudio_components::{LeftPanelTab, menu_bar, qat};
 use emstudio_domain::{Project, SimulationStatus};
-use emstudio_infra::{
-    Backend, RunMode, default_backend, load_project_from_file, save_project_to_file,
-};
+use emstudio_infra::{Backend, RunMode, default_backend};
+#[cfg(not(target_arch = "wasm32"))]
+use emstudio_infra::{load_project_from_file, save_project_to_file};
 use emstudio_render::SceneViewport;
 
 // ---------------------------------------------------------------------------
@@ -143,15 +143,39 @@ impl App {
         self.on_ribbon_action(action);
     }
 
-    /// Save the current project to a specific path (bypasses file dialog).
+    /// Save the current project to a specific path (native) or via backend (WASM).
     pub fn save_to(&mut self, path: &std::path::Path) {
-        match save_project_to_file(&self.project, path) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match save_project_to_file(&self.project, path) {
+                Ok(()) => {
+                    self.current_file = Some(path.to_path_buf());
+                    self.unsaved_changes = false;
+                    self.status_text = format!("Saved: {}", path.display());
+                    self.log_text
+                        .push_str(&format!("\n[file] saved to {}", path.display()));
+                }
+                Err(e) => {
+                    self.status_text = format!("Save failed: {e}");
+                    self.messages
+                        .push(MessageEntry::error(format!("Save failed: {e}")));
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = path; // unused on WASM
+            self.save_to_backend();
+        }
+    }
+
+    /// Save the current project through the backend (used on WASM / LocalFirst).
+    pub fn save_to_backend(&mut self) {
+        match self.backend.save_project(self.project.clone()) {
             Ok(()) => {
-                self.current_file = Some(path.to_path_buf());
                 self.unsaved_changes = false;
-                self.status_text = format!("Saved: {}", path.display());
-                self.log_text
-                    .push_str(&format!("\n[file] saved to {}", path.display()));
+                self.status_text = "Saved to OPFS".into();
+                self.log_text.push_str("\n[file] saved to OPFS");
             }
             Err(e) => {
                 self.status_text = format!("Save failed: {e}");
@@ -161,23 +185,50 @@ impl App {
         }
     }
 
-    /// Load a project from a specific path (bypasses file dialog).
+    /// Load a project from a specific path (native) or via backend (WASM).
     pub fn open_from(&mut self, path: &std::path::Path) {
-        match load_project_from_file(path) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            match load_project_from_file(path) {
+                Ok(project) => {
+                    self.project = project;
+                    self.current_file = Some(path.to_path_buf());
+                    self.unsaved_changes = false;
+                    self.status_text = format!("Opened: {}", path.display());
+                    self.log_text
+                        .push_str(&format!("\n[file] opened {}", path.display()));
+                }
+                Err(e) => {
+                    self.status_text = format!("Open failed: {e}");
+                    self.messages
+                        .push(MessageEntry::error(format!("Open failed: {e}")));
+                    self.log_text
+                        .push_str(&format!("\n[file] open failed: {e}"));
+                }
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = path;
+            // On WASM, projects are loaded through the backend
+            self.status_text = "Use project list to open projects on web".into();
+        }
+    }
+
+    /// Load a project by id through the backend (WASM / LocalFirst).
+    pub fn load_from_backend(&mut self, id: &str) {
+        match self.backend.load_project(id) {
             Ok(project) => {
                 self.project = project;
-                self.current_file = Some(path.to_path_buf());
                 self.unsaved_changes = false;
-                self.status_text = format!("Opened: {}", path.display());
+                self.status_text = format!("Opened project: {id}");
                 self.log_text
-                    .push_str(&format!("\n[file] opened {}", path.display()));
+                    .push_str(&format!("\n[file] opened project {id}"));
             }
-            Err(e) => {
-                self.status_text = format!("Open failed: {e}");
-                self.messages
-                    .push(MessageEntry::error(format!("Open failed: {e}")));
-                self.log_text
-                    .push_str(&format!("\n[file] open failed: {e}"));
+            Err(_) => {
+                // On WASM with LocalFirst, this means the load is pending (async).
+                // The project will arrive via poll().
+                self.status_text = format!("Loading project: {id}...");
             }
         }
     }
@@ -188,6 +239,7 @@ impl App {
         match mode {
             RunMode::Standalone => "standalone",
             RunMode::Cloud => "cloud",
+            RunMode::LocalFirst => "local-first",
         }
     }
 
@@ -445,6 +497,24 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Poll async file dialog results
         self.poll_file_dialogs();
+
+        // Poll backend for async results (WASM worker responses)
+        self.backend.poll();
+
+        // Check for async solve results
+        if let Some(result) = self.backend.take_solve_result() {
+            self.project.status = if result.converged {
+                SimulationStatus::Finished
+            } else {
+                SimulationStatus::Failed
+            };
+            self.project.last_result = Some(result);
+            self.unsaved_changes = true;
+            self.status_text = "Solve completed".into();
+            self.log_text.push_str("\n[solver] async solve completed");
+            self.messages
+                .push(MessageEntry::info("Solve completed (async)."));
+        }
 
         // =================================================================
         // TOP PANELS (menu bar → QAT → ribbon)

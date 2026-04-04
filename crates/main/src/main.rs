@@ -2,7 +2,7 @@
 use eframe::NativeOptions;
 
 #[cfg(not(target_arch = "wasm32"))]
-use emstudio_app::EmStudioApp;
+use emstudio_app::App;
 #[cfg(not(target_arch = "wasm32"))]
 use emstudio_infra::RunMode;
 
@@ -18,6 +18,7 @@ fn parse_run_mode() -> RunMode {
                     mode = match value.as_str() {
                         "standalone" => RunMode::Standalone,
                         "cloud" => RunMode::Cloud,
+                        "local-first" => RunMode::LocalFirst,
                         _ => {
                             eprintln!(
                                 "[emstudio] unknown mode '{value}', fallback to standalone"
@@ -43,7 +44,7 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "emstudio",
         options,
-        Box::new(|_cc| Ok(Box::new(EmStudioApp::new(mode)))),
+        Box::new(|_cc| Ok(Box::new(App::new(mode)))),
     )
 }
 
