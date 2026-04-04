@@ -613,7 +613,7 @@ Project.emsp.results/
 | 结果过期 (is_stale) 机制 | `domain` | ✅ 完成 |
 | 版本迁移策略实现 | `domain` | ✅ 完成 |
 
-### Milestone 4：几何建模 🔲 未开始
+### Milestone 4：几何建模 🔄 部分完成
 
 > **目标**：基于 rcad B-Rep 内核支持参数化 3D 几何建模
 >
@@ -621,10 +621,10 @@ Project.emsp.results/
 
 | 任务 | 模块 | rcad 对应 | 状态 |
 |------|------|-----------|------|
-| 操作历史记录引擎 | `domain` | — | 🔲 未开始 |
-| 基本体素创建 (Box/Cylinder/Sphere/Cone/Torus) | `domain` | `rcad-modeling` (box/cylinder/sphere/cone/torus_primitive) | 🔲 未开始 |
-| 布尔运算 (Unite/Subtract/Intersect) | `domain` | `rcad-algorithms` (union/difference/intersection) | 🔲 未开始 |
-| 几何变换 (Move/Rotate/Scale/Mirror) | `domain` | `rcad-kernel` (BRep::apply_transform, DAffine3) | 🔲 未开始 |
+| 操作历史记录引擎 | `domain` | — | ✅ 完成 |
+| 基本体素创建 (Box/Cylinder/Sphere/Cone/Torus) | `domain` | `rcad-modeling` (box/cylinder/sphere/cone/torus_brep) | ✅ 完成 |
+| 布尔运算 (Unite/Subtract/Intersect) | `domain` | `rcad-algorithms` (boolean_op) | ✅ 完成 |
+| 几何变换 (Move/Rotate/Scale/Mirror) | `domain` | `rcad-kernel` (BRep::apply_transform, DAffine3) | ✅ 完成 |
 | 扫掠操作 (Extrude/Revolve/SweepPipe) | `domain` | `rcad-modeling` (extrude/revolve/sweep_pipe) | 🔲 未开始 |
 | 参数化尺寸（变量引用） | `domain` | — | 🔲 未开始 |
 | 3D 几何渲染（实体 + 线框） | `render` | `rcad-render` (Tessellator/WgpuRenderer) | 🔲 未开始 |
@@ -754,7 +754,7 @@ Milestone 0: 基础框架         [███████████████
 Milestone 1: 3D 渲染引擎      [████████████████████] 100%  ✅
 Milestone 2: Touchstone 支持   [████████████████████] 100%  ✅
 Milestone 3: 工程文件 I/O      [████████████████████] 100%  ✅
-Milestone 4: 几何建模          [                    ]   0%  🔲
+Milestone 4: 几何建模          [████████            ]  36%  🔄
 Milestone 5: 求解器集成        [                    ]   0%  🔲
 Milestone 6: 2D 报告系统       [                    ]   0%  🔲
 Milestone 7: 3D 场数据管线     [                    ]   0%  🔲
@@ -762,7 +762,7 @@ Milestone 8: Q3D 专项功能      [                    ]   0%  🔲
 Milestone 9: Optimetrics       [                    ]   0%  🔲
 Milestone 10: 平台与部署        [████                ]  20%  🔄
 ─────────────────────────────────────────────────────────────
-整体进度                       [████████            ]  38%
+整体进度                       [████████            ]  42%
 ```
 
 ### 建议开发优先级

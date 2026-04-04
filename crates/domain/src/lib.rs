@@ -5,6 +5,7 @@ pub mod solution_type;
 pub mod variable;
 pub mod material;
 pub mod geometry;
+pub mod geometry_engine;
 pub mod boundary;
 pub mod excitation;
 pub mod net;
