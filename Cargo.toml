@@ -39,10 +39,17 @@ wasm-bindgen-futures = "0.4"
 web-sys = "0.3"
 console_error_panic_hook = "0.1"
 tracing = "0.1"
-glam = "0.29"
+glam = { version = "0.29", features = ["serde"] }
 js-sys = "0.3"
 bytemuck = { version = "1", features = ["derive"] }
 rfd = "0.15"
 rmp-serde = "1"
 tempfile = "3"
 pollster = "0.4"
+
+# rcad geometry kernel (git submodule at vendor/rcad)
+rcad-kernel = { path = "vendor/rcad/libs/rcad-kernel" }
+rcad-modeling = { path = "vendor/rcad/libs/rcad-modeling" }
+rcad-algorithms = { path = "vendor/rcad/libs/rcad-algorithms" }
+rcad-render = { path = "vendor/rcad/libs/rcad-render" }
+rcad-step = { path = "vendor/rcad/libs/rcad-step" }

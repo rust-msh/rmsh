@@ -9,6 +9,9 @@ serde.workspace = true
 serde_json.workspace = true
 rmp-serde.workspace = true
 thiserror.workspace = true
+rcad-kernel.workspace = true
+rcad-modeling.workspace = true
+rcad-algorithms.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

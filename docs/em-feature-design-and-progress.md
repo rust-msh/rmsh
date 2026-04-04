@@ -11,6 +11,7 @@ EMStudio 是一个类似 Ansys Electronics Desktop 的专业电磁仿真工具�
 | 语言 | Rust (Edition 2024) | 高性能、内存安全 |
 | GUI 框架 | egui 0.33 + eframe 0.33 | 即时模式 GUI，跨平台 |
 | 3D 渲染 | wgpu 27 | Vulkan/Metal/DX12/WebGPU 统一抽象 |
+| 几何内核 | rcad (git submodule) | B-Rep 内核：体素创建、布尔运算、扫掠、STEP 导入导出 |
 | 数学库 | glam 0.29 | 向量/矩阵/四元数 |
 | 序列化 | serde + serde_json | JSON 工程文件 |
 | 2D 绘图 | egui_plot 0.33 | S 参数/RLCG 曲线 |
@@ -49,6 +50,15 @@ EMStudio 是一个类似 Ansys Electronics Desktop 的专业电磁仿真工具�
 emstudio/
 ├── Cargo.toml                  # Workspace 根
 ├── readme.md                   # 项目简介
+├── vendor/
+│   └── rcad/                   # rcad 几何内核（git submodule）
+│       └── libs/
+│           ├── rcad-kernel/    # B-Rep 拓扑 + 解析几何
+│           ├── rcad-modeling/  # 体素创建 + 扫掠
+│           ├── rcad-algorithms/# 布尔运算 + 倒角
+│           ├── rcad-render/    # wgpu 细分 + 拾取
+│           ├── rcad-step/      # STEP 导入导出
+│           └── rcad-scene/     # 场景交互
 ├── crates/
 │   ├── main/                   # 应用入口（Native + WASM）
 │   ├── app/                    # 主 UI 应用
@@ -605,21 +615,23 @@ Project.emsp.results/
 
 ### Milestone 4：几何建模 🔲 未开始
 
-> **目标**：支持参数化 3D 几何建模
+> **目标**：基于 rcad B-Rep 内核支持参数化 3D 几何建模
+>
+> **依赖**：rcad（git submodule，已引入 vendor/rcad），提供 B-Rep 拓扑、体素创建、布尔运算、扫掠、STEP 导入导出
 
-| 任务 | 模块 | 状态 |
-|------|------|------|
-| 操作历史记录引擎 | `domain` | 🔲 未开始 |
-| 基本体素创建 (Box/Cylinder/Sphere/...) | `domain` | 🔲 未开始 |
-| 布尔运算 (Unite/Subtract/Intersect) | `domain` | 🔲 未开始 |
-| 几何变换 (Move/Rotate/Scale/Mirror) | `domain` | 🔲 未开始 |
-| 扫掠操作 | `domain` | 🔲 未开始 |
-| 参数化尺寸（变量引用） | `domain` | 🔲 未开始 |
-| 3D 几何渲染（实体 + 线框） | `render` | 🔲 未开始 |
-| 几何拾取与选择 | `render` | 🔲 未开始 |
-| 坐标系可视化 | `render` | 🔲 未开始 |
-| CAD 导入 (STEP/STL) | `domain` | 🔲 未开始 |
-| 几何建模 UI 面板 | `components` | 🔲 未开始 |
+| 任务 | 模块 | rcad 对应 | 状态 |
+|------|------|-----------|------|
+| 操作历史记录引擎 | `domain` | — | 🔲 未开始 |
+| 基本体素创建 (Box/Cylinder/Sphere/Cone/Torus) | `domain` | `rcad-modeling` (box/cylinder/sphere/cone/torus_primitive) | 🔲 未开始 |
+| 布尔运算 (Unite/Subtract/Intersect) | `domain` | `rcad-algorithms` (union/difference/intersection) | 🔲 未开始 |
+| 几何变换 (Move/Rotate/Scale/Mirror) | `domain` | `rcad-kernel` (BRep::apply_transform, DAffine3) | 🔲 未开始 |
+| 扫掠操作 (Extrude/Revolve/SweepPipe) | `domain` | `rcad-modeling` (extrude/revolve/sweep_pipe) | 🔲 未开始 |
+| 参数化尺寸（变量引用） | `domain` | — | 🔲 未开始 |
+| 3D 几何渲染（实体 + 线框） | `render` | `rcad-render` (Tessellator/WgpuRenderer) | 🔲 未开始 |
+| 几何拾取与选择 | `render` | `rcad-render` (SelectionState, pick_face/pick_edge) | 🔲 未开始 |
+| 坐标系可视化 | `render` | — | 🔲 未开始 |
+| CAD 导入 (STEP/STL) | `domain` | `rcad-step` (STEP import/export with colors) | 🔲 未开始 |
+| 几何建模 UI 面板 | `components` | — | 🔲 未开始 |
 
 ### Milestone 5：求解器集成 🔲 未开始
 
