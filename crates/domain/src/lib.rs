@@ -1,5 +1,37 @@
+// ---------------------------------------------------------------------------
+// New domain model modules (Milestone 3)
+// ---------------------------------------------------------------------------
+pub mod solution_type;
+pub mod variable;
+pub mod material;
+pub mod geometry;
+pub mod boundary;
+pub mod excitation;
+pub mod net;
+pub mod mesh;
+pub mod analysis;
+pub mod radiation;
+pub mod output_variable;
+pub mod field_overlay;
+pub mod optimetrics;
+pub mod report;
+pub mod solution_index;
+pub mod design;
+pub mod project;
+pub mod expression;
+pub mod validation;
+pub mod dependency;
+pub mod file_io;
 pub mod worker_protocol;
 
+// Re-export top-level types for convenience
+pub use project::EmProject;
+pub use design::Design;
+pub use solution_type::SolutionType;
+
+// ---------------------------------------------------------------------------
+// Legacy types (kept for backward compatibility with app/infra/solver/worker)
+// ---------------------------------------------------------------------------
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +108,8 @@ impl Default for Project {
 mod tests {
     use super::*;
 
+    // -- Legacy type tests (kept for backward compat) --
+
     #[test]
     fn project_default_values() {
         let p = Project::default();
@@ -138,5 +172,114 @@ mod tests {
         let loaded: Material = rmp_serde::from_slice(&data).unwrap();
         assert_eq!(loaded.name, "FR4");
         assert!((loaded.relative_permittivity - 4.4).abs() < 1e-6);
+    }
+
+    // -- New EmProject tests --
+
+    #[test]
+    fn em_project_default_json_roundtrip() {
+        let proj = EmProject::default();
+        let json = proj.to_json_string().unwrap();
+        let loaded = EmProject::from_json_str(&json).unwrap();
+        assert_eq!(loaded.metadata.version, "1.0.0");
+        assert_eq!(loaded.metadata.application, "EMStudio");
+        assert!(loaded.designs.is_empty());
+    }
+
+    #[test]
+    fn em_project_with_design_roundtrip() {
+        use crate::design::Design;
+        use crate::material::{MaterialDef, MaterialCategory};
+        use crate::solution_type::SolutionType;
+        use std::collections::HashMap;
+
+        let mut proj = EmProject::default();
+        let mut design = Design {
+            id: "design-001".into(),
+            name: "Patch Antenna".into(),
+            solution_type: SolutionType::DrivenModal,
+            units: "mm".into(),
+            design_settings: Default::default(),
+            local_variables: HashMap::new(),
+            definitions: Default::default(),
+            geometry: Default::default(),
+            boundaries: Vec::new(),
+            excitations: Vec::new(),
+            nets: Vec::new(),
+            mesh_operations: Vec::new(),
+            analysis_setups: Vec::new(),
+            radiation: Default::default(),
+            output_variables: Vec::new(),
+            field_overlays: Vec::new(),
+            optimetrics: Vec::new(),
+            reports: Vec::new(),
+            solution_index: Default::default(),
+        };
+
+        design.definitions.materials.push(MaterialDef {
+            name: "copper".into(),
+            category: MaterialCategory::Conductor,
+            properties: Default::default(),
+            appearance: None,
+        });
+
+        proj.designs.push(design);
+
+        let json = proj.to_json_string().unwrap();
+        let loaded = EmProject::from_json_str(&json).unwrap();
+
+        assert_eq!(loaded.designs.len(), 1);
+        assert_eq!(loaded.designs[0].name, "Patch Antenna");
+        assert_eq!(loaded.designs[0].solution_type, SolutionType::DrivenModal);
+        assert_eq!(loaded.designs[0].definitions.materials[0].name, "copper");
+    }
+
+    #[test]
+    fn em_project_validation_catches_dangling_material() {
+        use crate::design::Design;
+        use crate::geometry::{GeoObject, Geometry};
+        use crate::solution_type::SolutionType;
+        use std::collections::HashMap;
+
+        let mut proj = EmProject::default();
+        let design = Design {
+            id: "d1".into(),
+            name: "Test".into(),
+            solution_type: SolutionType::DrivenModal,
+            units: "mm".into(),
+            design_settings: Default::default(),
+            local_variables: HashMap::new(),
+            definitions: Default::default(),
+            geometry: Geometry {
+                operations: Vec::new(),
+                objects: vec![GeoObject {
+                    id: 1,
+                    name: "Box1".into(),
+                    derived_from_step: 1,
+                    material: "nonexistent_material".into(),
+                    solve_inside: false,
+                    color: [128, 128, 128],
+                    transparency: 0.0,
+                    group: None,
+                    bounding_box: None,
+                }],
+            },
+            boundaries: Vec::new(),
+            excitations: Vec::new(),
+            nets: Vec::new(),
+            mesh_operations: Vec::new(),
+            analysis_setups: Vec::new(),
+            radiation: Default::default(),
+            output_variables: Vec::new(),
+            field_overlays: Vec::new(),
+            optimetrics: Vec::new(),
+            reports: Vec::new(),
+            solution_index: Default::default(),
+        };
+        proj.designs.push(design);
+
+        let errors = proj.validate();
+        assert!(!errors.is_empty());
+        assert!(errors[0].contains("nonexistent_material"));
     }
 }
