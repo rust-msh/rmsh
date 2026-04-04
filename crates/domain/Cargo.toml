@@ -13,6 +13,7 @@ glam.workspace = true
 rcad-kernel.workspace = true
 rcad-modeling.workspace = true
 rcad-algorithms.workspace = true
+rcad-step.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -25,7 +25,7 @@ mod wasm_app {
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|_cc| Ok(Box::new(App::new(RunMode::LocalFirst)))),
+                Box::new(|cc| Ok(Box::new(App::new(RunMode::LocalFirst, cc)))),
             )
             .await
     }

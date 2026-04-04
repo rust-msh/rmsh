@@ -12,6 +12,7 @@ use emstudio_components::ribbon::{
 use emstudio_components::status_bar::{self, StatusBarState};
 use emstudio_components::{LeftPanelTab, menu_bar, qat};
 use emstudio_domain::{Project, SimulationStatus};
+use emstudio_domain::geometry_engine::GeometryEngine;
 use emstudio_infra::{Backend, RunMode, default_backend};
 #[cfg(not(target_arch = "wasm32"))]
 use emstudio_infra::{load_project_from_file, save_project_to_file};
@@ -56,6 +57,8 @@ impl CenterTab {
 struct CenterTabViewer<'a> {
     project: &'a Project,
     viewport: &'a mut SceneViewport,
+    engine: &'a GeometryEngine,
+    geometry_generation: u64,
 }
 
 impl TabViewer for CenterTabViewer<'_> {
@@ -67,7 +70,9 @@ impl TabViewer for CenterTabViewer<'_> {
 
     fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
         match tab {
-            CenterTab::Modeling => self.viewport.ui(ui, self.project),
+            CenterTab::Modeling => {
+                self.viewport.ui(ui, self.engine.all_breps(), self.geometry_generation);
+            }
             CenterTab::Result => {
                 ui.heading("Result Preview");
                 ui.separator();
@@ -90,6 +95,8 @@ pub struct App {
     project: Project,
     backend: Box<dyn Backend>,
     viewport: SceneViewport,
+    engine: GeometryEngine,
+    geometry_generation: u64,
     dock_state: DockState<CenterTab>,
     ribbon_state: RibbonState,
     ribbon_tabs: Vec<RibbonTab>,
@@ -243,7 +250,16 @@ impl App {
         }
     }
 
-    pub fn new(mode: RunMode) -> Self {
+    pub fn new(mode: RunMode, cc: &eframe::CreationContext<'_>) -> Self {
+        let mut app = Self::new_headless(mode);
+        if let Some(rs) = &cc.wgpu_render_state {
+            app.viewport.init_renderer(&rs.device, rs.target_format, &mut rs.renderer.write().callback_resources);
+        }
+        app
+    }
+
+    /// Create an App without GPU renderer (for tests and WASM fallback).
+    pub fn new_headless(mode: RunMode) -> Self {
         let project = Project::default();
 
         // Center dock: Modeling and Result as sibling tabs (not split)
@@ -255,6 +271,8 @@ impl App {
             project,
             backend: default_backend(mode),
             viewport: SceneViewport::default(),
+            engine: GeometryEngine::new(),
+            geometry_generation: 0,
             dock_state,
             ribbon_state: RibbonState::default(),
             ribbon_tabs: build_default_tabs(),
@@ -277,8 +295,12 @@ impl App {
         }
     }
 
-    pub fn new_default() -> Self {
-        Self::new(RunMode::Standalone)
+    pub fn new_default(cc: &eframe::CreationContext<'_>) -> Self {
+        Self::new(RunMode::Standalone, cc)
+    }
+
+    pub fn new_default_headless() -> Self {
+        Self::new_headless(RunMode::Standalone)
     }
 
     // -----------------------------------------------------------------------
@@ -607,6 +629,8 @@ impl eframe::App for App {
             let mut viewer = CenterTabViewer {
                 project: &self.project,
                 viewport: &mut self.viewport,
+                engine: &self.engine,
+                geometry_generation: self.geometry_generation,
             };
             DockArea::new(&mut self.dock_state).show_inside(ui, &mut viewer);
         });

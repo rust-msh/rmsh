@@ -5,9 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+bytemuck.workspace = true
 egui.workspace = true
+egui-wgpu.workspace = true
 emstudio-domain = { path = "../domain" }
+glam.workspace = true
 wgpu.workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pollster = "0.4"
+rcad-kernel.workspace = true
+rcad-render.workspace = true

@@ -40,11 +40,14 @@ fn parse_run_mode() -> RunMode {
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result<()> {
     let mode = parse_run_mode();
-    let options = NativeOptions::default();
+    let options = NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
+        ..Default::default()
+    };
     eframe::run_native(
         "emstudio",
         options,
-        Box::new(|_cc| Ok(Box::new(App::new(mode)))),
+        Box::new(|cc| Ok(Box::new(App::new(mode, cc)))),
     )
 }
 

@@ -6,10 +6,10 @@
 
 use std::collections::HashMap;
 
-use glam::{DAffine3, DMat3, DVec3};
+use glam::{DAffine3, DMat3, DVec2, DVec3};
 use rcad_algorithms::{boolean_op, BooleanOpType};
 use rcad_kernel::BRep;
-use rcad_modeling::{box_brep, sphere_brep, cylinder_brep, cone_brep, torus_brep};
+use rcad_modeling::{box_brep, sphere_brep, cylinder_brep, cone_brep, torus_brep, extrude, revolve, sweep_pipe};
 use thiserror::Error;
 
 use crate::geometry::{BoundingBox, GeoObject, Geometry, GeometryOperation, ObjectAttributes, OperationCommand};
@@ -324,19 +324,97 @@ impl GeometryEngine {
                 Ok(Some(self.insert(name, brep, op.step, &attrs)))
             }
 
+            // -- Sweeps --
+            OperationCommand::SweepAlongVector => {
+                let target = get_str(params, "target")?;
+                let direction = get_vec3(params, "direction")?;
+                let distance = get_f64(params, "distance")?;
+                let face_idx = params
+                    .get("face_index")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let profile = self.take_brep(target)?;
+                let brep = extrude(&profile, face_idx, direction, distance)
+                    .map_err(|e| GeometryError::BuildError(e.to_string()))?;
+                let name = self.result_name(op, "Extrude");
+                Ok(Some(self.insert(name, brep, op.step, &attrs)))
+            }
+
+            OperationCommand::SweepAroundAxis => {
+                let target = get_str(params, "target")?;
+                let axis_origin = get_vec3_or(params, "axis_origin", DVec3::ZERO);
+                let axis_direction = get_vec3(params, "axis_direction")?;
+                let angle_deg = get_f64(params, "angle")?;
+                let angle_rad = angle_deg.to_radians();
+                let face_idx = params
+                    .get("face_index")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let profile = self.take_brep(target)?;
+                let brep = revolve(&profile, face_idx, axis_origin, axis_direction, angle_rad)
+                    .map_err(|e| GeometryError::BuildError(e.to_string()))?;
+                let name = self.result_name(op, "Revolve");
+                Ok(Some(self.insert(name, brep, op.step, &attrs)))
+            }
+
+            OperationCommand::SweepAlongPath => {
+                let profile_arr = params
+                    .get("profile")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| GeometryError::InvalidParameters {
+                        command: "SweepAlongPath".to_string(),
+                        reason: "missing 'profile' array of [x, y] points".to_string(),
+                    })?;
+                let profile_2d: Vec<DVec2> = profile_arr
+                    .iter()
+                    .filter_map(|p| {
+                        let a = p.as_array()?;
+                        Some(DVec2::new(a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+                    })
+                    .collect();
+
+                let spine_arr = params
+                    .get("spine")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| GeometryError::InvalidParameters {
+                        command: "SweepAlongPath".to_string(),
+                        reason: "missing 'spine' array of [x, y, z] points".to_string(),
+                    })?;
+                let spine: Vec<DVec3> = spine_arr
+                    .iter()
+                    .filter_map(|p| {
+                        let a = p.as_array()?;
+                        Some(DVec3::new(
+                            a.first()?.as_f64()?,
+                            a.get(1)?.as_f64()?,
+                            a.get(2)?.as_f64()?,
+                        ))
+                    })
+                    .collect();
+
+                let brep = sweep_pipe(&profile_2d, &spine)
+                    .map_err(|e| GeometryError::BuildError(e.to_string()))?;
+                let name = self.result_name(op, "Sweep");
+                Ok(Some(self.insert(name, brep, op.step, &attrs)))
+            }
+
+            OperationCommand::Import => {
+                let file_path = get_str(params, "file_path")?;
+                let brep = rcad_step::StepReader::read_file(file_path)
+                    .map_err(|e| GeometryError::BuildError(e))?;
+                let name = self.result_name(op, "Import");
+                Ok(Some(self.insert(name, brep, op.step, &attrs)))
+            }
+
             // -- Not yet implemented --
-            OperationCommand::SweepAlongVector
-            | OperationCommand::SweepAroundAxis
-            | OperationCommand::SweepAlongPath
-            | OperationCommand::CreatePolyline
+            OperationCommand::CreatePolyline
             | OperationCommand::CreateRectangle
             | OperationCommand::CreateCircle
             | OperationCommand::DuplicateAlongLine
             | OperationCommand::DuplicateAroundAxis
             | OperationCommand::Fillet
             | OperationCommand::Chamfer
-            | OperationCommand::Section
-            | OperationCommand::Import => {
+            | OperationCommand::Section => {
                 Err(GeometryError::NotImplemented(format!("{:?}", op.command)))
             }
         }
