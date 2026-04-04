@@ -2,7 +2,7 @@
 
 ## 1. 项目概述
 
-EMStudio 是一个类似 Ansys Electronics Desktop 的专业电磁仿真工具，功能对标 **HFSS（全波求解）+ Q3D Extractor（准静态寄生参数提取）**。后端依赖 [Rem](https://github.com/javagg/rem2.git) 完成电磁仿真计算。
+EMStudio 是一个类似 Ansys Electronics Desktop 的专业电磁仿真工具，功能对标 **HFSS（全波求解）+ Q3D Extractor（准静态寄生参数提取）**。后端依赖 [rmsh](https://github.com/rust-msh/rmsh.git) 完成网格剖分，依赖 [Rem](https://github.com/javagg/rem2.git) 完成电磁仿真计算。
 
 ### 1.1 技术栈
 
@@ -12,6 +12,7 @@ EMStudio 是一个类似 Ansys Electronics Desktop 的专业电磁仿真工具�
 | GUI 框架 | egui 0.33 + eframe 0.33 | 即时模式 GUI，跨平台 |
 | 3D 渲染 | wgpu 27 | Vulkan/Metal/DX12/WebGPU 统一抽象 |
 | 几何内核 | rcad (git submodule) | B-Rep 内核：体素创建、布尔运算、扫掠、STEP 导入导出 |
+| 网格剖分 | rmsh (git submodule) | 四面体/三角形网格生成，求解器前处理 |
 | 数学库 | glam 0.29 | 向量/矩阵/四元数 |
 | 序列化 | serde + serde_json | JSON 工程文件 |
 | 2D 绘图 | egui_plot 0.33 | S 参数/RLCG 曲线 |
@@ -39,7 +40,7 @@ EMStudio 是一个类似 Ansys Electronics Desktop 的专业电磁仿真工具�
 ├──────────────────────────┬───────────────────────────────────────┤
 │  emstudio-solver         │  emstudio-touchstone                  │
 │  (求解器 trait + 调度)    │  (Touchstone .snp 解析/写入)          │
-│  Rem 集成入口             │  v1.0 & v2.0 全格式支持               │
+│  rmsh 网格剖分 + Rem 求解  │  v1.0 & v2.0 全格式支持               │
 │  Native + WASM Worker    │                                       │
 └──────────────────────────┴───────────────────────────────────────┘
 ```
@@ -51,14 +52,15 @@ emstudio/
 ├── Cargo.toml                  # Workspace 根
 ├── readme.md                   # 项目简介
 ├── vendor/
-│   └── rcad/                   # rcad 几何内核（git submodule）
-│       └── libs/
-│           ├── rcad-kernel/    # B-Rep 拓扑 + 解析几何
-│           ├── rcad-modeling/  # 体素创建 + 扫掠
-│           ├── rcad-algorithms/# 布尔运算 + 倒角
-│           ├── rcad-render/    # wgpu 细分 + 拾取
-│           ├── rcad-step/      # STEP 导入导出
-│           └── rcad-scene/     # 场景交互
+│   ├── rcad/                   # rcad 几何内核（git submodule）
+│   │   └── libs/
+│   │       ├── rcad-kernel/    # B-Rep 拓扑 + 解析几何
+│   │       ├── rcad-modeling/  # 体素创建 + 扫掠
+│   │       ├── rcad-algorithms/# 布尔运算 + 倒角
+│   │       ├── rcad-render/    # wgpu 细分 + 拾取
+│   │       ├── rcad-step/      # STEP 导入导出
+│   │       └── rcad-scene/     # 场景交互
+│   └── rmsh/                   # rmsh 网格剖分引擎（git submodule）
 ├── crates/
 │   ├── main/                   # 应用入口（Native + WASM）
 │   ├── app/                    # 主 UI 应用
@@ -110,9 +112,9 @@ Web 基本版提供完全在浏览器内运行的 **Local-First** 模式，无�
 ├─────────────────────────────────────────────────────┤
 │              Web Worker（后端线程）                     │
 │   ┌─────────────┐  ┌──────────────────────────────┐ │
-│   │ Rem Solver   │  │ OPFS (Origin Private FS)     │ │
-│   │ (WASM 编译)  │  │  ├── project.emsp            │ │
-│   │              │  │  ├── results/                 │ │
+│   │ rmsh Mesher  │  │ OPFS (Origin Private FS)     │ │
+│   │ + Rem Solver │  │  ├── project.emsp            │ │
+│   │ (WASM 编译)  │  │  ├── results/                 │ │
 │   │              │  │  └── materials.emsm           │ │
 │   └─────────────┘  └──────────────────────────────┘ │
 └─────────────────────────────────────────────────────┘
@@ -121,7 +123,7 @@ Web 基本版提供完全在浏览器内运行的 **Local-First** 模式，无�
 | 特性 | 说明 |
 |------|------|
 | 存储层 | OPFS (Origin Private File System)，运行在 Web Worker 内，不依赖用户可见文件系统 |
-| 求解器 | Rem 编译为 WASM，在 Web Worker 中执行，不阻塞 UI 线程 |
+| 求解器 | rmsh 网格剖分 + Rem 求解，均编译为 WASM，在 Web Worker 中执行，不阻塞 UI 线程 |
 | 离线能力 | Service Worker 缓存后可完全离线运行 |
 | 数据边界 | 所有数据留在浏览器本地，不上传服务端 |
 | 限制 | 受浏览器内存/线程限制，适合中小规模模型 |
@@ -635,16 +637,26 @@ Project.emsp.results/
 
 ### Milestone 5：求解器集成 🔲 未开始
 
-> **目标**：集成 Rem 求解器，实现完整仿真流程
+> **目标**：集成 rmsh 网格剖分和 Rem 求解器，实现完整仿真流程
+>
+> **依赖**：rmsh（git submodule，vendor/rmsh，来源 https://github.com/rust-msh/rmsh.git），提供四面体/三角形网格剖分；Rem 提供电磁仿真求解
+>
+> **仿真流程**：用户点击"仿真"按钮后，系统依次执行：模型验证 → **网格剖分（rmsh）** → 求解（Rem）→ 后处理
 
 | 任务 | 模块 | 状态 |
 |------|------|------|
+| rmsh 库引入（git submodule） | `vendor/rmsh` | 🔲 未开始 |
+| rmsh Rust 绑定 / 接口封装 | `solver` | 🔲 未开始 |
+| B-Rep → rmsh 输入格式转换 | `solver` | 🔲 未开始 |
+| 网格剖分执行与参数控制 | `solver` | 🔲 未开始 |
+| 网格质量检查与统计 | `solver` | 🔲 未开始 |
+| 网格文件输出（供求解器读取） | `solver` | 🔲 未开始 |
 | Rem 库 Rust 绑定 | `solver` | 🔲 未开始 |
 | HFSS FEM 求解调度 | `solver` | 🔲 未开始 |
 | Q3D MoM 求解调度 | `solver` | 🔲 未开始 |
-| 自适应网格加密循环 | `solver` | 🔲 未开始 |
+| 自适应网格加密循环（rmsh 重剖分 → Rem 重求解） | `solver` | 🔲 未开始 |
 | 频率扫描执行 | `solver` | 🔲 未开始 |
-| 仿真进度回调 | `solver` → `app` | 🔲 未开始 |
+| 仿真进度回调（含网格剖分进度） | `solver` → `app` | 🔲 未开始 |
 | 收敛历史实时写入 | `solver` | 🔲 未开始 |
 | 场数据导出 (.emsfld) | `solver` | 🔲 未开始 |
 | S 参数提取与写入 | `solver` | 🔲 未开始 |
@@ -741,7 +753,7 @@ Project.emsp.results/
 | Web 版工程管理适配（禁用新建/另存） | `app` | 🔲 未开始 |
 | OPFS 存储层（Web Worker 内） | `worker` | ✅ 完成 |
 | Worker 通信协议 + WasmBackend | `domain` / `infra` | ✅ 完成 |
-| Rem WASM 编译 + Worker 集成 | `solver` | 🔲 未开始 |
+| Rem + rmsh WASM 编译 + Worker 集成 | `solver` | 🔲 未开始 |
 | Local-First 离线缓存（Service Worker） | `main` | 🔲 未开始 |
 | Web 版预创建工程加载流程 | `infra` / `app` | 🔲 未开始 |
 
@@ -789,9 +801,9 @@ Milestone 10: 平台与部署        [████                ]  20%  🔄
               └──────────┘ └──────────┘ └──────────┘
 ```
 
-**关键路径**：M3（工程 I/O）→ M5（求解器）→ M7（场数据管线）
+**关键路径**：M3（工程 I/O）→ M5（网格剖分 + 求解器）→ M7（场数据管线）
 
-这三个里程碑打通后，EMStudio 将具备完整的「建模 → 仿真 → 可视化」工作流。
+这三个里程碑打通后，EMStudio 将具备完整的「建模 → 网格剖分 → 仿真 → 可视化」工作流。
 
 ---
 
