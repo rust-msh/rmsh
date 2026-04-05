@@ -635,7 +635,7 @@ Project.emsp.results/
 | CAD 导入 (STEP/STL) | `domain` | `rcad-step` (STEP import/export with colors) | ✅ 完成 |
 | 几何建模 UI 面板 | `components` | — | ✅ 完成 |
 
-### Milestone 5：求解器集成 🔄 进行中
+### Milestone 5：求解器集成 ✅ 已完成
 
 > **目标**：集成 rmsh 网格剖分和 Rem 求解器，实现完整仿真流程
 >
@@ -659,14 +659,14 @@ Project.emsp.results/
 | 仿真进度回调（含网格剖分进度） | `solver` → `app` | ✅ 完成 |
 | 模型验证 (Validation) | `solver` | ✅ 完成 |
 | 端到端 Pipeline 编排 | `solver` | ✅ 完成 |
-| 自适应网格加密循环（rmsh 重剖分 → Rem 重求解） | `solver` | 🔲 未开始 |
-| 频率扫描执行 | `solver` | 🔲 未开始 |
-| 收敛历史实时写入 | `solver` | 🔲 未开始 |
-| 场数据导出 (.emsfld) | `solver` | 🔲 未开始 |
-| S 参数提取与写入 | `solver` | 🔲 未开始 |
-| RLCG 矩阵提取与写入 | `solver` | 🔲 未开始 |
-| 远场/近场积分计算 | `solver` | 🔲 未开始 |
-| 求解器日志 | `solver` | 🔲 未开始 |
+| 自适应网格加密循环（rmsh 重剖分 → Rem 重求解） | `solver` | ✅ 完成 |
+| 频率扫描执行 | `solver` | ✅ 完成 |
+| 收敛历史实时写入 | `solver` | ✅ 完成 |
+| 场数据导出 (.emsfld) | `solver` | ✅ 完成 |
+| S 参数提取与写入 | `solver` | ✅ 完成 |
+| RLCG 矩阵提取与写入 | `solver` | ✅ 完成 |
+| 远场/近场积分计算 | `solver` | ✅ 完成 |
+| 求解器日志 | `solver` | ✅ 完成 |
 
 ### Milestone 6：2D 报告系统 ✅ 已完成
 
@@ -773,14 +773,14 @@ Milestone 1: 3D 渲染引擎      [███████████████
 Milestone 2: Touchstone 支持   [████████████████████] 100%  ✅
 Milestone 3: 工程文件 I/O      [████████████████████] 100%  ✅
 Milestone 4: 几何建模          [████████████████████] 100%  ✅
-Milestone 5: 求解器集成        [████████████        ]  60%  🔄
+Milestone 5: 求解器集成        [████████████████████] 100%  ✅
 Milestone 6: 2D 报告系统       [████████████████████] 100%  ✅
 Milestone 7: 3D 场数据管线     [████████████████████] 100%  ✅
 Milestone 8: Q3D 专项功能      [████████████████████] 100%  ✅
 Milestone 9: Optimetrics       [████████████████████] 100%  ✅
 Milestone 10: 平台与部署        [████                ]  20%  🔄
 ─────────────────────────────────────────────────────────────
-整体进度                       [█████████████████   ]  86%
+整体进度                       [██████████████████  ]  91%
 ```
 
 ### 建议开发优先级

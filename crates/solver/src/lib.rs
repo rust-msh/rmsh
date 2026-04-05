@@ -7,6 +7,10 @@ pub mod solver_bridge;
 pub mod pipeline;
 pub mod progress;
 pub mod validate;
+pub mod adaptive;
+pub mod sweep;
+pub mod results;
+pub mod solver_log;
 
 use emstudio_domain::{EmModel, SolveResult};
 
