@@ -1,27 +1,32 @@
 use egui::Ui;
 
+use emstudio_domain::Edition;
+
 use crate::ribbon::RibbonAction;
 
 /// Traditional menu bar replicating AEDT's menu structure.
 /// Returns an action if a menu item was clicked.
-pub fn show_menu_bar(ui: &mut Ui) -> Option<RibbonAction> {
+///
+/// Items are gated by `edition` (feature tier) and `is_web` (web vs native).
+pub fn show_menu_bar(ui: &mut Ui, edition: Edition, is_web: bool) -> Option<RibbonAction> {
     let mut action = None;
+    let file_ops = !is_web;
 
     egui::MenuBar::new().ui(ui, |ui| {
         ui.menu_button("File", |ui| {
-            if ui.button("New Project").clicked() {
+            if ui.add_enabled(file_ops, egui::Button::new("New Project")).clicked() {
                 action = Some(RibbonAction::NewProject);
                 ui.close();
             }
-            if ui.button("Open...").clicked() {
+            if ui.add_enabled(file_ops, egui::Button::new("Open...")).clicked() {
                 action = Some(RibbonAction::OpenProject);
                 ui.close();
             }
-            if ui.button("Save").clicked() {
+            if ui.add_enabled(file_ops, egui::Button::new("Save")).clicked() {
                 action = Some(RibbonAction::SaveProject);
                 ui.close();
             }
-            if ui.button("Save As...").clicked() {
+            if ui.add_enabled(file_ops, egui::Button::new("Save As...")).clicked() {
                 action = Some(RibbonAction::SaveAs);
                 ui.close();
             }
@@ -32,21 +37,21 @@ pub fn show_menu_bar(ui: &mut Ui) -> Option<RibbonAction> {
             }
             ui.separator();
             ui.menu_button("Import", |ui| {
-                if ui.button("Import STEP").clicked() {
+                if ui.add_enabled(file_ops, egui::Button::new("Import STEP")).clicked() {
                     action = Some(RibbonAction::ImportStep);
                     ui.close();
                 }
-                if ui.button("Import SAT").clicked() {
+                if ui.add_enabled(file_ops, egui::Button::new("Import SAT")).clicked() {
                     action = Some(RibbonAction::ImportSat);
                     ui.close();
                 }
             });
             ui.menu_button("Export", |ui| {
-                if ui.button("Export STEP").clicked() {
+                if ui.add_enabled(file_ops, egui::Button::new("Export STEP")).clicked() {
                     action = Some(RibbonAction::ExportStep);
                     ui.close();
                 }
-                if ui.button("Export SAT").clicked() {
+                if ui.add_enabled(file_ops, egui::Button::new("Export SAT")).clicked() {
                     action = Some(RibbonAction::ExportSat);
                     ui.close();
                 }
@@ -176,7 +181,7 @@ pub fn show_menu_bar(ui: &mut Ui) -> Option<RibbonAction> {
                 action = Some(RibbonAction::Solve);
                 ui.close();
             }
-            if ui.button("Solve All").clicked() {
+            if ui.add_enabled(edition.allows_solve_all(), egui::Button::new("Solve All")).clicked() {
                 action = Some(RibbonAction::SolveAll);
                 ui.close();
             }

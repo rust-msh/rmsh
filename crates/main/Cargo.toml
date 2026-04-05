@@ -15,4 +15,5 @@ wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 web-sys = { workspace = true, features = ["Window", "Document", "Element", "HtmlCanvasElement"] }
 emstudio-app = { path = "../app" }
+emstudio-domain = { path = "../domain" }
 emstudio-infra = { path = "../infra" }

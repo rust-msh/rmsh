@@ -1,0 +1,11 @@
+[package]
+name = "example-field-vis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+eframe = { workspace = true, features = ["wgpu"] }
+egui.workspace = true
+egui_tiles.workspace = true
+emstudio-render = { path = "../../crates/render" }

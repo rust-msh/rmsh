@@ -45,10 +45,14 @@ pub mod optimization;
 pub mod sensitivity;
 pub mod statistical;
 
+// Milestone 10: Edition feature gating
+pub mod edition;
+
 // Re-export top-level types for convenience
 pub use project::EmProject;
 pub use design::Design;
 pub use solution_type::SolutionType;
+pub use edition::Edition;
 
 // ---------------------------------------------------------------------------
 // Legacy types (kept for backward compatibility with app/infra/solver/worker)

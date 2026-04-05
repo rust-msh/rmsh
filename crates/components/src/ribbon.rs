@@ -980,18 +980,21 @@ fn paint_button_bg(ui: &Ui, response: &Response, rect: Rect, checked: bool, enab
 // Tab definition builders (convenience)
 // ---------------------------------------------------------------------------
 
-pub fn build_default_tabs() -> Vec<RibbonTab> {
+use emstudio_domain::Edition;
+
+pub fn build_default_tabs(edition: Edition, is_web: bool) -> Vec<RibbonTab> {
     vec![
-        build_desktop_tab(),
+        build_desktop_tab(is_web),
         build_view_tab(),
-        build_simulation_tab(),
+        build_simulation_tab(edition),
         build_draw_tab(),
         build_model_tab(),
         build_results_tab(),
     ]
 }
 
-fn build_desktop_tab() -> RibbonTab {
+fn build_desktop_tab(is_web: bool) -> RibbonTab {
+    let file_ops = !is_web;
     RibbonTab {
         label: "Desktop".into(),
         accent_color: None,
@@ -1005,22 +1008,22 @@ fn build_desktop_tab() -> RibbonTab {
                                 label: "New".into(),
                                 icon: '\u{1F4C4}',
                                 action: RibbonAction::NewProject,
-                                enabled: true,
-                                tooltip: "Create a new project".into(),
+                                enabled: file_ops,
+                                tooltip: if is_web { "Not available in web version".into() } else { "Create a new project".into() },
                             },
                             RibbonItem::LargeButton {
                                 label: "Open".into(),
                                 icon: '\u{1F4C2}',
                                 action: RibbonAction::OpenProject,
-                                enabled: true,
-                                tooltip: "Open an existing project".into(),
+                                enabled: file_ops,
+                                tooltip: if is_web { "Not available in web version".into() } else { "Open an existing project".into() },
                             },
                             RibbonItem::LargeButton {
                                 label: "Save".into(),
                                 icon: '\u{1F4BE}',
                                 action: RibbonAction::SaveProject,
-                                enabled: true,
-                                tooltip: "Save current project".into(),
+                                enabled: file_ops,
+                                tooltip: if is_web { "Not available in web version".into() } else { "Save current project".into() },
                             },
                         ],
                     },
@@ -1030,8 +1033,8 @@ fn build_desktop_tab() -> RibbonTab {
                                 label: "Save As".into(),
                                 icon: '\u{1F4CB}',
                                 action: RibbonAction::SaveAs,
-                                enabled: true,
-                                tooltip: "Save project as a new file".into(),
+                                enabled: file_ops,
+                                tooltip: if is_web { "Not available in web version".into() } else { "Save project as a new file".into() },
                             },
                             RibbonItem::SmallButton {
                                 label: "Close".into(),
@@ -1052,22 +1055,22 @@ fn build_desktop_tab() -> RibbonTab {
                             label: "Import".into(),
                             icon: '\u{1F4E5}',
                             action: RibbonAction::ImportStep,
-                            enabled: true,
-                            tooltip: "Import geometry".into(),
+                            enabled: file_ops,
+                            tooltip: if is_web { "Not available in web version".into() } else { "Import geometry".into() },
                             menu_items: vec![
-                                MenuItem { label: "Import STEP".into(), action: RibbonAction::ImportStep, enabled: true },
-                                MenuItem { label: "Import SAT".into(), action: RibbonAction::ImportSat, enabled: true },
+                                MenuItem { label: "Import STEP".into(), action: RibbonAction::ImportStep, enabled: file_ops },
+                                MenuItem { label: "Import SAT".into(), action: RibbonAction::ImportSat, enabled: file_ops },
                             ],
                         },
                         RibbonItem::LargeSplitButton {
                             label: "Export".into(),
                             icon: '\u{1F4E4}',
                             action: RibbonAction::ExportStep,
-                            enabled: true,
-                            tooltip: "Export geometry".into(),
+                            enabled: file_ops,
+                            tooltip: if is_web { "Not available in web version".into() } else { "Export geometry".into() },
                             menu_items: vec![
-                                MenuItem { label: "Export STEP".into(), action: RibbonAction::ExportStep, enabled: true },
-                                MenuItem { label: "Export SAT".into(), action: RibbonAction::ExportSat, enabled: true },
+                                MenuItem { label: "Export STEP".into(), action: RibbonAction::ExportStep, enabled: file_ops },
+                                MenuItem { label: "Export SAT".into(), action: RibbonAction::ExportSat, enabled: file_ops },
                             ],
                         },
                     ],
@@ -1163,7 +1166,7 @@ fn build_view_tab() -> RibbonTab {
     }
 }
 
-fn build_simulation_tab() -> RibbonTab {
+fn build_simulation_tab(edition: Edition) -> RibbonTab {
     RibbonTab {
         label: "Simulation".into(),
         accent_color: None,
@@ -1212,8 +1215,12 @@ fn build_simulation_tab() -> RibbonTab {
                                 label: "Analyze\nAll".into(),
                                 icon: '\u{25B6}',
                                 action: RibbonAction::SolveAll,
-                                enabled: true,
-                                tooltip: "Analyze all setups".into(),
+                                enabled: edition.allows_solve_all(),
+                                tooltip: if edition.allows_solve_all() {
+                                    "Analyze all setups".into()
+                                } else {
+                                    "Requires Professional edition".into()
+                                },
                             },
                             RibbonItem::LargeButton {
                                 label: "Solve".into(),

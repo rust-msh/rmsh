@@ -12,7 +12,7 @@ use emstudio_domain::SimulationStatus;
 use emstudio_infra::RunMode;
 
 fn new_app() -> App {
-    App::new_headless(RunMode::Standalone)
+    App::new_default_headless()
 }
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ fn new_project_resets_state() {
     let mut app = new_app();
 
     // Dirty the project first
-    app.dispatch_action(RibbonAction::DrawBox);
+    app.dispatch_action(RibbonAction::Solve);
     assert!(app.unsaved_changes());
 
     // Save to a file so current_file is set
@@ -175,10 +175,10 @@ fn solve_marks_project_dirty() {
 #[test]
 fn stub_actions_mark_project_dirty() {
     let stub_actions = [
-        RibbonAction::DrawBox,
-        RibbonAction::DrawCylinder,
         RibbonAction::BoolUnite,
         RibbonAction::AssignMaterial,
+        RibbonAction::DrawPolyline,
+        RibbonAction::DrawRectangle,
     ];
 
     for action in stub_actions {
@@ -226,7 +226,7 @@ fn dirty_flag_shown_in_display_name() {
     let mut app = new_app();
     assert_eq!(app.file_display_name(), "Untitled");
 
-    app.dispatch_action(RibbonAction::DrawBox);
+    app.dispatch_action(RibbonAction::Solve);
     assert_eq!(app.file_display_name(), "Untitled*");
 
     let dir = tempfile::tempdir().unwrap();
@@ -234,7 +234,7 @@ fn dirty_flag_shown_in_display_name() {
     app.save_to(&path);
     assert_eq!(app.file_display_name(), "named.emsp");
 
-    app.dispatch_action(RibbonAction::DrawSphere);
+    app.dispatch_action(RibbonAction::AssignMaterial);
     assert_eq!(app.file_display_name(), "named.emsp*");
 }
 
@@ -249,7 +249,7 @@ fn solve_all_works_same_as_solve() {
 
     assert_eq!(app.project().status, SimulationStatus::Finished);
     assert!(app.project().last_result.is_some());
-    assert!(app.status_text().contains("Solve completed"));
+    assert!(app.status_text().contains("Solve All completed"));
     assert!(app.unsaved_changes());
 }
 
@@ -301,7 +301,7 @@ fn full_project_lifecycle() {
     assert_eq!(app.current_file().unwrap(), &path);
 
     // 5. Make another change, verify dirty
-    app.dispatch_action(RibbonAction::DrawBox);
+    app.dispatch_action(RibbonAction::AssignMaterial);
     assert!(app.unsaved_changes());
     assert!(app.file_display_name().ends_with('*'));
 }

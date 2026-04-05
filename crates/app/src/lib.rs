@@ -5,7 +5,8 @@ use std::sync::mpsc;
 use eframe::egui;
 use egui_dock::{DockArea, DockState, TabViewer};
 
-use emstudio_components::dock;
+use emstudio_components::dock::{self, LeftDockContext};
+use emstudio_components::draw_dialog::DrawDialog;
 use emstudio_components::message_manager::{self, BottomTab, MessageEntry};
 use emstudio_components::report_panel::ReportPanel;
 use emstudio_components::ribbon::{
@@ -13,9 +14,10 @@ use emstudio_components::ribbon::{
 };
 use emstudio_components::status_bar::{self, StatusBarState};
 use emstudio_components::{LeftPanelTab, menu_bar, qat};
-use emstudio_domain::{Project, SimulationStatus};
+use emstudio_domain::{Edition, Project, SimulationStatus};
 use emstudio_domain::geometry_engine::GeometryEngine;
 use emstudio_domain::result_store::ResultDataStore;
+use emstudio_domain::variable::Variable;
 use emstudio_infra::{Backend, RunMode, default_backend};
 #[cfg(not(target_arch = "wasm32"))]
 use emstudio_infra::{load_project_from_file, save_project_to_file};
@@ -119,6 +121,8 @@ impl TabViewer for CenterTabViewer<'_> {
 pub struct App {
     project: Project,
     backend: Box<dyn Backend>,
+    edition: Edition,
+    mode: RunMode,
     viewport: SceneViewport,
     engine: GeometryEngine,
     geometry_generation: u64,
@@ -137,6 +141,13 @@ pub struct App {
     report_panels: HashMap<String, ReportPanel>,
     result_store: Option<ResultDataStore>,
 
+    // Geometry modeling UI state
+    selected_object: Option<String>,
+    design_variables: HashMap<String, Variable>,
+    draw_dialog: Option<DrawDialog>,
+    variable_edit_buffers: HashMap<String, String>,
+    param_edit_buffers: HashMap<String, String>,
+
     // Layout state
     show_project_manager: bool,
     show_message_manager: bool,
@@ -148,6 +159,10 @@ pub struct App {
 impl App {
     pub fn project(&self) -> &Project {
         &self.project
+    }
+
+    pub fn edition(&self) -> Edition {
+        self.edition
     }
 
     pub fn current_file(&self) -> Option<&PathBuf> {
@@ -283,8 +298,8 @@ impl App {
         }
     }
 
-    pub fn new(mode: RunMode, cc: &eframe::CreationContext<'_>) -> Self {
-        let mut app = Self::new_headless(mode);
+    pub fn new(mode: RunMode, edition: Edition, cc: &eframe::CreationContext<'_>) -> Self {
+        let mut app = Self::new_headless(mode, edition);
         if let Some(rs) = &cc.wgpu_render_state {
             app.viewport.init_renderer(&rs.device, rs.target_format, &mut rs.renderer.write().callback_resources);
         }
@@ -292,7 +307,7 @@ impl App {
     }
 
     /// Create an App without GPU renderer (for tests and WASM fallback).
-    pub fn new_headless(mode: RunMode) -> Self {
+    pub fn new_headless(mode: RunMode, edition: Edition) -> Self {
         let project = Project::default();
 
         // Center dock: Modeling and Result as sibling tabs (not split)
@@ -303,18 +318,21 @@ impl App {
         Self {
             project,
             backend: default_backend(mode),
+            edition,
+            mode,
             viewport: SceneViewport::default(),
             engine: GeometryEngine::new(),
             geometry_generation: 0,
             dock_state,
             ribbon_state: RibbonState::default(),
-            ribbon_tabs: build_default_tabs(),
+            ribbon_tabs: build_default_tabs(edition, mode == RunMode::LocalFirst),
             current_file: None,
             unsaved_changes: false,
-            status_text: format!("Ready ({})", Self::mode_label(mode)),
+            status_text: format!("Ready ({}, {})", Self::mode_label(mode), edition.display_name()),
             log_text: format!(
-                "[boot] EmStudio shell started (mode={})",
-                Self::mode_label(mode)
+                "[boot] EmStudio shell started (mode={}, edition={})",
+                Self::mode_label(mode),
+                edition.display_name(),
             ),
             messages: vec![MessageEntry::info("EmStudio started.")],
             file_dialog_rx: rx,
@@ -323,6 +341,13 @@ impl App {
             // Report system
             report_panels: HashMap::new(),
             result_store: None,
+
+            // Geometry modeling UI state
+            selected_object: None,
+            design_variables: HashMap::new(),
+            draw_dialog: None,
+            variable_edit_buffers: HashMap::new(),
+            param_edit_buffers: HashMap::new(),
 
             // Layout defaults
             show_project_manager: true,
@@ -333,11 +358,11 @@ impl App {
     }
 
     pub fn new_default(cc: &eframe::CreationContext<'_>) -> Self {
-        Self::new(RunMode::Standalone, cc)
+        Self::new(RunMode::Standalone, Edition::Professional, cc)
     }
 
     pub fn new_default_headless() -> Self {
-        Self::new_headless(RunMode::Standalone)
+        Self::new_headless(RunMode::Standalone, Edition::Professional)
     }
 
     // -----------------------------------------------------------------------
@@ -462,7 +487,7 @@ impl App {
             }
 
             // -- Solve --
-            RibbonAction::Solve | RibbonAction::SolveAll => {
+            RibbonAction::Solve => {
                 self.project.status = SimulationStatus::Solving;
                 match self.backend.solve(&self.project) {
                     Ok(result) => {
@@ -479,6 +504,33 @@ impl App {
                         self.status_text = format!("Solve failed: {err}");
                         self.messages
                             .push(MessageEntry::error(format!("Solve failed: {err}")));
+                    }
+                }
+            }
+            RibbonAction::SolveAll => {
+                if !self.edition.allows_solve_all() {
+                    self.status_text = "Solve All requires Professional edition or higher".into();
+                    self.messages.push(MessageEntry::warning(
+                        "Solve All is not available in Basic edition.",
+                    ));
+                    return;
+                }
+                self.project.status = SimulationStatus::Solving;
+                match self.backend.solve(&self.project) {
+                    Ok(result) => {
+                        self.project.status = SimulationStatus::Finished;
+                        self.project.last_result = Some(result);
+                        self.status_text = "Solve All completed".into();
+                        self.log_text.push_str("\n[action] solve all");
+                        self.messages
+                            .push(MessageEntry::info("Solve All completed successfully."));
+                        self.unsaved_changes = true;
+                    }
+                    Err(err) => {
+                        self.project.status = SimulationStatus::Failed;
+                        self.status_text = format!("Solve All failed: {err}");
+                        self.messages
+                            .push(MessageEntry::error(format!("Solve All failed: {err}")));
                     }
                 }
             }
@@ -529,6 +581,23 @@ impl App {
             // -- Reports --
             RibbonAction::CreateReport => {
                 self.create_default_report();
+            }
+
+            // -- Draw commands --
+            RibbonAction::DrawBox => {
+                self.draw_dialog = Some(DrawDialog::new_box());
+            }
+            RibbonAction::DrawCylinder => {
+                self.draw_dialog = Some(DrawDialog::new_cylinder());
+            }
+            RibbonAction::DrawSphere => {
+                self.draw_dialog = Some(DrawDialog::new_sphere());
+            }
+            RibbonAction::DrawCone => {
+                self.draw_dialog = Some(DrawDialog::new_cone());
+            }
+            RibbonAction::DrawTorus => {
+                self.draw_dialog = Some(DrawDialog::new_torus());
             }
 
             // -- All other actions: mark dirty + stub --
@@ -724,7 +793,7 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("menu_bar")
             .exact_height(24.0)
             .show(ctx, |ui| {
-                if let Some(action) = menu_bar::show_menu_bar(ui) {
+                if let Some(action) = menu_bar::show_menu_bar(ui, self.edition, self.mode == RunMode::LocalFirst) {
                     self.on_ribbon_action_with_ctx(action, ctx);
                 }
             });
@@ -794,8 +863,100 @@ impl eframe::App for App {
                 .default_width(240.0)
                 .min_width(180.0)
                 .show(ctx, |ui| {
-                    dock::left_dock_panel(ui, &self.project, &mut self.left_panel_active_tab);
+                    let mut dock_ctx = LeftDockContext {
+                        project: &self.project,
+                        selected_object: self.selected_object.as_deref(),
+                        selected_operation: None, // TODO: lookup from geometry operations
+                        design_variables: &self.design_variables,
+                        variable_edit_buffers: &mut self.variable_edit_buffers,
+                        param_edit_buffers: &mut self.param_edit_buffers,
+                    };
+                    let dock_response = dock::left_dock_panel(
+                        ui,
+                        &mut self.left_panel_active_tab,
+                        &mut dock_ctx,
+                    );
+
+                    // Handle tree selection
+                    if let Some(obj_name) = dock_response.tree.selected_object {
+                        self.selected_object = Some(obj_name);
+                    }
+
+                    // Handle variable add
+                    if dock_response.tree.add_variable {
+                        let name = format!("var{}", self.design_variables.len() + 1);
+                        self.design_variables.insert(
+                            name,
+                            Variable {
+                                value: Some("0".into()),
+                                expression: None,
+                                description: String::new(),
+                                unit_type: None,
+                            },
+                        );
+                        self.unsaved_changes = true;
+                    }
+
+                    // Handle variable edit
+                    if let Some((name, new_value)) = dock_response.tree.variable_edited {
+                        if let Some(var) = self.design_variables.get_mut(&name) {
+                            var.value = Some(new_value);
+                            self.unsaved_changes = true;
+                        }
+                    }
                 });
+        }
+
+        // Draw dialog
+        if let Some(dialog) = &mut self.draw_dialog {
+            let var_names: Vec<String> = self.design_variables.keys().cloned().collect();
+            if let Some(result) = dialog.show(ctx, &var_names) {
+                // Assign step number
+                let mut op = result.operation;
+                let next_step = self
+                    .project
+                    .model
+                    .objects
+                    .len() as u32
+                    + 1;
+                op.step = next_step;
+
+                // Execute the operation
+                let vars: HashMap<String, f64> = self
+                    .design_variables
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        v.value
+                            .as_ref()
+                            .and_then(|val| emstudio_domain::expression::parse_value_with_unit(val).ok())
+                            .map(|f| (k.clone(), f))
+                    })
+                    .collect();
+
+                match self.engine.execute(&op, &vars) {
+                    Ok(Some(obj)) => {
+                        // Add object to project (legacy model)
+                        self.project.model.objects.push(emstudio_domain::GeometryObject {
+                            id: obj.id,
+                            name: obj.name.clone(),
+                            mesh_hint: "auto".into(),
+                        });
+                        self.geometry_generation += 1;
+                        self.unsaved_changes = true;
+                        self.status_text = format!("Created: {}", obj.name);
+                        self.messages.push(MessageEntry::info(format!("Created object '{}'", obj.name)));
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        self.status_text = format!("Create failed: {e}");
+                        self.messages.push(MessageEntry::error(format!("Create failed: {e}")));
+                    }
+                }
+
+                self.draw_dialog = None;
+            } else if !dialog.open {
+                self.draw_dialog = None;
+            }
         }
 
         // =================================================================

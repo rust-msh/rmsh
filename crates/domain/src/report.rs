@@ -52,6 +52,8 @@ pub enum ChartType {
     DataTable,
     Polar3D,
     MatrixTable,
+    /// 3D rectangular plot for parameter sweep results.
+    Rectangular3D,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -752,8 +752,8 @@ Project.emsp.results/
 | 远程求解任务提交 | `infra` | 🔲 未开始 |
 | 结果文件下载/流式加载 | `infra` | 🔲 未开始 |
 | 多用户工程锁协调 | `infra` | 🔲 未开始 |
-| Edition 功能门控 (Basic/Pro/Enterprise) | `app` / `domain` | 🔲 未开始 |
-| Web 版工程管理适配（禁用新建/另存） | `app` | 🔲 未开始 |
+| Edition 功能门控 (Basic/Pro/Enterprise) | `app` / `domain` | ✅ 完成 |
+| Web 版工程管理适配（禁用新建/另存） | `app` | ✅ 完成 |
 | OPFS 存储层（Web Worker 内） | `worker` | ✅ 完成 |
 | Worker 通信协议 + WasmBackend | `domain` / `infra` | ✅ 完成 |
 | Rem + rmsh WASM 编译 + Worker 集成 | `solver` | 🔲 未开始 |

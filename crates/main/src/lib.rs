@@ -5,6 +5,7 @@ mod wasm_app {
     use wasm_bindgen::prelude::*;
 
     use emstudio_app::App;
+    use emstudio_domain::Edition;
     use emstudio_infra::RunMode;
 
     #[wasm_bindgen(start)]
@@ -25,7 +26,7 @@ mod wasm_app {
             .start(
                 canvas,
                 eframe::WebOptions::default(),
-                Box::new(|cc| Ok(Box::new(App::new(RunMode::LocalFirst, cc)))),
+                Box::new(|cc| Ok(Box::new(App::new(RunMode::LocalFirst, Edition::Basic, cc)))),
             )
             .await
     }

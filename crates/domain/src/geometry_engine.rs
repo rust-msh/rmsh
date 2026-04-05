@@ -12,6 +12,7 @@ use rcad_kernel::BRep;
 use rcad_modeling::{box_brep, sphere_brep, cylinder_brep, cone_brep, torus_brep, extrude, revolve, sweep_pipe};
 use thiserror::Error;
 
+use crate::expression::{evaluate, parse_value_with_unit};
 use crate::geometry::{BoundingBox, GeoObject, Geometry, GeometryOperation, ObjectAttributes, OperationCommand};
 
 // ---------------------------------------------------------------------------
@@ -33,20 +34,55 @@ pub enum GeometryError {
 }
 
 // ---------------------------------------------------------------------------
-// Parameter extraction helpers
+// Parameter extraction helpers (parametric — supports expressions)
 // ---------------------------------------------------------------------------
 
-fn get_f64(params: &serde_json::Value, key: &str) -> Result<f64, GeometryError> {
-    params
-        .get(key)
-        .and_then(|v| v.as_f64())
-        .ok_or_else(|| GeometryError::InvalidParameters {
-            command: String::new(),
-            reason: format!("missing or invalid '{key}'"),
-        })
+/// Evaluate a parameter as f64. Supports:
+/// - JSON number: `10.0`
+/// - JSON string with unit: `"10mm"`, `"2.4GHz"`
+/// - JSON string expression with variables: `"antenna_width * 2"`
+fn eval_f64(
+    params: &serde_json::Value,
+    key: &str,
+    vars: &HashMap<String, f64>,
+) -> Result<f64, GeometryError> {
+    let val = params.get(key).ok_or_else(|| GeometryError::InvalidParameters {
+        command: String::new(),
+        reason: format!("missing '{key}'"),
+    })?;
+
+    // Direct number
+    if let Some(n) = val.as_f64() {
+        return Ok(n);
+    }
+    // Integer stored as i64
+    if let Some(n) = val.as_i64() {
+        return Ok(n as f64);
+    }
+    // String: try value-with-unit, then expression
+    if let Some(s) = val.as_str() {
+        return parse_value_with_unit(s)
+            .or_else(|_| evaluate(s, vars))
+            .map_err(|e| GeometryError::InvalidParameters {
+                command: String::new(),
+                reason: format!("cannot evaluate '{key}': {e}"),
+            });
+    }
+
+    Err(GeometryError::InvalidParameters {
+        command: String::new(),
+        reason: format!("'{key}' is not a number or evaluable string"),
+    })
 }
 
-fn get_vec3(params: &serde_json::Value, key: &str) -> Result<DVec3, GeometryError> {
+/// Evaluate a vec3 parameter. Supports:
+/// - JSON array of numbers: `[1.0, 2.0, 3.0]`
+/// - JSON array of strings: `["10mm", "antenna_width", "0"]`
+fn eval_vec3(
+    params: &serde_json::Value,
+    key: &str,
+    vars: &HashMap<String, f64>,
+) -> Result<DVec3, GeometryError> {
     let arr = params
         .get(key)
         .and_then(|v| v.as_array())
@@ -60,11 +96,39 @@ fn get_vec3(params: &serde_json::Value, key: &str) -> Result<DVec3, GeometryErro
             reason: format!("'{key}' must be [x, y, z]"),
         });
     }
+
+    let resolve_component = |v: &serde_json::Value, idx: usize| -> Result<f64, GeometryError> {
+        if let Some(n) = v.as_f64() {
+            return Ok(n);
+        }
+        if let Some(n) = v.as_i64() {
+            return Ok(n as f64);
+        }
+        if let Some(s) = v.as_str() {
+            return parse_value_with_unit(s)
+                .or_else(|_| evaluate(s, vars))
+                .map_err(|e| GeometryError::InvalidParameters {
+                    command: String::new(),
+                    reason: format!("cannot evaluate '{key}[{idx}]': {e}"),
+                });
+        }
+        Ok(0.0)
+    };
+
     Ok(DVec3::new(
-        arr[0].as_f64().unwrap_or(0.0),
-        arr[1].as_f64().unwrap_or(0.0),
-        arr[2].as_f64().unwrap_or(0.0),
+        resolve_component(&arr[0], 0)?,
+        resolve_component(&arr[1], 1)?,
+        resolve_component(&arr[2], 2)?,
     ))
+}
+
+fn eval_vec3_or(
+    params: &serde_json::Value,
+    key: &str,
+    vars: &HashMap<String, f64>,
+    default: DVec3,
+) -> DVec3 {
+    eval_vec3(params, key, vars).unwrap_or(default)
 }
 
 fn get_str<'a>(params: &'a serde_json::Value, key: &str) -> Result<&'a str, GeometryError> {
@@ -75,10 +139,6 @@ fn get_str<'a>(params: &'a serde_json::Value, key: &str) -> Result<&'a str, Geom
             command: String::new(),
             reason: format!("missing or invalid '{key}'"),
         })
-}
-
-fn get_vec3_or(params: &serde_json::Value, key: &str, default: DVec3) -> DVec3 {
-    get_vec3(params, key).unwrap_or(default)
 }
 
 // ---------------------------------------------------------------------------
@@ -113,10 +173,12 @@ impl GeometryEngine {
     }
 
     /// Rebuild all geometry by replaying an operation list from scratch.
+    /// `vars` contains resolved variable values for parametric evaluation.
     /// Returns the resulting `GeoObject` snapshot list.
     pub fn rebuild(
         &mut self,
         operations: &[GeometryOperation],
+        vars: &HashMap<String, f64>,
     ) -> Result<Vec<GeoObject>, GeometryError> {
         self.objects.clear();
         self.next_id = 1;
@@ -124,7 +186,7 @@ impl GeometryEngine {
         let mut snapshots = Vec::new();
 
         for op in operations {
-            let result = self.execute(op)?;
+            let result = self.execute(op, vars)?;
             if let Some(obj) = result {
                 snapshots.push(obj);
             }
@@ -135,9 +197,11 @@ impl GeometryEngine {
 
     /// Execute a single geometry operation, returning a `GeoObject` snapshot
     /// if the operation creates or modifies a named object.
+    /// `vars` contains resolved variable values for parametric evaluation.
     pub fn execute(
         &mut self,
         op: &GeometryOperation,
+        vars: &HashMap<String, f64>,
     ) -> Result<Option<GeoObject>, GeometryError> {
         let params = &op.parameters;
         let attrs = op.attributes.as_ref().cloned().unwrap_or_default();
@@ -145,11 +209,11 @@ impl GeometryEngine {
         match op.command {
             // -- Primitives --
             OperationCommand::CreateBox => {
-                let origin = get_vec3_or(params, "origin", DVec3::ZERO);
-                let size = get_vec3(params, "size").unwrap_or(DVec3::new(
-                    get_f64(params, "width").unwrap_or(1.0),
-                    get_f64(params, "height").unwrap_or(1.0),
-                    get_f64(params, "depth").unwrap_or(1.0),
+                let origin = eval_vec3_or(params, "origin", vars, DVec3::ZERO);
+                let size = eval_vec3(params, "size", vars).unwrap_or(DVec3::new(
+                    eval_f64(params, "width", vars).unwrap_or(1.0),
+                    eval_f64(params, "height", vars).unwrap_or(1.0),
+                    eval_f64(params, "depth", vars).unwrap_or(1.0),
                 ));
                 let brep = box_brep(
                     origin,
@@ -166,9 +230,9 @@ impl GeometryEngine {
             }
 
             OperationCommand::CreateCylinder => {
-                let center = get_vec3_or(params, "center", DVec3::ZERO);
-                let radius = get_f64(params, "radius")?;
-                let height = get_f64(params, "height")?;
+                let center = eval_vec3_or(params, "center", vars, DVec3::ZERO);
+                let radius = eval_f64(params, "radius", vars)?;
+                let height = eval_f64(params, "height", vars)?;
                 let brep = cylinder_brep(
                     center,
                     DVec3::Z,
@@ -183,8 +247,8 @@ impl GeometryEngine {
             }
 
             OperationCommand::CreateSphere => {
-                let center = get_vec3_or(params, "center", DVec3::ZERO);
-                let radius = get_f64(params, "radius")?;
+                let center = eval_vec3_or(params, "center", vars, DVec3::ZERO);
+                let radius = eval_f64(params, "radius", vars)?;
                 let brep = sphere_brep(center, radius)
                     .map_err(|e| GeometryError::BuildError(e.to_string()))?;
 
@@ -193,9 +257,9 @@ impl GeometryEngine {
             }
 
             OperationCommand::CreateCone => {
-                let center = get_vec3_or(params, "center", DVec3::ZERO);
-                let radius = get_f64(params, "radius").or_else(|_| get_f64(params, "base_radius"))?;
-                let height = get_f64(params, "height")?;
+                let center = eval_vec3_or(params, "center", vars, DVec3::ZERO);
+                let radius = eval_f64(params, "radius", vars).or_else(|_| eval_f64(params, "base_radius", vars))?;
+                let height = eval_f64(params, "height", vars)?;
                 let brep = cone_brep(
                     center,
                     DVec3::Z,
@@ -210,9 +274,9 @@ impl GeometryEngine {
             }
 
             OperationCommand::CreateTorus => {
-                let center = get_vec3_or(params, "center", DVec3::ZERO);
-                let major_radius = get_f64(params, "major_radius")?;
-                let minor_radius = get_f64(params, "minor_radius")?;
+                let center = eval_vec3_or(params, "center", vars, DVec3::ZERO);
+                let major_radius = eval_f64(params, "major_radius", vars)?;
+                let minor_radius = eval_f64(params, "minor_radius", vars)?;
                 let brep = torus_brep(
                     center,
                     DVec3::Z,
@@ -240,7 +304,7 @@ impl GeometryEngine {
             // -- Transforms --
             OperationCommand::Move => {
                 let target = get_str(params, "target")?;
-                let vector = get_vec3(params, "vector")?;
+                let vector = eval_vec3(params, "vector", vars)?;
                 let brep = self.take_brep(target)?;
                 let mut brep = brep;
                 brep.apply_transform(DAffine3::from_translation(vector));
@@ -250,9 +314,9 @@ impl GeometryEngine {
 
             OperationCommand::Rotate => {
                 let target = get_str(params, "target")?;
-                let axis = get_vec3_or(params, "axis", DVec3::Z);
-                let angle_deg = get_f64(params, "angle_deg")?;
-                let origin = get_vec3_or(params, "origin", DVec3::ZERO);
+                let axis = eval_vec3_or(params, "axis", vars, DVec3::Z);
+                let angle_deg = eval_f64(params, "angle_deg", vars)?;
+                let origin = eval_vec3_or(params, "origin", vars, DVec3::ZERO);
                 let angle_rad = angle_deg.to_radians();
                 let brep = self.take_brep(target)?;
                 let mut brep = brep;
@@ -267,8 +331,8 @@ impl GeometryEngine {
 
             OperationCommand::Scale => {
                 let target = get_str(params, "target")?;
-                let factor = get_f64(params, "factor").unwrap_or(1.0);
-                let origin = get_vec3_or(params, "origin", DVec3::ZERO);
+                let factor = eval_f64(params, "factor", vars).unwrap_or(1.0);
+                let origin = eval_vec3_or(params, "origin", vars, DVec3::ZERO);
                 let brep = self.take_brep(target)?;
                 let mut brep = brep;
                 brep.apply_transform(DAffine3::from_translation(-origin));
@@ -280,8 +344,8 @@ impl GeometryEngine {
 
             OperationCommand::Mirror => {
                 let target = get_str(params, "target")?;
-                let normal = get_vec3_or(params, "normal", DVec3::X).normalize();
-                let origin = get_vec3_or(params, "origin", DVec3::ZERO);
+                let normal = eval_vec3_or(params, "normal", vars, DVec3::X).normalize();
+                let origin = eval_vec3_or(params, "origin", vars, DVec3::ZERO);
                 let brep = self.take_brep(target)?;
                 let mut brep = brep;
                 // Reflection matrix: I - 2*n*nT
@@ -327,8 +391,8 @@ impl GeometryEngine {
             // -- Sweeps --
             OperationCommand::SweepAlongVector => {
                 let target = get_str(params, "target")?;
-                let direction = get_vec3(params, "direction")?;
-                let distance = get_f64(params, "distance")?;
+                let direction = eval_vec3(params, "direction", vars)?;
+                let distance = eval_f64(params, "distance", vars)?;
                 let face_idx = params
                     .get("face_index")
                     .and_then(|v| v.as_u64())
@@ -342,9 +406,9 @@ impl GeometryEngine {
 
             OperationCommand::SweepAroundAxis => {
                 let target = get_str(params, "target")?;
-                let axis_origin = get_vec3_or(params, "axis_origin", DVec3::ZERO);
-                let axis_direction = get_vec3(params, "axis_direction")?;
-                let angle_deg = get_f64(params, "angle")?;
+                let axis_origin = eval_vec3_or(params, "axis_origin", vars, DVec3::ZERO);
+                let axis_direction = eval_vec3(params, "axis_direction", vars)?;
+                let angle_deg = eval_f64(params, "angle", vars)?;
                 let angle_rad = angle_deg.to_radians();
                 let face_idx = params
                     .get("face_index")
@@ -506,10 +570,14 @@ impl Default for GeometryEngine {
 
 impl Geometry {
     /// Rebuild all geometry from the operation history using rcad.
+    /// `vars` contains resolved variable values for parametric evaluation.
     /// Returns a `GeometryEngine` that holds the live BRep objects.
-    pub fn rebuild_with_engine(&mut self) -> Result<GeometryEngine, GeometryError> {
+    pub fn rebuild_with_engine(
+        &mut self,
+        vars: &HashMap<String, f64>,
+    ) -> Result<GeometryEngine, GeometryError> {
         let mut engine = GeometryEngine::new();
-        self.objects = engine.rebuild(&self.operations)?;
+        self.objects = engine.rebuild(&self.operations, vars)?;
         Ok(engine)
     }
 }
@@ -552,13 +620,14 @@ mod tests {
     #[test]
     fn create_box() {
         let mut engine = GeometryEngine::new();
+        let vars = HashMap::new();
         let op = make_named_op(
             1,
             OperationCommand::CreateBox,
             "Box1",
             json!({"origin": [0,0,0], "size": [10, 5, 3]}),
         );
-        let result = engine.execute(&op).unwrap();
+        let result = engine.execute(&op, &vars).unwrap();
         assert!(result.is_some());
         let obj = result.unwrap();
         assert_eq!(obj.name, "Box1");
@@ -572,13 +641,14 @@ mod tests {
     #[test]
     fn create_cylinder() {
         let mut engine = GeometryEngine::new();
+        let vars = HashMap::new();
         let op = make_named_op(
             1,
             OperationCommand::CreateCylinder,
             "Cyl1",
             json!({"center": [0,0,0], "radius": 5.0, "height": 10.0}),
         );
-        let result = engine.execute(&op).unwrap().unwrap();
+        let result = engine.execute(&op, &vars).unwrap().unwrap();
         assert_eq!(result.name, "Cyl1");
         assert!(result.bounding_box.is_some());
     }
@@ -586,51 +656,51 @@ mod tests {
     #[test]
     fn create_sphere() {
         let mut engine = GeometryEngine::new();
+        let vars = HashMap::new();
         let op = make_named_op(
             1,
             OperationCommand::CreateSphere,
             "Sph1",
             json!({"center": [0,0,0], "radius": 3.0}),
         );
-        let result = engine.execute(&op).unwrap().unwrap();
+        let result = engine.execute(&op, &vars).unwrap().unwrap();
         assert_eq!(result.name, "Sph1");
     }
 
     #[test]
     fn move_transform() {
         let mut engine = GeometryEngine::new();
-        // Create a box at origin
+        let vars = HashMap::new();
         engine
             .execute(&make_named_op(
                 1,
                 OperationCommand::CreateBox,
                 "Box1",
                 json!({"origin": [0,0,0], "size": [2, 2, 2]}),
-            ))
+            ), &vars)
             .unwrap();
 
-        // Move it by [10, 0, 0]
         let move_op = make_op(
             2,
             OperationCommand::Move,
             json!({"target": "Box1", "vector": [10, 0, 0]}),
         );
-        let result = engine.execute(&move_op).unwrap().unwrap();
+        let result = engine.execute(&move_op, &vars).unwrap().unwrap();
         let bbox = result.bounding_box.unwrap();
-        // After moving by 10 in X, min x should be ~10
         assert!(bbox.min[0] >= 9.9, "min x should be ~10, got {}", bbox.min[0]);
     }
 
     #[test]
     fn rotate_transform() {
         let mut engine = GeometryEngine::new();
+        let vars = HashMap::new();
         engine
             .execute(&make_named_op(
                 1,
                 OperationCommand::CreateBox,
                 "Box1",
                 json!({"origin": [0,0,0], "size": [10, 2, 2]}),
-            ))
+            ), &vars)
             .unwrap();
 
         let rotate_op = make_op(
@@ -638,20 +708,21 @@ mod tests {
             OperationCommand::Rotate,
             json!({"target": "Box1", "axis": [0,0,1], "origin": [0,0,0], "angle_deg": 90}),
         );
-        let result = engine.execute(&rotate_op).unwrap().unwrap();
+        let result = engine.execute(&rotate_op, &vars).unwrap().unwrap();
         assert!(result.bounding_box.is_some());
     }
 
     #[test]
     fn boolean_unite() {
         let mut engine = GeometryEngine::new();
+        let vars = HashMap::new();
         engine
             .execute(&make_named_op(
                 1,
                 OperationCommand::CreateBox,
                 "Box1",
                 json!({"origin": [0,0,0], "size": [10, 10, 10]}),
-            ))
+            ), &vars)
             .unwrap();
         engine
             .execute(&make_named_op(
@@ -659,7 +730,7 @@ mod tests {
                 OperationCommand::CreateBox,
                 "Box2",
                 json!({"origin": [5,0,0], "size": [10, 10, 10]}),
-            ))
+            ), &vars)
             .unwrap();
 
         let unite_op = make_op(
@@ -667,29 +738,29 @@ mod tests {
             OperationCommand::Unite,
             json!({"target": "Box1", "tool": "Box2"}),
         );
-        let result = engine.execute(&unite_op).unwrap().unwrap();
+        let result = engine.execute(&unite_op, &vars).unwrap().unwrap();
         assert_eq!(result.name, "Box1");
-        // Tool (Box2) should be consumed
         assert!(engine.get_brep("Box2").is_none());
-        // Target (Box1) should still exist with the union result
         assert!(engine.get_brep("Box1").is_some());
     }
 
     #[test]
     fn object_not_found() {
         let mut engine = GeometryEngine::new();
+        let vars = HashMap::new();
         let op = make_op(
             1,
             OperationCommand::Move,
             json!({"target": "NonExistent", "vector": [1,0,0]}),
         );
-        let result = engine.execute(&op);
+        let result = engine.execute(&op, &vars);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), GeometryError::ObjectNotFound(_)));
     }
 
     #[test]
     fn rebuild_from_operations() {
+        let vars = HashMap::new();
         let ops = vec![
             make_named_op(
                 1,
@@ -714,8 +785,8 @@ mod tests {
             operations: ops,
             objects: Vec::new(),
         };
-        let engine = geom.rebuild_with_engine().unwrap();
-        assert_eq!(geom.objects.len(), 3); // Box1 created, Cyl1 created, Box1 moved (updated)
+        let engine = geom.rebuild_with_engine(&vars).unwrap();
+        assert_eq!(geom.objects.len(), 3);
         assert!(engine.get_brep("Box1").is_some());
         assert!(engine.get_brep("Cyl1").is_some());
     }
@@ -723,13 +794,14 @@ mod tests {
     #[test]
     fn rename_object() {
         let mut engine = GeometryEngine::new();
+        let vars = HashMap::new();
         engine
             .execute(&make_named_op(
                 1,
                 OperationCommand::CreateBox,
                 "Box1",
                 json!({"origin": [0,0,0], "size": [5, 5, 5]}),
-            ))
+            ), &vars)
             .unwrap();
 
         let rename_op = make_op(
@@ -737,8 +809,61 @@ mod tests {
             OperationCommand::Rename,
             json!({"target": "Box1", "name": "MyBox"}),
         );
-        engine.execute(&rename_op).unwrap();
+        engine.execute(&rename_op, &vars).unwrap();
         assert!(engine.get_brep("Box1").is_none());
         assert!(engine.get_brep("MyBox").is_some());
+    }
+
+    #[test]
+    fn parametric_box_with_string_dimensions() {
+        let mut engine = GeometryEngine::new();
+        let vars = HashMap::new();
+        let op = make_named_op(
+            1,
+            OperationCommand::CreateBox,
+            "Box1",
+            json!({"origin": [0,0,0], "width": "10mm", "height": "5mm", "depth": "3mm"}),
+        );
+        let result = engine.execute(&op, &vars).unwrap().unwrap();
+        assert_eq!(result.name, "Box1");
+        assert!(result.bounding_box.is_some());
+    }
+
+    #[test]
+    fn parametric_box_with_variable_reference() {
+        let mut engine = GeometryEngine::new();
+        let mut vars = HashMap::new();
+        vars.insert("w".to_string(), 10.0);
+        vars.insert("h".to_string(), 5.0);
+        vars.insert("d".to_string(), 3.0);
+        let op = make_named_op(
+            1,
+            OperationCommand::CreateBox,
+            "Box1",
+            json!({"origin": [0,0,0], "width": "w", "height": "h", "depth": "d"}),
+        );
+        let result = engine.execute(&op, &vars).unwrap().unwrap();
+        assert_eq!(result.name, "Box1");
+        assert!(result.bounding_box.is_some());
+    }
+
+    #[test]
+    fn parametric_box_with_expression() {
+        let mut engine = GeometryEngine::new();
+        let mut vars = HashMap::new();
+        vars.insert("base".to_string(), 5.0);
+        let op = make_named_op(
+            1,
+            OperationCommand::CreateBox,
+            "Box1",
+            json!({"origin": [0,0,0], "width": "base * 2", "height": "base", "depth": "base / 2"}),
+        );
+        let result = engine.execute(&op, &vars).unwrap().unwrap();
+        assert_eq!(result.name, "Box1");
+        let bbox = result.bounding_box.unwrap();
+        // width=10, height=5, depth=2.5
+        assert!((bbox.max[0] - 10.0).abs() < 0.1);
+        assert!((bbox.max[1] - 5.0).abs() < 0.1);
+        assert!((bbox.max[2] - 2.5).abs() < 0.1);
     }
 }
