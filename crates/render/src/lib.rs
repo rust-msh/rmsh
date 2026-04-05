@@ -3,10 +3,12 @@ pub mod arrow_pipeline;
 pub mod camera;
 pub mod colormap;
 pub mod far_field;
+pub mod field_mapping;
 pub mod field_pipeline;
 pub mod mesh_data;
 pub mod scene;
 pub mod slice;
+pub mod surface_extraction;
 
 pub use camera::{OrbitCamera, ViewPreset};
 pub use colormap::ColormapType;

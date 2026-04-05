@@ -615,7 +615,7 @@ Project.emsp.results/
 | 结果过期 (is_stale) 机制 | `domain` | ✅ 完成 |
 | 版本迁移策略实现 | `domain` | ✅ 完成 |
 
-### Milestone 4：几何建模 🔄 部分完成
+### Milestone 4：几何建模 ✅ 完成
 
 > **目标**：基于 rcad B-Rep 内核支持参数化 3D 几何建模
 >
@@ -628,12 +628,12 @@ Project.emsp.results/
 | 布尔运算 (Unite/Subtract/Intersect) | `domain` | `rcad-algorithms` (boolean_op) | ✅ 完成 |
 | 几何变换 (Move/Rotate/Scale/Mirror) | `domain` | `rcad-kernel` (BRep::apply_transform, DAffine3) | ✅ 完成 |
 | 扫掠操作 (Extrude/Revolve/SweepPipe) | `domain` | `rcad-modeling` (extrude/revolve/sweep_pipe) | ✅ 完成 |
-| 参数化尺寸（变量引用） | `domain` | — | 🔲 未开始 |
+| 参数化尺寸（变量引用） | `domain` | — | ✅ 完成 |
 | 3D 几何渲染（实体 + 线框） | `render` | `rcad-render` (Tessellator/WgpuRenderer) | ✅ 完成 |
 | 几何拾取与选择 | `render` | `rcad-render` (SelectionState, pick_face/pick_edge) | ✅ 完成 |
 | 坐标系可视化 | `render` | `rcad-render` (axes + grid) | ✅ 完成 |
 | CAD 导入 (STEP/STL) | `domain` | `rcad-step` (STEP import/export with colors) | ✅ 完成 |
-| 几何建模 UI 面板 | `components` | — | 🔲 未开始 |
+| 几何建模 UI 面板 | `components` | — | ✅ 完成 |
 
 ### Milestone 5：求解器集成 🔲 未开始
 
@@ -665,7 +665,7 @@ Project.emsp.results/
 | 模型验证 (Validation) | `solver` | 🔲 未开始 |
 | 求解器日志 | `solver` | 🔲 未开始 |
 
-### Milestone 6：2D 报告系统 🔄 进行中
+### Milestone 6：2D 报告系统 ✅ 已完成
 
 > **目标**：实现 HFSS/Q3D 结果的 2D 图表可视化
 
@@ -679,23 +679,23 @@ Project.emsp.results/
 | 极坐标方向图 | `components` | ✅ 完成 |
 | 收敛曲线（HFSS: Delta S / Q3D: Delta Energy） | `components` | ✅ 完成 |
 | RLCG 矩阵 vs 频率曲线 (Q3D) | `components` | ✅ 完成 |
-| RLCG 矩阵数据表格 + 热力图 (Q3D) | `components` | 🔲 未开始 |
+| RLCG 矩阵数据表格 + 热力图 (Q3D) | `components` | ✅ 完成 |
 | Marker / Cursor 交互 | `components` | ✅ 完成 |
 | 数据表格 | `components` | ✅ 完成 |
-| 3D 矩形图（参数扫描） | `components` | 🔲 未开始 |
+| 3D 矩形图（参数扫描） | `components` | ✅ 完成 |
 | ReportPanel 集成到 Dock | `app` | ✅ 完成 |
 | CSV 导出 | `components` | ✅ 完成 |
 
-### Milestone 7：3D 场数据管线 🔲 未开始
+### Milestone 7：3D 场数据管线 🔄 进行中
 
 > **目标**：连通真实仿真结果到 3D 渲染管线
 
 | 任务 | 模块 | 状态 |
 |------|------|------|
-| Gmsh MSH 4.1 加载器 | `domain` | 🔲 未开始 |
-| .emsfld 二进制内存映射加载 | `domain` | 🔲 未开始 |
-| 网格表面提取（四面体 → 三角形） | `render` | 🔲 未开始 |
-| 场数据 → 顶点颜色映射 | `render` | 🔲 未开始 |
+| Gmsh MSH 4.1 加载器 | `domain` | ✅ 完成 |
+| .emsfld 二进制内存映射加载 | `domain` | ✅ 完成 |
+| 网格表面提取（四面体 → 三角形） | `render` | ✅ 完成 |
+| 场数据 → 顶点颜色映射 | `render` | ✅ 完成 |
 | 网格线框/实体渲染（真实数据） | `render` | 🔲 未开始 |
 | 表面云图渲染（真实场数据） | `render` | 🔲 未开始 |
 | 矢量箭头渲染（真实场数据） | `render` | 🔲 未开始 |
@@ -722,20 +722,23 @@ Project.emsp.results/
 | Q3D Net/Terminal 编辑 UI | `components` | 🔲 未开始 |
 | Q3D 验证检查（Net/Terminal） | `solver` | 🔲 未开始 |
 
-### Milestone 9：Optimetrics 🔲 未开始
+### Milestone 9：Optimetrics ✅ 已完成
 
 > **目标**：参数扫描与优化
 
 | 任务 | 模块 | 状态 |
 |------|------|------|
-| 参数扫描引擎 | `solver` | 🔲 未开始 |
-| 优化算法（QN/Pattern/GA/SNLP） | `solver` | 🔲 未开始 |
-| 灵敏度分析 | `solver` | 🔲 未开始 |
-| 统计分析（蒙特卡罗） | `solver` | 🔲 未开始 |
-| 交互式调参 (Tuning) | `app` | 🔲 未开始 |
-| 优化结果汇总 (summary.json) | `solver` | 🔲 未开始 |
-| 优化收敛曲线 | `components` | 🔲 未开始 |
-| 参数化对比图 | `components` | 🔲 未开始 |
+| 参数扫描引擎 | `domain` | ✅ 完成 |
+| 优化算法（QN/Pattern/GA/SNLP） | `domain` | ✅ 完成 |
+| 灵敏度分析 | `domain` | ✅ 完成 |
+| 统计分析（蒙特卡罗） | `domain` | ✅ 完成 |
+| 交互式调参 (Tuning) | `components` | ✅ 完成 |
+| 优化结果汇总 (summary.json) | `domain` | ✅ 完成 |
+| 优化收敛曲线 | `components` | ✅ 完成 |
+| 参数化对比图 | `components` | ✅ 完成 |
+| Optimetrics 设置 UI | `components` | ✅ 完成 |
+| 灵敏度条形图 | `components` | ✅ 完成 |
+| 蒙特卡罗直方图 | `components` | ✅ 完成 |
 
 ### Milestone 10：平台与部署 🔄 部分完成
 
@@ -766,15 +769,15 @@ Milestone 0: 基础框架         [███████████████
 Milestone 1: 3D 渲染引擎      [████████████████████] 100%  ✅
 Milestone 2: Touchstone 支持   [████████████████████] 100%  ✅
 Milestone 3: 工程文件 I/O      [████████████████████] 100%  ✅
-Milestone 4: 几何建模          [████████████████    ]  82%  🔄
+Milestone 4: 几何建模          [████████████████████] 100%  ✅
 Milestone 5: 求解器集成        [                    ]   0%  🔲
-Milestone 6: 2D 报告系统       [████████████████    ]  86%  🔄
-Milestone 7: 3D 场数据管线     [                    ]   0%  🔲
+Milestone 6: 2D 报告系统       [████████████████████] 100%  ✅
+Milestone 7: 3D 场数据管线     [██████████          ]  50%  🔄
 Milestone 8: Q3D 专项功能      [                    ]   0%  🔲
-Milestone 9: Optimetrics       [                    ]   0%  🔲
+Milestone 9: Optimetrics       [████████████████████] 100%  ✅
 Milestone 10: 平台与部署        [████                ]  20%  🔄
 ─────────────────────────────────────────────────────────────
-整体进度                       [███████████         ]  53%
+整体进度                       [██████████████      ]  68%
 ```
 
 ### 建议开发优先级

@@ -27,6 +27,17 @@ pub mod dependency;
 pub mod file_io;
 pub mod worker_protocol;
 
+// Milestone 7: Data loaders
+pub mod msh_loader;
+pub mod emsfld_loader;
+
+// Milestone 9: Optimetrics
+pub mod sweep_engine;
+pub mod optimetrics_result;
+pub mod optimization;
+pub mod sensitivity;
+pub mod statistical;
+
 // Re-export top-level types for convenience
 pub use project::EmProject;
 pub use design::Design;

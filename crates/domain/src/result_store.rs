@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::emsfld_loader::{EmsFldFile, FieldError};
+use crate::msh_loader::{MeshError, MshMesh};
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -22,6 +25,10 @@ pub enum ResultError {
     NotFound(String),
     #[error("Invalid result data: {0}")]
     InvalidData(String),
+    #[error("Mesh error: {0}")]
+    Mesh(#[from] MeshError),
+    #[error("Field data error: {0}")]
+    Field(#[from] FieldError),
 }
 
 // ---------------------------------------------------------------------------
@@ -377,6 +384,8 @@ pub enum CachedResult {
     Convergence(ConvergenceData),
     RlcgMatrix(RlcgMatrixData),
     FarField(FarFieldData),
+    Mesh(MshMesh),
+    FieldData(EmsFldFile),
 }
 
 // ---------------------------------------------------------------------------
@@ -483,6 +492,42 @@ impl ResultDataStore {
         }
         match self.cache.get(relative_path) {
             Some(CachedResult::FarField(d)) => Ok(d),
+            _ => Err(ResultError::NotFound(relative_path.to_string())),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Mesh loading (.msh)
+    // -----------------------------------------------------------------------
+
+    /// Load a Gmsh MSH 4.1 mesh file.
+    pub fn load_mesh(&mut self, relative_path: &str) -> Result<&MshMesh, ResultError> {
+        if !self.cache.contains_key(relative_path) {
+            let full_path = self.base_path.join(relative_path);
+            let mesh = MshMesh::load(&full_path)?;
+            self.cache
+                .insert(relative_path.to_string(), CachedResult::Mesh(mesh));
+        }
+        match self.cache.get(relative_path) {
+            Some(CachedResult::Mesh(m)) => Ok(m),
+            _ => Err(ResultError::NotFound(relative_path.to_string())),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Field data loading (.emsfld)
+    // -----------------------------------------------------------------------
+
+    /// Load an EMStudio field data file (header + index; blocks loaded lazily).
+    pub fn load_field_data(&mut self, relative_path: &str) -> Result<&EmsFldFile, ResultError> {
+        if !self.cache.contains_key(relative_path) {
+            let full_path = self.base_path.join(relative_path);
+            let fld = EmsFldFile::open(&full_path)?;
+            self.cache
+                .insert(relative_path.to_string(), CachedResult::FieldData(fld));
+        }
+        match self.cache.get(relative_path) {
+            Some(CachedResult::FieldData(f)) => Ok(f),
             _ => Err(ResultError::NotFound(relative_path.to_string())),
         }
     }
