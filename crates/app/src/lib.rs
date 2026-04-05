@@ -972,7 +972,12 @@ impl eframe::App for App {
                 geometry_generation: self.geometry_generation,
                 report_panels: &mut self.report_panels,
             };
-            DockArea::new(&mut self.dock_state).show_inside(ui, &mut viewer);
+            DockArea::new(&mut self.dock_state)
+                .show_leaf_collapse_buttons(false)
+                .show_close_buttons(true)
+                .show_leaf_close_all_buttons(false)
+                .show_inside(ui, &mut viewer);
+                
         });
     }
 }
