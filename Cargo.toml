@@ -27,7 +27,7 @@ egui = "0.33"
 egui_table = "0.7"
 egui_tiles = "0.14"
 egui_extras = "0.33"
-egui_plot = "0.33"
+egui_plot = "0.34"
 egui_dock = "0.18"
 egui-wgpu = "0.33"
 serde = { version = "1.0", features = ["derive"] }

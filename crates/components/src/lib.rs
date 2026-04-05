@@ -4,6 +4,7 @@ pub mod message_manager;
 pub mod project_tree;
 pub mod properties_panel;
 pub mod qat;
+pub mod report_panel;
 pub mod ribbon;
 pub mod status_bar;
 pub mod theme;

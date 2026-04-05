@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 egui.workspace = true
 egui_dock.workspace = true
+egui_plot.workspace = true
 emstudio-domain = { path = "../domain" }

@@ -16,6 +16,8 @@ pub mod output_variable;
 pub mod field_overlay;
 pub mod optimetrics;
 pub mod report;
+pub mod result_store;
+pub mod quantity_expr;
 pub mod solution_index;
 pub mod design;
 pub mod project;

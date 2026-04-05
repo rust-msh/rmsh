@@ -665,26 +665,26 @@ Project.emsp.results/
 | 模型验证 (Validation) | `solver` | 🔲 未开始 |
 | 求解器日志 | `solver` | 🔲 未开始 |
 
-### Milestone 6：2D 报告系统 🔲 未开始
+### Milestone 6：2D 报告系统 🔄 进行中
 
 > **目标**：实现 HFSS/Q3D 结果的 2D 图表可视化
 
 | 任务 | 模块 | 状态 |
 |------|------|------|
-| ResultDataStore 数据管理 | `domain` | 🔲 未开始 |
-| JSON/Touchstone 结果加载 | `domain` | 🔲 未开始 |
-| Trace/QuantityExpression 系统 | `domain` | 🔲 未开始 |
-| S 参数矩形图 (egui_plot) | `components` | 🔲 未开始 |
-| Smith 圆图 | `components` | 🔲 未开始 |
-| 极坐标方向图 | `components` | 🔲 未开始 |
-| 收敛曲线（HFSS: Delta S / Q3D: Delta Energy） | `components` | 🔲 未开始 |
-| RLCG 矩阵 vs 频率曲线 (Q3D) | `components` | 🔲 未开始 |
+| ResultDataStore 数据管理 | `domain` | ✅ 完成 |
+| JSON/Touchstone 结果加载 | `domain` | ✅ 完成 |
+| Trace/QuantityExpression 系统 | `domain` | ✅ 完成 |
+| S 参数矩形图 (egui_plot) | `components` | ✅ 完成 |
+| Smith 圆图 | `components` | ✅ 完成 |
+| 极坐标方向图 | `components` | ✅ 完成 |
+| 收敛曲线（HFSS: Delta S / Q3D: Delta Energy） | `components` | ✅ 完成 |
+| RLCG 矩阵 vs 频率曲线 (Q3D) | `components` | ✅ 完成 |
 | RLCG 矩阵数据表格 + 热力图 (Q3D) | `components` | 🔲 未开始 |
-| Marker / Cursor 交互 | `components` | 🔲 未开始 |
-| 数据表格 | `components` | 🔲 未开始 |
+| Marker / Cursor 交互 | `components` | ✅ 完成 |
+| 数据表格 | `components` | ✅ 完成 |
 | 3D 矩形图（参数扫描） | `components` | 🔲 未开始 |
-| ReportPanel 集成到 Dock | `app` | 🔲 未开始 |
-| CSV 导出 | `components` | 🔲 未开始 |
+| ReportPanel 集成到 Dock | `app` | ✅ 完成 |
+| CSV 导出 | `components` | ✅ 完成 |
 
 ### Milestone 7：3D 场数据管线 🔲 未开始
 
@@ -768,13 +768,13 @@ Milestone 2: Touchstone 支持   [███████████████�
 Milestone 3: 工程文件 I/O      [████████████████████] 100%  ✅
 Milestone 4: 几何建模          [████████████████    ]  82%  🔄
 Milestone 5: 求解器集成        [                    ]   0%  🔲
-Milestone 6: 2D 报告系统       [                    ]   0%  🔲
+Milestone 6: 2D 报告系统       [████████████████    ]  86%  🔄
 Milestone 7: 3D 场数据管线     [                    ]   0%  🔲
 Milestone 8: Q3D 专项功能      [                    ]   0%  🔲
 Milestone 9: Optimetrics       [                    ]   0%  🔲
 Milestone 10: 平台与部署        [████                ]  20%  🔄
 ─────────────────────────────────────────────────────────────
-整体进度                       [██████████          ]  47%
+整体进度                       [███████████         ]  53%
 ```
 
 ### 建议开发优先级

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -6,6 +7,7 @@ use egui_dock::{DockArea, DockState, TabViewer};
 
 use emstudio_components::dock;
 use emstudio_components::message_manager::{self, BottomTab, MessageEntry};
+use emstudio_components::report_panel::ReportPanel;
 use emstudio_components::ribbon::{
     RibbonAction, RibbonState, RibbonTab, build_default_tabs, show_ribbon,
 };
@@ -13,6 +15,7 @@ use emstudio_components::status_bar::{self, StatusBarState};
 use emstudio_components::{LeftPanelTab, menu_bar, qat};
 use emstudio_domain::{Project, SimulationStatus};
 use emstudio_domain::geometry_engine::GeometryEngine;
+use emstudio_domain::result_store::ResultDataStore;
 use emstudio_infra::{Backend, RunMode, default_backend};
 #[cfg(not(target_arch = "wasm32"))]
 use emstudio_infra::{load_project_from_file, save_project_to_file};
@@ -43,13 +46,16 @@ fn spawn_future<F: std::future::Future<Output = ()> + 'static>(f: F) {
 enum CenterTab {
     Modeling,
     Result,
+    /// A named report tab. The String is the report name.
+    Report(String),
 }
 
 impl CenterTab {
-    fn title(&self) -> &'static str {
+    fn title(&self) -> String {
         match self {
-            Self::Modeling => "Modeling",
-            Self::Result => "Result",
+            Self::Modeling => "Modeling".into(),
+            Self::Result => "Result".into(),
+            Self::Report(name) => name.clone(),
         }
     }
 }
@@ -59,6 +65,7 @@ struct CenterTabViewer<'a> {
     viewport: &'a mut SceneViewport,
     engine: &'a GeometryEngine,
     geometry_generation: u64,
+    report_panels: &'a mut HashMap<String, ReportPanel>,
 }
 
 impl TabViewer for CenterTabViewer<'_> {
@@ -83,7 +90,25 @@ impl TabViewer for CenterTabViewer<'_> {
                     ui.label("No result yet.");
                 }
             }
+            CenterTab::Report(name) => {
+                if let Some(panel) = self.report_panels.get_mut(name) {
+                    panel.ui(ui);
+                } else {
+                    ui.label(format!("Report '{}' not found", name));
+                }
+            }
         }
+    }
+
+    fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
+        matches!(tab, CenterTab::Report(_))
+    }
+
+    fn on_close(&mut self, tab: &mut Self::Tab) -> egui_dock::widgets::tab_viewer::OnCloseResponse {
+        if let CenterTab::Report(name) = tab {
+            self.report_panels.remove(name);
+        }
+        egui_dock::widgets::tab_viewer::OnCloseResponse::Close
     }
 }
 
@@ -107,6 +132,10 @@ pub struct App {
     messages: Vec<MessageEntry>,
     file_dialog_rx: mpsc::Receiver<FileDialogResult>,
     file_dialog_tx: mpsc::Sender<FileDialogResult>,
+
+    // Report system
+    report_panels: HashMap<String, ReportPanel>,
+    result_store: Option<ResultDataStore>,
 
     // Layout state
     show_project_manager: bool,
@@ -204,6 +233,10 @@ impl App {
                     self.status_text = format!("Opened: {}", path.display());
                     self.log_text
                         .push_str(&format!("\n[file] opened {}", path.display()));
+                    // Initialize result store from project path
+                    self.result_store = Some(ResultDataStore::from_project_path(path));
+                    // Clear existing report panels on new project load
+                    self.report_panels.clear();
                 }
                 Err(e) => {
                     self.status_text = format!("Open failed: {e}");
@@ -286,6 +319,10 @@ impl App {
             messages: vec![MessageEntry::info("EmStudio started.")],
             file_dialog_rx: rx,
             file_dialog_tx: tx,
+
+            // Report system
+            report_panels: HashMap::new(),
+            result_store: None,
 
             // Layout defaults
             show_project_manager: true,
@@ -489,6 +526,11 @@ impl App {
             // File dialog actions are no-ops here — handled below
             RibbonAction::SaveProject | RibbonAction::SaveAs | RibbonAction::OpenProject => {}
 
+            // -- Reports --
+            RibbonAction::CreateReport => {
+                self.create_default_report();
+            }
+
             // -- All other actions: mark dirty + stub --
             other => {
                 let name = format!("{:?}", other);
@@ -507,6 +549,142 @@ impl App {
             RibbonAction::SaveAs => self.do_save_as(ctx),
             RibbonAction::OpenProject => self.do_open(ctx),
             _ => self.on_ribbon_action(action),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Report creation
+    // -----------------------------------------------------------------------
+
+    fn create_default_report(&mut self) {
+        use emstudio_domain::report::*;
+
+        // Generate unique report name
+        let report_num = self.report_panels.len() + 1;
+        let name = format!("S Parameter Plot {}", report_num);
+
+        let report = Report {
+            name: name.clone(),
+            category: ReportCategory::SParameter,
+            chart_type: ChartType::Rectangular,
+            solution: "Setup1".into(),
+            domain: ReportDomain {
+                domain_type: "Frequency".into(),
+                primary_sweep: "Freq".into(),
+                fixed_values: None,
+            },
+            traces: vec![ReportTrace {
+                name: "dB(S(1,1))".into(),
+                expression: "dB(S(1,1))".into(),
+                style: Some(TraceStyle {
+                    color: [0, 0, 255],
+                    line_width: 2,
+                    line_style: "Solid".into(),
+                }),
+                parametric_values: None,
+                fixed_values: None,
+            }],
+            x_axis: Some(AxisConfig {
+                label: "Frequency".into(),
+                unit: "GHz".into(),
+                min: None,
+                max: None,
+                auto_range: Some(true),
+                scale: None,
+            }),
+            y_axis: Some(AxisConfig {
+                label: "Magnitude".into(),
+                unit: "dB".into(),
+                min: None,
+                max: None,
+                auto_range: Some(true),
+                scale: None,
+            }),
+            markers: Vec::new(),
+            limit_lines: Vec::new(),
+            far_field_setup: None,
+            matrix_type: None,
+            display_options: None,
+        };
+
+        let mut panel = ReportPanel::new(report);
+
+        // If we have a result store with S-parameter data, try to load it
+        self.try_load_report_traces(&mut panel);
+
+        self.report_panels.insert(name.clone(), panel);
+
+        // Add tab to dock
+        self.dock_state
+            .main_surface_mut()
+            .push_to_first_leaf(CenterTab::Report(name.clone()));
+
+        self.status_text = format!("Created report: {}", name);
+        self.log_text
+            .push_str(&format!("\n[report] created: {}", name));
+        self.messages
+            .push(MessageEntry::info(format!("Report '{}' created", name)));
+    }
+
+    fn try_load_report_traces(&self, panel: &mut ReportPanel) {
+        use emstudio_domain::quantity_expr::{EvalContext, QuantityExpression};
+
+        // Try to load from result store if available
+        if let Some(store) = &self.result_store {
+            let s_param_path = store.base_path().join("s_parameters.json");
+            if s_param_path.exists() {
+                if let Ok(data) =
+                    emstudio_domain::result_store::load_s_parameters_from_file(&s_param_path)
+                {
+                    // Collect trace info first to avoid borrow conflict
+                    let trace_info: Vec<_> = panel
+                        .report
+                        .traces
+                        .iter()
+                        .map(|t| (t.name.clone(), t.expression.clone(), t.style.clone()))
+                        .collect();
+                    for (name, expression, style) in &trace_info {
+                        if let Ok(expr) = QuantityExpression::parse(expression) {
+                            let ctx = EvalContext::SParameter { data: &data };
+                            if let Ok(points) = expr.evaluate(&ctx) {
+                                panel.set_trace_data(
+                                    name.clone(),
+                                    points,
+                                    style.as_ref(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // If no data was loaded, provide demo data so the chart isn't empty
+        if panel.trace_data.is_empty() {
+            self.load_demo_data(panel);
+        }
+    }
+
+    fn load_demo_data(&self, panel: &mut ReportPanel) {
+        // Collect trace info first to avoid borrow conflict
+        let trace_info: Vec<_> = panel
+            .report
+            .traces
+            .iter()
+            .map(|t| (t.name.clone(), t.style.clone()))
+            .collect();
+        for (name, style) in &trace_info {
+            // Generate synthetic S11 data (typical patch antenna response)
+            let mut points = Vec::with_capacity(201);
+            for i in 0..=200 {
+                let freq = 1.0 + i as f64 * 0.02; // 1-5 GHz
+                let f0 = 2.45; // Resonant frequency
+                let bw = 0.15; // Bandwidth
+                let delta = (freq - f0) / bw;
+                let s11_db = -5.0 - 25.0 / (1.0 + delta * delta);
+                points.push([freq, s11_db]);
+            }
+            panel.set_trace_data(name.clone(), points, style.as_ref());
         }
     }
 }
@@ -624,13 +802,14 @@ impl eframe::App for App {
         // CENTRAL PANEL
         // =================================================================
 
-        // 7. Central Workspace: 3D Modeler + Result dock tabs
+        // 7. Central Workspace: 3D Modeler + Result + Report dock tabs
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut viewer = CenterTabViewer {
                 project: &self.project,
                 viewport: &mut self.viewport,
                 engine: &self.engine,
                 geometry_generation: self.geometry_generation,
+                report_panels: &mut self.report_panels,
             };
             DockArea::new(&mut self.dock_state).show_inside(ui, &mut viewer);
         });
