@@ -1,3 +1,9 @@
 [submodule "vendor/rcad"]
 	path = vendor/rcad
 	url = https://github.com/cad-rs/rcad.git
+[submodule "vendor/rem"]
+	path = vendor/rem
+	url = https://github.com/javagg/rem2.git
+[submodule "vendor/rmsh"]
+	path = vendor/rmsh
+	url = https://github.com/rust-msh/rmsh.git

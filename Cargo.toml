@@ -46,6 +46,13 @@ rfd = "0.15"
 rmp-serde = "1"
 tempfile = "3"
 pollster = "0.4"
+nalgebra = { version = "0.33", features = ["serde-serialize"] }
+num-complex = "0.4"
+log = "0.4"
+env_logger = "0.11"
+serde_yaml = "0.9"
+clap = { version = "4", features = ["derive"] }
+rmetis = { path = "vendor/rem/vendor/rmetis", default-features = false }
 
 # rcad geometry kernel (git submodule at vendor/rcad)
 rcad-kernel = { path = "vendor/rcad/libs/rcad-kernel" }
@@ -53,3 +60,25 @@ rcad-modeling = { path = "vendor/rcad/libs/rcad-modeling" }
 rcad-algorithms = { path = "vendor/rcad/libs/rcad-algorithms" }
 rcad-render = { path = "vendor/rcad/libs/rcad-render" }
 rcad-step = { path = "vendor/rcad/libs/rcad-step" }
+
+# rmsh mesh generation (git submodule at vendor/rmsh)
+rmsh-model = { path = "vendor/rmsh/crates/model" }
+rmsh-geo = { path = "vendor/rmsh/crates/geo" }
+rmsh-io = { path = "vendor/rmsh/crates/io" }
+rmsh-algo = { path = "vendor/rmsh/crates/algo" }
+
+# rem electromagnetic solver (git submodule at vendor/rem)
+rem-core = { path = "vendor/rem/crates/core" }
+rem-config = { path = "vendor/rem/crates/config" }
+rem-mesh = { path = "vendor/rem/crates/mesh" }
+rem-materials = { path = "vendor/rem/crates/materials" }
+rem-bc = { path = "vendor/rem/crates/bc" }
+rem-electrostatic = { path = "vendor/rem/crates/electrostatic" }
+rem-magnetostatic = { path = "vendor/rem/crates/magnetostatic" }
+rem-eigenmode = { path = "vendor/rem/crates/eigenmode" }
+rem-driven = { path = "vendor/rem/crates/driven" }
+rem-mom = { path = "vendor/rem/crates/mom" }
+rem-bem = { path = "vendor/rem/crates/bem" }
+rem-sbr = { path = "vendor/rem/crates/sbr" }
+rem-result = { path = "vendor/rem/crates/result" }
+rem-parallel = { path = "vendor/rem/crates/parallel" }

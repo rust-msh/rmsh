@@ -1,4 +1,22 @@
+//! EMStudio solver crate — orchestrates rmsh mesh generation and rem EM solvers.
+
+pub mod error;
+pub mod config;
+pub mod mesh_bridge;
+pub mod solver_bridge;
+pub mod pipeline;
+pub mod progress;
+pub mod validate;
+
 use emstudio_domain::{EmModel, SolveResult};
+
+pub use error::SolverError;
+pub use pipeline::{SolverPipeline, SolverOutput};
+pub use progress::{ProgressCallback, SolverProgress, NoOpProgress};
+
+// ---------------------------------------------------------------------------
+// Legacy interface (kept for backward compatibility with worker crate)
+// ---------------------------------------------------------------------------
 
 pub trait Solver {
     fn solve(&self, model: &EmModel) -> SolveResult;

@@ -635,34 +635,37 @@ Project.emsp.results/
 | CAD 导入 (STEP/STL) | `domain` | `rcad-step` (STEP import/export with colors) | ✅ 完成 |
 | 几何建模 UI 面板 | `components` | — | ✅ 完成 |
 
-### Milestone 5：求解器集成 🔲 未开始
+### Milestone 5：求解器集成 🔄 进行中
 
 > **目标**：集成 rmsh 网格剖分和 Rem 求解器，实现完整仿真流程
 >
-> **依赖**：rmsh（git submodule，vendor/rmsh，来源 https://github.com/rust-msh/rmsh.git），提供四面体/三角形网格剖分；Rem 提供电磁仿真求解
+> **依赖**：rmsh（git submodule，vendor/rmsh，来源 https://github.com/rust-msh/rmsh.git），提供四面体/三角形网格剖分；Rem（git submodule，vendor/rem，来源 https://github.com/javagg/rem2.git）提供电磁仿真求解
 >
 > **仿真流程**：用户点击"仿真"按钮后，系统依次执行：模型验证 → **网格剖分（rmsh）** → 求解（Rem）→ 后处理
 
 | 任务 | 模块 | 状态 |
 |------|------|------|
-| rmsh 库引入（git submodule） | `vendor/rmsh` | 🔲 未开始 |
-| rmsh Rust 绑定 / 接口封装 | `solver` | 🔲 未开始 |
-| B-Rep → rmsh 输入格式转换 | `solver` | 🔲 未开始 |
-| 网格剖分执行与参数控制 | `solver` | 🔲 未开始 |
-| 网格质量检查与统计 | `solver` | 🔲 未开始 |
-| 网格文件输出（供求解器读取） | `solver` | 🔲 未开始 |
-| Rem 库 Rust 绑定 | `solver` | 🔲 未开始 |
-| HFSS FEM 求解调度 | `solver` | 🔲 未开始 |
-| Q3D MoM 求解调度 | `solver` | 🔲 未开始 |
+| rmsh 库引入（git submodule） | `vendor/rmsh` | ✅ 完成 |
+| Rem 库引入（git submodule） | `vendor/rem` | ✅ 完成 |
+| rmsh Rust 绑定 / 接口封装 | `solver` | ✅ 完成 |
+| B-Rep → rmsh 输入格式转换 | `solver` | ✅ 完成 |
+| 网格剖分执行与参数控制 | `solver` | ✅ 完成 |
+| 网格质量检查与统计 | `solver` | ✅ 完成 |
+| 网格文件输出（供求解器读取） | `solver` | ✅ 完成 |
+| Rem 库 Rust 绑定 | `solver` | ✅ 完成 |
+| Design → PalaceConfig 映射 | `solver` | ✅ 完成 |
+| HFSS FEM 求解调度 | `solver` | ✅ 完成 |
+| Q3D MoM 求解调度 | `solver` | ✅ 完成 |
+| 仿真进度回调（含网格剖分进度） | `solver` → `app` | ✅ 完成 |
+| 模型验证 (Validation) | `solver` | ✅ 完成 |
+| 端到端 Pipeline 编排 | `solver` | ✅ 完成 |
 | 自适应网格加密循环（rmsh 重剖分 → Rem 重求解） | `solver` | 🔲 未开始 |
 | 频率扫描执行 | `solver` | 🔲 未开始 |
-| 仿真进度回调（含网格剖分进度） | `solver` → `app` | 🔲 未开始 |
 | 收敛历史实时写入 | `solver` | 🔲 未开始 |
 | 场数据导出 (.emsfld) | `solver` | 🔲 未开始 |
 | S 参数提取与写入 | `solver` | 🔲 未开始 |
 | RLCG 矩阵提取与写入 | `solver` | 🔲 未开始 |
 | 远场/近场积分计算 | `solver` | 🔲 未开始 |
-| 模型验证 (Validation) | `solver` | 🔲 未开始 |
 | 求解器日志 | `solver` | 🔲 未开始 |
 
 ### Milestone 6：2D 报告系统 ✅ 已完成
@@ -770,14 +773,14 @@ Milestone 1: 3D 渲染引擎      [███████████████
 Milestone 2: Touchstone 支持   [████████████████████] 100%  ✅
 Milestone 3: 工程文件 I/O      [████████████████████] 100%  ✅
 Milestone 4: 几何建模          [████████████████████] 100%  ✅
-Milestone 5: 求解器集成        [                    ]   0%  🔲
+Milestone 5: 求解器集成        [████████████        ]  60%  🔄
 Milestone 6: 2D 报告系统       [████████████████████] 100%  ✅
 Milestone 7: 3D 场数据管线     [████████████████████] 100%  ✅
 Milestone 8: Q3D 专项功能      [████████████████████] 100%  ✅
 Milestone 9: Optimetrics       [████████████████████] 100%  ✅
 Milestone 10: 平台与部署        [████                ]  20%  🔄
 ─────────────────────────────────────────────────────────────
-整体进度                       [████████████████    ]  82%
+整体进度                       [█████████████████   ]  86%
 ```
 
 ### 建议开发优先级

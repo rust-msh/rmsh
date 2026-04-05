@@ -7,3 +7,35 @@ license.workspace = true
 [dependencies]
 emstudio-domain = { path = "../domain" }
 serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+glam.workspace = true
+nalgebra.workspace = true
+tempfile.workspace = true
+
+# rcad geometry kernel — surface tessellation
+rcad-kernel = { workspace = true }
+rcad-render = { workspace = true }
+
+# rmsh mesh generation
+rmsh-model = { workspace = true }
+rmsh-algo = { workspace = true }
+rmsh-io = { workspace = true }
+
+# rem electromagnetic solver
+rem-core = { workspace = true }
+rem-config = { workspace = true }
+rem-mesh = { workspace = true }
+rem-materials = { workspace = true }
+rem-bc = { workspace = true }
+rem-electrostatic = { workspace = true }
+rem-magnetostatic = { workspace = true }
+rem-eigenmode = { workspace = true }
+rem-driven = { workspace = true }
+rem-mom = { workspace = true }
+rem-bem = { workspace = true }
+rem-sbr = { workspace = true }
+rem-result = { workspace = true }
+rem-parallel = { workspace = true }
