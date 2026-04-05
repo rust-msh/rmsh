@@ -8,8 +8,7 @@ mod wasm_app {
     use emstudio_domain::Edition;
     use emstudio_infra::RunMode;
 
-    #[wasm_bindgen(start)]
-    pub async fn start() -> Result<(), JsValue> {
+    async fn start_on_canvas(canvas_id: &str) -> Result<(), JsValue> {
         console_error_panic_hook::set_once();
 
         let window =
@@ -18,8 +17,8 @@ mod wasm_app {
             .document()
             .ok_or_else(|| JsValue::from_str("document is unavailable"))?;
         let canvas = document
-            .get_element_by_id("emstudio-canvas")
-            .ok_or_else(|| JsValue::from_str("missing canvas #emstudio-canvas"))?
+            .get_element_by_id(canvas_id)
+            .ok_or_else(|| JsValue::from_str("missing canvas"))?
             .dyn_into::<web_sys::HtmlCanvasElement>()?;
 
         WebRunner::new()
@@ -29,6 +28,23 @@ mod wasm_app {
                 Box::new(|cc| Ok(Box::new(App::new(RunMode::LocalFirst, Edition::Basic, cc)))),
             )
             .await
+    }
+
+    #[wasm_bindgen]
+    pub async fn start_with_canvas_id(canvas_id: &str) -> Result<(), JsValue> {
+        start_on_canvas(canvas_id).await
+    }
+
+    #[wasm_bindgen]
+    pub async fn start_with_canvas_and_project(
+        canvas_id: &str,
+        _project_id: &str,
+        _project_name: &str,
+        _project_description: &str,
+        _owner_user_id: &str,
+        _member_count: u32,
+    ) -> Result<(), JsValue> {
+        start_on_canvas(canvas_id).await
     }
 }
 
