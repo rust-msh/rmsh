@@ -468,8 +468,8 @@ Project.emsp.results/
 
 | Crate | 代码量 | 成熟度 | 说明 |
 |-------|-------|--------|------|
-| **emstudio-domain** | ~2,900 LOC | ⭐⭐⭐⭐ | 完整领域模型（20 个子模块）、表达式引擎、验证、依赖图、文件 I/O |
-| **emstudio-render** | ~2,490 LOC | ⭐⭐⭐⭐⭐ | 完整的 wgpu 3D 渲染引擎，5 种可视化模式均已实现 |
+| **emstudio-domain** | ~3,800 LOC | ⭐⭐⭐⭐⭐ | 完整领域模型（23 个子模块）、表达式引擎、验证、依赖图、文件 I/O、VTK/SPICE 导出、RLCG→S转换 |
+| **emstudio-render** | ~3,500 LOC | ⭐⭐⭐⭐⭐ | 完整的 wgpu 3D 渲染引擎，8 种可视化模式，真实数据管线、等值面、网格质量、拾取、截图 |
 | **emstudio-touchstone** | ~1,131 LOC | ⭐⭐⭐⭐⭐ | 生产就绪，Touchstone v1.0/v2.0 完整解析和写入 |
 | **emstudio-app** | ~545 LOC | ⭐⭐⭐ | 主 UI 框架搭建完成，Ribbon + Tab + Dock 布局，WASM 后端轮询 |
 | **emstudio-worker** | ~260 LOC | ⭐⭐⭐ | Web Worker OPFS 后端 + 求解器调度（Local-First 模式） |
@@ -686,7 +686,7 @@ Project.emsp.results/
 | ReportPanel 集成到 Dock | `app` | ✅ 完成 |
 | CSV 导出 | `components` | ✅ 完成 |
 
-### Milestone 7：3D 场数据管线 🔄 进行中
+### Milestone 7：3D 场数据管线 ✅ 已完成
 
 > **目标**：连通真实仿真结果到 3D 渲染管线
 
@@ -696,31 +696,31 @@ Project.emsp.results/
 | .emsfld 二进制内存映射加载 | `domain` | ✅ 完成 |
 | 网格表面提取（四面体 → 三角形） | `render` | ✅ 完成 |
 | 场数据 → 顶点颜色映射 | `render` | ✅ 完成 |
-| 网格线框/实体渲染（真实数据） | `render` | 🔲 未开始 |
-| 表面云图渲染（真实场数据） | `render` | 🔲 未开始 |
-| 矢量箭头渲染（真实场数据） | `render` | 🔲 未开始 |
-| 切面可视化（真实场数据） | `render` | 🔲 未开始 |
-| 等值面提取（Marching Tetrahedra） | `render` | 🔲 未开始 |
-| 3D 远场方向图（真实数据） | `render` | 🔲 未开始 |
-| 网格质量可视化 | `render` | 🔲 未开始 |
-| GPU Picking + 场值探针 | `render` | 🔲 未开始 |
-| PNG 截图导出 | `render` | 🔲 未开始 |
-| VTK 导出（ParaView 兼容） | `domain` | 🔲 未开始 |
+| 网格线框/实体渲染（真实数据） | `render` | ✅ 完成 |
+| 表面云图渲染（真实场数据） | `render` | ✅ 完成 |
+| 矢量箭头渲染（真实场数据） | `render` | ✅ 完成 |
+| 切面可视化（真实场数据） | `render` | ✅ 完成 |
+| 等值面提取（Marching Tetrahedra） | `render` | ✅ 完成 |
+| 3D 远场方向图（真实数据） | `render` | ✅ 完成 |
+| 网格质量可视化 | `render` | ✅ 完成 |
+| GPU Picking + 场值探针 | `render` | ✅ 完成 |
+| PNG 截图导出 | `render` | ✅ 完成 |
+| VTK 导出（ParaView 兼容） | `domain` | ✅ 完成 |
 
-### Milestone 8：Q3D 专项功能 🔲 未开始
+### Milestone 8：Q3D 专项功能 ✅ 已完成
 
 > **目标**：完整的 Q3D 准静态分析工作流
 
 | 任务 | 模块 | 状态 |
 |------|------|------|
-| RlcgMatrixData 加载/序列化 | `domain` | 🔲 未开始 |
-| 等效电路 SPICE 导出 | `domain` | 🔲 未开始 |
-| RLCG → S 参数转换 | `domain` | 🔲 未开始 |
-| Q3D 电流密度场叠加 | `render` | 🔲 未开始 |
-| Q3D 电荷分布场叠加 | `render` | 🔲 未开始 |
-| Q3D 欧姆损耗场叠加 | `render` | 🔲 未开始 |
-| Q3D Net/Terminal 编辑 UI | `components` | 🔲 未开始 |
-| Q3D 验证检查（Net/Terminal） | `solver` | 🔲 未开始 |
+| RlcgMatrixData 加载/序列化 | `domain` | ✅ 完成 |
+| 等效电路 SPICE 导出 | `domain` | ✅ 完成 |
+| RLCG → S 参数转换 | `domain` | ✅ 完成 |
+| Q3D 电流密度场叠加 | `render` | ✅ 完成 |
+| Q3D 电荷分布场叠加 | `render` | ✅ 完成 |
+| Q3D 欧姆损耗场叠加 | `render` | ✅ 完成 |
+| Q3D Net/Terminal 编辑 UI | `components` | ✅ 完成 |
+| Q3D 验证检查（Net/Terminal） | `domain` | ✅ 完成 |
 
 ### Milestone 9：Optimetrics ✅ 已完成
 
@@ -772,12 +772,12 @@ Milestone 3: 工程文件 I/O      [██████████████�
 Milestone 4: 几何建模          [████████████████████] 100%  ✅
 Milestone 5: 求解器集成        [                    ]   0%  🔲
 Milestone 6: 2D 报告系统       [████████████████████] 100%  ✅
-Milestone 7: 3D 场数据管线     [██████████          ]  50%  🔄
-Milestone 8: Q3D 专项功能      [                    ]   0%  🔲
+Milestone 7: 3D 场数据管线     [████████████████████] 100%  ✅
+Milestone 8: Q3D 专项功能      [████████████████████] 100%  ✅
 Milestone 9: Optimetrics       [████████████████████] 100%  ✅
 Milestone 10: 平台与部署        [████                ]  20%  🔄
 ─────────────────────────────────────────────────────────────
-整体进度                       [██████████████      ]  68%
+整体进度                       [████████████████    ]  82%
 ```
 
 ### 建议开发优先级

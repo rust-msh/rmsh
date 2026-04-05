@@ -6,6 +6,7 @@ pub mod optimetrics_panel;
 pub mod optimetrics_results;
 pub mod project_tree;
 pub mod properties_panel;
+pub mod q3d_net_panel;
 pub mod qat;
 pub mod report_panel;
 pub mod ribbon;

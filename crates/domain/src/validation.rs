@@ -23,6 +23,12 @@ pub enum ValidationError {
     NetWithoutTerminals { net: String },
     #[error("HFSS design '{design}' has no excitation ports")]
     NoExcitationPorts { design: String },
+    #[error("conductor object '{object}' is not assigned to any net")]
+    ConductorNotAssigned { object: String },
+    #[error("Q3D design '{design}' has no ground reference net")]
+    NoGroundReference { design: String },
+    #[error("duplicate terminal name '{name}' across nets")]
+    DuplicateTerminalName { name: String },
     #[error("{0}")]
     Other(String),
 }
@@ -51,6 +57,9 @@ pub fn validate_design(design: &Design) -> Vec<ValidationError> {
 
     if design.solution_type.is_q3d() {
         errors.extend(check_q3d_nets(design));
+        errors.extend(check_q3d_conductor_coverage(design));
+        errors.extend(check_q3d_ground_reference(design));
+        errors.extend(check_q3d_terminal_uniqueness(design));
     }
 
     if design.solution_type.is_hfss() {
@@ -177,4 +186,51 @@ fn check_hfss_ports(design: &Design) -> Vec<ValidationError> {
     } else {
         vec![]
     }
+}
+
+/// Check that every conductor object is assigned to exactly one net.
+fn check_q3d_conductor_coverage(design: &Design) -> Vec<ValidationError> {
+    let assigned: HashSet<&str> = design
+        .nets
+        .iter()
+        .flat_map(|net| net.objects.iter().map(|o| o.as_str()))
+        .collect();
+
+    design
+        .geometry
+        .objects
+        .iter()
+        .filter(|obj| !obj.material.is_empty() && obj.material != "vacuum")
+        .filter(|obj| !assigned.contains(obj.name.as_str()))
+        .map(|obj| ValidationError::ConductorNotAssigned {
+            object: obj.name.clone(),
+        })
+        .collect()
+}
+
+/// Check that at least one net is the ground reference.
+fn check_q3d_ground_reference(design: &Design) -> Vec<ValidationError> {
+    if !design.nets.is_empty() && !design.nets.iter().any(|n| n.is_ground_reference) {
+        vec![ValidationError::NoGroundReference {
+            design: design.name.clone(),
+        }]
+    } else {
+        vec![]
+    }
+}
+
+/// Check that all terminal names are unique across all nets.
+fn check_q3d_terminal_uniqueness(design: &Design) -> Vec<ValidationError> {
+    let mut seen = HashSet::new();
+    let mut errors = Vec::new();
+    for net in &design.nets {
+        for terminal in &net.terminals {
+            if !seen.insert(terminal.name.as_str()) {
+                errors.push(ValidationError::DuplicateTerminalName {
+                    name: terminal.name.clone(),
+                });
+            }
+        }
+    }
+    errors
 }

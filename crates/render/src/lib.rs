@@ -5,8 +5,12 @@ pub mod colormap;
 pub mod far_field;
 pub mod field_mapping;
 pub mod field_pipeline;
+pub mod isosurface;
 pub mod mesh_data;
+pub mod mesh_quality;
+pub mod picking;
 pub mod scene;
+pub mod screenshot;
 pub mod slice;
 pub mod surface_extraction;
 

@@ -265,6 +265,22 @@ impl RlcgMatrixData {
             .get(freq_idx)
             .map(|fp| &fp.matrix)
     }
+
+    /// Serialize RLCG matrix data to JSON string.
+    pub fn to_json_string(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// Save RLCG matrix data to a JSON file.
+    pub fn save_to_file(&self, path: &Path) -> Result<(), ResultError> {
+        let json = self.to_json_string().map_err(ResultError::Json)?;
+        std::fs::write(path, json).map_err(ResultError::Io)
+    }
+
+    /// Get frequency values converted to Hz (assumes GHz input).
+    pub fn frequencies_hz(&self) -> Vec<f64> {
+        self.frequencies.iter().map(|&f| f * 1e9).collect()
+    }
 }
 
 // ---------------------------------------------------------------------------

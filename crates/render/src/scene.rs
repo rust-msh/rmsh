@@ -9,7 +9,10 @@ use crate::colormap::ColormapType;
 use crate::far_field;
 use crate::field_mapping::{self, FieldComponent};
 use crate::field_pipeline::{FieldPipeline, FieldUniforms};
+use crate::isosurface;
 use crate::mesh_data::FieldMesh;
+use crate::mesh_quality::{self, QualityMetric};
+use crate::picking;
 use crate::slice;
 use crate::surface_extraction;
 
@@ -29,6 +32,12 @@ pub enum VisMode {
     FarField,
     /// Phase-animated complex field
     Animation,
+    /// Wireframe only (no filled mesh)
+    Wireframe,
+    /// Isosurface extraction (Marching Tetrahedra)
+    Isosurface,
+    /// Mesh quality visualization
+    MeshQuality,
 }
 
 impl VisMode {
@@ -38,6 +47,9 @@ impl VisMode {
         VisMode::Slice,
         VisMode::FarField,
         VisMode::Animation,
+        VisMode::Wireframe,
+        VisMode::Isosurface,
+        VisMode::MeshQuality,
     ];
 
     pub fn name(&self) -> &'static str {
@@ -47,6 +59,9 @@ impl VisMode {
             Self::Slice => "Slice",
             Self::FarField => "Far Field",
             Self::Animation => "Animation",
+            Self::Wireframe => "Wireframe",
+            Self::Isosurface => "Isosurface",
+            Self::MeshQuality => "Mesh Quality",
         }
     }
 }
@@ -67,6 +82,7 @@ pub struct FieldSceneResources {
 struct FieldSceneCallback {
     uniforms: FieldUniforms,
     show_wireframe: bool,
+    show_solid: bool,
     show_arrows: bool,
     viewport_size: [u32; 2],
 }
@@ -89,7 +105,7 @@ impl egui_wgpu::CallbackTrait for FieldSceneCallback {
             None
         };
         res.pipeline
-            .render_scene(encoder, self.show_wireframe, arrow_ref);
+            .render_scene(encoder, self.show_wireframe, self.show_solid, arrow_ref);
         Vec::new()
     }
 
@@ -122,6 +138,20 @@ pub struct FieldSceneState {
 
     // Slice
     pub slice_z: f32,
+    pub slice_axis: slice::SliceAxis,
+
+    // Isosurface
+    pub iso_threshold: f32,
+    iso_dirty: bool,
+
+    // Arrow subsample rate
+    pub arrow_subsample: u32,
+
+    // Mesh quality
+    pub quality_metric: QualityMetric,
+
+    // Probe result (from picking)
+    pub probe_result: Option<picking::PickResult>,
 
     // Pre-generated meshes
     sphere_mesh: Option<FieldMesh>,
@@ -130,6 +160,8 @@ pub struct FieldSceneState {
 
     // Real data mesh (loaded from files)
     loaded_mesh: Option<FieldMesh>,
+    /// Original MSH mesh data (for tet-based operations: slicing, isosurface, quality, picking).
+    loaded_msh: Option<emstudio_domain::msh_loader::MshMesh>,
     /// Field data file handle for lazy block loading.
     loaded_field: Option<emstudio_domain::emsfld_loader::EmsFldFile>,
     /// Node tag to vertex index mapping for the loaded mesh.
@@ -138,6 +170,8 @@ pub struct FieldSceneState {
     pub selected_frequency: usize,
     /// Field component to visualize.
     pub field_component: FieldComponent,
+    /// Real far-field data (loaded from result store).
+    loaded_far_field: Option<emstudio_domain::result_store::FarFieldData>,
 
     // State
     render_state: Option<egui_wgpu::RenderState>,
@@ -158,14 +192,22 @@ impl Default for FieldSceneState {
             animator: PhaseAnimator::default(),
             last_frame_time: None,
             slice_z: 0.0,
+            slice_axis: slice::SliceAxis::Z,
+            iso_threshold: 0.5,
+            iso_dirty: false,
+            arrow_subsample: 3,
+            quality_metric: QualityMetric::AspectRatio,
+            probe_result: None,
             sphere_mesh: None,
             cube_mesh: None,
             far_field_mesh: None,
             loaded_mesh: None,
+            loaded_msh: None,
             loaded_field: None,
             node_to_vertex: None,
             selected_frequency: 0,
             field_component: FieldComponent::Magnitude,
+            loaded_far_field: None,
             render_state: None,
             colormap_dirty: false,
             mode_dirty: false,
@@ -271,6 +313,12 @@ impl FieldSceneState {
             self.update_slice_mesh();
         }
 
+        // Handle isosurface threshold change
+        if self.iso_dirty && self.vis_mode == VisMode::Isosurface {
+            self.iso_dirty = false;
+            self.update_isosurface_mesh();
+        }
+
         // Phase animation tick
         if self.vis_mode == VisMode::Animation {
             let now = std::time::Instant::now();
@@ -308,7 +356,8 @@ impl FieldSceneState {
 
         let callback = FieldSceneCallback {
             uniforms,
-            show_wireframe: self.show_wireframe,
+            show_wireframe: self.show_wireframe || self.vis_mode == VisMode::Wireframe,
+            show_solid: self.vis_mode != VisMode::Wireframe,
             show_arrows: self.vis_mode == VisMode::Arrows,
             viewport_size: [vp_w.max(1), vp_h.max(1)],
         };
@@ -383,26 +432,143 @@ impl FieldSceneState {
             }
             VisMode::Slice => {
                 ui.label("Slice Plane");
-                let prev = self.slice_z;
+                let prev_z = self.slice_z;
                 ui.add(
                     egui::Slider::new(&mut self.slice_z, -1.0..=1.0)
-                        .text("Z position"),
+                        .text("Position"),
                 );
-                if (self.slice_z - prev).abs() > 0.001 {
+                let prev_axis = self.slice_axis;
+                ui.horizontal(|ui| {
+                    ui.label("Axis:");
+                    ui.selectable_value(&mut self.slice_axis, slice::SliceAxis::X, "X");
+                    ui.selectable_value(&mut self.slice_axis, slice::SliceAxis::Y, "Y");
+                    ui.selectable_value(&mut self.slice_axis, slice::SliceAxis::Z, "Z");
+                });
+                if (self.slice_z - prev_z).abs() > 0.001 || self.slice_axis != prev_axis {
                     self.slice_dirty = true;
+                }
+            }
+            VisMode::Isosurface => {
+                ui.label("Isosurface");
+                let prev = self.iso_threshold;
+                ui.add(
+                    egui::Slider::new(&mut self.iso_threshold, self.field_range[0]..=self.field_range[1])
+                        .text("Threshold"),
+                );
+                if (self.iso_threshold - prev).abs() > 0.001 {
+                    self.iso_dirty = true;
+                }
+            }
+            VisMode::MeshQuality => {
+                ui.label("Mesh Quality");
+                let prev = self.quality_metric;
+                egui::ComboBox::from_id_salt("quality_metric")
+                    .selected_text(self.quality_metric.name())
+                    .show_ui(ui, |ui| {
+                        for &metric in QualityMetric::ALL {
+                            ui.selectable_value(&mut self.quality_metric, metric, metric.name());
+                        }
+                    });
+                if self.quality_metric != prev {
+                    self.mode_dirty = true;
                 }
             }
             VisMode::FarField => {
                 ui.label("3D Radiation Pattern");
-                ui.label("Patch antenna gain pattern");
+                if self.loaded_far_field.is_some() {
+                    ui.label("Showing loaded far-field data");
+                } else {
+                    ui.label("Patch antenna gain pattern (demo)");
+                }
             }
             VisMode::Arrows => {
                 ui.label("Vector Field Arrows");
-                ui.label("Showing vortex field on cube surface");
+                let prev = self.arrow_subsample;
+                ui.add(
+                    egui::Slider::new(&mut self.arrow_subsample, 1..=20)
+                        .text("Subsample"),
+                );
+                if self.arrow_subsample != prev {
+                    self.mode_dirty = true;
+                }
             }
             VisMode::Surface => {
-                ui.label("Spherical harmonic field on sphere");
+                if self.has_real_data() {
+                    ui.label("Real field data on mesh surface");
+                } else {
+                    ui.label("Spherical harmonic field on sphere");
+                }
             }
+            VisMode::Wireframe => {
+                ui.label("Wireframe mesh view");
+            }
+        }
+
+        // Real data controls (frequency/component selectors)
+        if self.has_real_data() && matches!(self.vis_mode, VisMode::Surface | VisMode::Arrows | VisMode::Slice | VisMode::Animation | VisMode::Isosurface) {
+            ui.separator();
+            ui.label("Field Data");
+
+            // Frequency selector
+            if self.num_frequencies() > 0 {
+                let freqs = self.frequencies_hz();
+                ui.horizontal(|ui| {
+                    ui.label("Frequency:");
+                    let prev = self.selected_frequency;
+                    egui::ComboBox::from_id_salt("freq_select")
+                        .selected_text(if self.selected_frequency < freqs.len() {
+                            format!("{:.3} GHz", freqs[self.selected_frequency] / 1e9)
+                        } else {
+                            "N/A".to_string()
+                        })
+                        .show_ui(ui, |ui| {
+                            for (i, &f) in freqs.iter().enumerate() {
+                                ui.selectable_value(
+                                    &mut self.selected_frequency,
+                                    i,
+                                    format!("{:.3} GHz", f / 1e9),
+                                );
+                            }
+                        });
+                    if self.selected_frequency != prev {
+                        self.apply_field_to_loaded_mesh();
+                    }
+                });
+            }
+
+            // Component selector
+            ui.horizontal(|ui| {
+                ui.label("Component:");
+                let prev = self.field_component;
+                egui::ComboBox::from_id_salt("field_comp")
+                    .selected_text(format!("{:?}", self.field_component))
+                    .show_ui(ui, |ui| {
+                        for &comp in &[
+                            FieldComponent::Magnitude,
+                            FieldComponent::RealPart,
+                            FieldComponent::ImagPart,
+                            FieldComponent::Phase,
+                            FieldComponent::ComponentX,
+                            FieldComponent::ComponentY,
+                            FieldComponent::ComponentZ,
+                        ] {
+                            ui.selectable_value(&mut self.field_component, comp, format!("{:?}", comp));
+                        }
+                    });
+                if self.field_component != prev {
+                    self.apply_field_to_loaded_mesh();
+                }
+            });
+        }
+
+        // Probe result display
+        if let Some(ref probe) = self.probe_result {
+            ui.separator();
+            ui.label(format!(
+                "Probe: ({:.3}, {:.3}, {:.3})",
+                probe.position[0], probe.position[1], probe.position[2]
+            ));
+            ui.label(format!("Value: {:.6}", probe.field_value));
         }
 
         // View presets
@@ -524,6 +690,7 @@ impl FieldSceneState {
 
         self.node_to_vertex = Some(node_map);
         self.loaded_mesh = Some(field_mesh);
+        self.loaded_msh = Some(msh_mesh.clone());
         self.mode_dirty = true;
     }
 
@@ -612,31 +779,92 @@ impl FieldSceneState {
             None => return,
         };
 
-        let mesh = match self.vis_mode {
-            VisMode::Surface | VisMode::Animation => self.sphere_mesh.as_ref(),
-            VisMode::Arrows => self.cube_mesh.as_ref(),
+        // Use real data when available
+        let has_real = self.has_real_data();
+
+        match self.vis_mode {
             VisMode::Slice => {
                 self.slice_dirty = true;
-                None // will be generated in update_slice_mesh
+                self.update_slice_mesh();
+                return;
             }
-            VisMode::FarField => self.far_field_mesh.as_ref(),
-        };
-
-        if self.vis_mode == VisMode::Slice {
-            self.update_slice_mesh();
-            return;
+            VisMode::Isosurface => {
+                self.iso_dirty = true;
+                self.update_isosurface_mesh();
+                return;
+            }
+            VisMode::MeshQuality => {
+                self.update_mesh_quality();
+                return;
+            }
+            _ => {}
         }
+
+        let mesh = match self.vis_mode {
+            VisMode::Surface | VisMode::Animation | VisMode::Wireframe => {
+                if has_real {
+                    self.loaded_mesh.as_ref()
+                } else {
+                    self.sphere_mesh.as_ref()
+                }
+            }
+            VisMode::Arrows => {
+                if has_real {
+                    // For real data, also generate arrows from vector field
+                    if let (Some(fld), Some(loaded_mesh), Some(node_map)) =
+                        (&self.loaded_field, &self.loaded_mesh, &self.node_to_vertex)
+                    {
+                        if let Ok(block) = fld.load_block(self.selected_frequency) {
+                            let mut mesh_copy = loaded_mesh.clone();
+                            field_mapping::map_vector_field(&mut mesh_copy, &block, node_map);
+                            let arrows = mesh_copy.generate_arrows(self.arrow_subsample);
+                            let mut renderer = rs.renderer.write();
+                            if let Some(res) = renderer.callback_resources.get_mut::<FieldSceneResources>() {
+                                if let Some(ref mut ap) = res.arrow_pipeline {
+                                    ap.upload_instances(&rs.queue, &arrows);
+                                }
+                            }
+                        }
+                    }
+                    self.loaded_mesh.as_ref()
+                } else {
+                    // Upload synthetic arrows from cube mesh
+                    if let Some(ref cube) = self.cube_mesh {
+                        let arrows = cube.generate_arrows(self.arrow_subsample);
+                        let mut renderer = rs.renderer.write();
+                        if let Some(res) = renderer.callback_resources.get_mut::<FieldSceneResources>() {
+                            if let Some(ref mut ap) = res.arrow_pipeline {
+                                ap.upload_instances(&rs.queue, &arrows);
+                            }
+                        }
+                    }
+                    self.cube_mesh.as_ref()
+                }
+            }
+            VisMode::FarField => {
+                if self.loaded_far_field.is_some() {
+                    // Generate mesh from real far-field data
+                    let ff_data = self.loaded_far_field.as_ref().unwrap();
+                    if let Some(mesh) = far_field::generate_pattern_mesh_from_data(ff_data, "GainTotal") {
+                        self.far_field_mesh = Some(mesh);
+                    }
+                }
+                self.far_field_mesh.as_ref()
+            }
+            VisMode::Slice | VisMode::Isosurface | VisMode::MeshQuality => unreachable!(),
+        };
 
         if let Some(m) = mesh {
             self.field_range = m.field_range;
             if self.vis_mode == VisMode::Animation {
-                if let (Some(sphere), Some(imag)) =
-                    (&self.sphere_mesh, self.sphere_mesh.as_ref().and_then(|s| s.field_imag.as_ref()))
-                {
-                    self.field_range = PhaseAnimator::envelope_range(
-                        &sphere.vertices.iter().map(|v| v.field_value).collect::<Vec<_>>(),
-                        imag,
-                    );
+                let source = if has_real { &self.loaded_mesh } else { &self.sphere_mesh };
+                if let Some(src) = source {
+                    if let Some(ref imag) = src.field_imag {
+                        self.field_range = PhaseAnimator::envelope_range(
+                            &src.vertices.iter().map(|v| v.field_value).collect::<Vec<_>>(),
+                            imag,
+                        );
+                    }
                 }
             }
             let mut renderer = rs.renderer.write();
@@ -651,13 +879,84 @@ impl FieldSceneState {
             Some(r) => r.clone(),
             None => return,
         };
-        let mesh = slice::generate_slice_mesh(
-            slice::SliceAxis::Z,
-            self.slice_z,
-            1.0,
-            40,
-            &slice::synthetic_volume_field,
-        );
+
+        let mesh = if let (Some(msh), Some(fld)) = (&self.loaded_msh, &self.loaded_field) {
+            // Use real data: intersect slice plane with tetrahedra
+            if let Ok(block) = fld.load_block(self.selected_frequency) {
+                slice::generate_slice_mesh_from_tets(
+                    msh,
+                    &block,
+                    self.field_component,
+                    self.slice_axis,
+                    self.slice_z,
+                )
+            } else {
+                slice::generate_slice_mesh(
+                    self.slice_axis,
+                    self.slice_z,
+                    1.0,
+                    40,
+                    &slice::synthetic_volume_field,
+                )
+            }
+        } else {
+            slice::generate_slice_mesh(
+                self.slice_axis,
+                self.slice_z,
+                1.0,
+                40,
+                &slice::synthetic_volume_field,
+            )
+        };
+
+        self.field_range = mesh.field_range;
+        let mut renderer = rs.renderer.write();
+        if let Some(res) = renderer.callback_resources.get_mut::<FieldSceneResources>() {
+            res.pipeline.swap_mesh(&rs.device, &mesh);
+        }
+    }
+
+    fn update_isosurface_mesh(&mut self) {
+        let rs = match &self.render_state {
+            Some(r) => r.clone(),
+            None => return,
+        };
+
+        let mesh = if let (Some(msh), Some(fld)) = (&self.loaded_msh, &self.loaded_field) {
+            if let Ok(block) = fld.load_block(self.selected_frequency) {
+                isosurface::extract_isosurface(
+                    msh,
+                    &block,
+                    self.field_component,
+                    self.iso_threshold as f64,
+                )
+            } else {
+                return;
+            }
+        } else {
+            // No real data available for isosurface
+            return;
+        };
+
+        self.field_range = mesh.field_range;
+        let mut renderer = rs.renderer.write();
+        if let Some(res) = renderer.callback_resources.get_mut::<FieldSceneResources>() {
+            res.pipeline.swap_mesh(&rs.device, &mesh);
+        }
+    }
+
+    fn update_mesh_quality(&mut self) {
+        let rs = match &self.render_state {
+            Some(r) => r.clone(),
+            None => return,
+        };
+
+        let mesh = if let Some(ref msh) = self.loaded_msh {
+            mesh_quality::compute_mesh_quality(msh, self.quality_metric)
+        } else {
+            return;
+        };
+
         self.field_range = mesh.field_range;
         let mut renderer = rs.renderer.write();
         if let Some(res) = renderer.callback_resources.get_mut::<FieldSceneResources>() {
@@ -670,19 +969,25 @@ impl FieldSceneState {
             Some(r) => r.clone(),
             None => return,
         };
-        let sphere = match &self.sphere_mesh {
+
+        let source = if self.has_real_data() {
+            self.loaded_mesh.as_ref()
+        } else {
+            self.sphere_mesh.as_ref()
+        };
+        let source = match source {
             Some(m) => m,
             None => return,
         };
-        let imag = match &sphere.field_imag {
+        let imag = match &source.field_imag {
             Some(im) => im,
             None => return,
         };
 
-        let real_values: Vec<f32> = sphere.vertices.iter().map(|v| v.field_value).collect();
+        let real_values: Vec<f32> = source.vertices.iter().map(|v| v.field_value).collect();
         let animated = self.animator.apply(&real_values, imag);
 
-        let mut verts = sphere.vertices.clone();
+        let mut verts = source.vertices.clone();
         for (v, &new_val) in verts.iter_mut().zip(animated.iter()) {
             v.field_value = new_val;
         }
@@ -691,5 +996,77 @@ impl FieldSceneState {
         if let Some(res) = renderer.callback_resources.get::<FieldSceneResources>() {
             res.pipeline.update_vertices(&rs.queue, &verts);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Far-field data loading
+    // -----------------------------------------------------------------------
+
+    /// Load real far-field data for 3D radiation pattern visualization.
+    pub fn load_far_field_data(&mut self, data: emstudio_domain::result_store::FarFieldData) {
+        self.loaded_far_field = Some(data);
+        if self.vis_mode == VisMode::FarField {
+            self.mode_dirty = true;
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Q3D field overlay loading
+    // -----------------------------------------------------------------------
+
+    /// Load a Q3D field overlay (current density, charge distribution, ohmic loss).
+    /// Routes to the correct surface extraction method based on the field quantity.
+    pub fn load_q3d_overlay(
+        &mut self,
+        quantity: emstudio_domain::field_overlay::FieldQuantity,
+        fld: emstudio_domain::emsfld_loader::EmsFldFile,
+        msh: &emstudio_domain::msh_loader::MshMesh,
+    ) {
+        use emstudio_domain::field_overlay::FieldQuantity;
+
+        let mut field_mesh = match quantity {
+            FieldQuantity::Jsurf | FieldQuantity::ChargeDistribution => {
+                surface_extraction::extract_triangles(msh)
+            }
+            _ => surface_extraction::extract_surface(msh),
+        };
+
+        let node_map = surface_extraction::build_node_to_vertex_map(msh, &field_mesh);
+
+        if let Ok(block) = fld.load_block(0) {
+            field_mapping::map_field_to_mesh(
+                &mut field_mesh,
+                &block,
+                self.field_component,
+                &node_map,
+            );
+        }
+
+        self.node_to_vertex = Some(node_map);
+        self.loaded_mesh = Some(field_mesh);
+        self.loaded_msh = Some(msh.clone());
+        self.loaded_field = Some(fld);
+        self.mode_dirty = true;
+    }
+
+    // -----------------------------------------------------------------------
+    // Picking
+    // -----------------------------------------------------------------------
+
+    /// Perform a pick at screen coordinates (relative to viewport rect).
+    pub fn pick_at(&mut self, x: f32, y: f32, viewport: [f32; 2]) {
+        let mesh = if self.has_real_data() {
+            self.loaded_mesh.as_ref()
+        } else {
+            self.sphere_mesh.as_ref()
+        };
+        let mesh = match mesh {
+            Some(m) => m,
+            None => return,
+        };
+
+        let aspect = viewport[0] / viewport[1].max(1.0);
+        let (ray_origin, ray_dir) = self.camera.screen_to_ray(x, y, viewport, aspect);
+        self.probe_result = picking::pick_field(mesh, ray_origin, ray_dir);
     }
 }

@@ -31,6 +31,13 @@ pub mod worker_protocol;
 pub mod msh_loader;
 pub mod emsfld_loader;
 
+// Milestone 7: Export
+pub mod vtk_export;
+
+// Milestone 8: Q3D features
+pub mod spice_export;
+pub mod rlcg_to_sparam;
+
 // Milestone 9: Optimetrics
 pub mod sweep_engine;
 pub mod optimetrics_result;
