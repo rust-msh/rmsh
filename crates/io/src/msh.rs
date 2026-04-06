@@ -645,6 +645,41 @@ fn skip_to_marker(pos: &mut usize, bytes: &[u8], marker: &[u8]) {
     }
 }
 
+fn v2_nodes_per_element(element_type_id: i32) -> Option<usize> {
+    match element_type_id {
+        1 => Some(2),   // line2
+        2 => Some(3),   // tri3
+        3 => Some(4),   // quad4
+        4 => Some(4),   // tet4
+        5 => Some(8),   // hex8
+        6 => Some(6),   // prism6
+        7 => Some(5),   // pyramid5
+        8 => Some(3),   // line3
+        9 => Some(6),   // tri6
+        10 => Some(9),  // quad9
+        11 => Some(10), // tet10
+        12 => Some(20), // hex20
+        13 => Some(15), // prism15
+        14 => Some(13), // pyramid13
+        15 => Some(1),  // point
+        16 => Some(8),  // quad8
+        17 => Some(20), // hex20 (serendipity)
+        18 => Some(15), // prism15
+        19 => Some(13), // pyramid13
+        20 => Some(9),  // tri9
+        21 => Some(10), // tri10
+        22 => Some(12), // tri12
+        23 => Some(15), // tri15
+        26 => Some(4),  // line4
+        29 => Some(20), // tet20
+        36 => Some(16), // quad16
+        37 => Some(25), // hex25
+        92 => Some(27), // hex27
+        93 => Some(18), // prism18
+        _ => None,
+    }
+}
+
 fn parse_msh_v2_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
     let mut pos = 0usize;
     let mut mesh = Mesh::new();
@@ -756,36 +791,23 @@ fn parse_msh_v2_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
                 }
             }
             "$Elements" => {
-                let _ = read_line(&mut pos); // total count line
-                loop {
-                    if pos >= bytes.len() {
-                        break;
-                    }
-                    if bytes[pos..].starts_with(b"$EndElements") {
-                        pos += b"$EndElements".len();
-                        if pos < bytes.len() && bytes[pos] == b'\n' {
-                            pos += 1;
-                        }
-                        break;
-                    }
-                    if bytes[pos] == b'\n' {
-                        pos += 1;
-                        continue;
-                    }
+                let _ = read_line(&mut pos); // total element count line (ASCII)
 
+                // Gmsh v2 binary format: int32 n_element_types, followed by blocks
+                // [elem_type, n_elems_in_block, n_tags] and per-element records.
+                let n_element_types = read_i32_le(&mut pos)? as usize;
+                for _ in 0..n_element_types {
                     let element_type_id = read_i32_le(&mut pos)?;
                     let n_elems = read_i32_le(&mut pos)? as usize;
                     let n_tags = read_i32_le(&mut pos)? as usize;
-                    let etype = ElementType::from_gmsh_type_id(element_type_id);
-                    let n_nodes_per = etype.node_count();
-
-                    if n_nodes_per == 0 && !matches!(etype, ElementType::Unknown(_)) {
+                    let Some(n_nodes_per) = v2_nodes_per_element(element_type_id) else {
                         return Err(MshError::Parse {
                             line: 0,
                             message: format!("binary v2: unsupported element type {}", element_type_id),
                         });
-                    }
+                    };
 
+                    let etype = ElementType::from_gmsh_type_id(element_type_id);
                     for _ in 0..n_elems {
                         let elem_id = read_i32_le(&mut pos)? as u64;
                         let mut physical_tag: Option<i32> = None;
@@ -801,10 +823,27 @@ fn parse_msh_v2_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
                             node_ids.push(read_i32_le(&mut pos)? as u64);
                         }
 
-                        let mut elem = Element::new(elem_id, etype, node_ids);
-                        elem.physical_tag = physical_tag;
-                        mesh.add_element(elem);
+                        if !matches!(etype, ElementType::Unknown(_)) {
+                            let mut elem = Element::new(elem_id, etype, node_ids);
+                            elem.physical_tag = physical_tag;
+                            mesh.add_element(elem);
+                        }
                     }
+                }
+
+                // Consume trailing newline and $EndElements marker.
+                if pos < bytes.len() && bytes[pos] == b'\n' {
+                    pos += 1;
+                }
+                if pos + b"$EndElements".len() <= bytes.len()
+                    && bytes[pos..].starts_with(b"$EndElements")
+                {
+                    pos += b"$EndElements".len();
+                    if pos < bytes.len() && bytes[pos] == b'\n' {
+                        pos += 1;
+                    }
+                } else {
+                    skip_to_marker(&mut pos, bytes, b"$EndElements");
                 }
             }
             _ if line.starts_with('$') => {
