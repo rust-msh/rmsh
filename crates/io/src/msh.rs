@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Cursor, Write};
+use std::io::{BufRead, Cursor, Write};
 use std::path::Path;
 
 use rmsh_model::{Element, ElementType, Mesh, Node};
@@ -27,13 +27,29 @@ enum MshVersion {
 }
 
 pub fn load_msh_from_path(path: &Path) -> Result<Mesh, MshError> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    parse_msh(reader)
+    let bytes = std::fs::read(path)?;
+    load_msh_from_bytes(&bytes)
 }
 
 pub fn load_msh_from_bytes(data: &[u8]) -> Result<Mesh, MshError> {
-    parse_msh(Cursor::new(data))
+    // Gmsh v2 binary files keep ASCII section markers but encode $Nodes/$Elements payload
+    // in little-endian binary. Detect by checking the MeshFormat line near file start.
+    let header = &data[..data.len().min(160)];
+    let is_binary_v2 = contains_bytes(header, b"$MeshFormat")
+        && (contains_bytes(header, b"2.2 1 ") || contains_bytes(header, b"2.0 1 "));
+
+    if is_binary_v2 {
+        parse_msh_v2_binary(data)
+    } else {
+        parse_msh(Cursor::new(data))
+    }
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 pub fn save_msh_v2_to_path(path: &Path, mesh: &Mesh) -> Result<(), MshError> {
@@ -369,6 +385,15 @@ fn parse_elements_v2<R: BufRead>(
             message: "Invalid number of tags".into(),
         })?;
 
+        let physical_tag = if num_tags > 0 {
+            Some(parts[3].parse::<i32>().map_err(|_| MshError::Parse {
+                line: *line_num,
+                message: "Invalid physical tag".into(),
+            })?)
+        } else {
+            None
+        };
+
         let node_start = 3 + num_tags;
         if parts.len() < node_start {
             return Err(MshError::Parse {
@@ -387,7 +412,9 @@ fn parse_elements_v2<R: BufRead>(
             .collect::<Result<_, _>>()?;
 
         let etype = ElementType::from_gmsh_type_id(element_type_id);
-        mesh.add_element(Element::new(elem_tag, etype, node_ids));
+        let mut elem = Element::new(elem_tag, etype, node_ids);
+        elem.physical_tag = physical_tag;
+        mesh.add_element(elem);
     }
 
     let end = next_line_raw(lines, line_num)?;
@@ -485,6 +512,10 @@ fn parse_elements_v4<R: BufRead>(
                 message: "Invalid element block header".into(),
             });
         }
+        let entity_tag: i32 = bp[1].parse().map_err(|_| MshError::Parse {
+            line: *line_num,
+            message: "Invalid entity tag".into(),
+        })?;
         let element_type_id: i32 = bp[2].parse().unwrap_or(0);
         let num_in_block: usize = bp[3].parse().unwrap_or(0);
         let etype = ElementType::from_gmsh_type_id(element_type_id);
@@ -513,7 +544,10 @@ fn parse_elements_v4<R: BufRead>(
                 );
             }
 
-            mesh.add_element(Element::new(elem_tag, etype, node_ids));
+            let mut elem = Element::new(elem_tag, etype, node_ids);
+            // In MSH 4.x blocks are grouped by entity; rem uses this as physical tag.
+            elem.physical_tag = Some(entity_tag);
+            mesh.add_element(elem);
         }
     }
 
@@ -596,6 +630,205 @@ fn gmsh_type_id(element_type: ElementType) -> Result<i32, MshError> {
         ElementType::Pyramid5 => Ok(7),
         ElementType::Unknown(_) => Err(MshError::UnsupportedElementType(element_type)),
     }
+}
+
+fn skip_to_marker(pos: &mut usize, bytes: &[u8], marker: &[u8]) {
+    while *pos + marker.len() <= bytes.len() {
+        if bytes[*pos..].starts_with(marker) {
+            *pos += marker.len();
+            if *pos < bytes.len() && bytes[*pos] == b'\n' {
+                *pos += 1;
+            }
+            return;
+        }
+        *pos += 1;
+    }
+}
+
+fn parse_msh_v2_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
+    let mut pos = 0usize;
+    let mut mesh = Mesh::new();
+
+    let read_line = |pos: &mut usize| -> Option<&str> {
+        let start = *pos;
+        let slice = &bytes[start..];
+        if let Some(nl) = slice.iter().position(|&b| b == b'\n') {
+            let line = std::str::from_utf8(&slice[..nl]).ok()?.trim();
+            *pos = start + nl + 1;
+            Some(line)
+        } else if !slice.is_empty() {
+            let line = std::str::from_utf8(slice).ok()?.trim();
+            *pos = bytes.len();
+            Some(line)
+        } else {
+            None
+        }
+    };
+
+    let read_i32_le = |pos: &mut usize| -> Result<i32, MshError> {
+        if *pos + 4 > bytes.len() {
+            return Err(MshError::Parse {
+                line: 0,
+                message: "binary v2: unexpected end reading int32".into(),
+            });
+        }
+        let v = i32::from_le_bytes([bytes[*pos], bytes[*pos + 1], bytes[*pos + 2], bytes[*pos + 3]]);
+        *pos += 4;
+        Ok(v)
+    };
+
+    let read_f64_le = |pos: &mut usize| -> Result<f64, MshError> {
+        if *pos + 8 > bytes.len() {
+            return Err(MshError::Parse {
+                line: 0,
+                message: "binary v2: unexpected end reading float64".into(),
+            });
+        }
+        let v = f64::from_le_bytes([
+            bytes[*pos],
+            bytes[*pos + 1],
+            bytes[*pos + 2],
+            bytes[*pos + 3],
+            bytes[*pos + 4],
+            bytes[*pos + 5],
+            bytes[*pos + 6],
+            bytes[*pos + 7],
+        ]);
+        *pos += 8;
+        Ok(v)
+    };
+
+    loop {
+        let Some(line) = read_line(&mut pos) else {
+            break;
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        match line {
+            "$MeshFormat" => {
+                let _ = read_line(&mut pos);
+                skip_to_marker(&mut pos, bytes, b"$EndMeshFormat");
+            }
+            "$PhysicalNames" => {
+                if let Some(count_line) = read_line(&mut pos) {
+                    let n_names: usize = count_line.trim().parse().unwrap_or(0);
+                    for _ in 0..n_names {
+                        if let Some(name_line) = read_line(&mut pos) {
+                            let parts: Vec<&str> = name_line.splitn(3, ' ').collect();
+                            if parts.len() >= 3 {
+                                let dim = parts[0].parse::<i32>().unwrap_or(0);
+                                let tag = parts[1].parse::<i32>().unwrap_or(0);
+                                let name = parts[2].trim().trim_matches('"').to_string();
+                                mesh.physical_names.insert((dim, tag), name);
+                            }
+                        }
+                    }
+                }
+                skip_to_marker(&mut pos, bytes, b"$EndPhysicalNames");
+            }
+            "$Nodes" => {
+                let Some(count_line) = read_line(&mut pos) else {
+                    break;
+                };
+                let n_nodes: usize = count_line.trim().parse().map_err(|_| MshError::Parse {
+                    line: 0,
+                    message: "binary v2: invalid node count".into(),
+                })?;
+                for _ in 0..n_nodes {
+                    let id = read_i32_le(&mut pos)? as u64;
+                    let x = read_f64_le(&mut pos)?;
+                    let y = read_f64_le(&mut pos)?;
+                    let z = read_f64_le(&mut pos)?;
+                    mesh.add_node(Node::new(id, x, y, z));
+                }
+
+                if pos < bytes.len() && bytes[pos] == b'\n' {
+                    pos += 1;
+                }
+                if pos + 9 <= bytes.len() && &bytes[pos..pos + 9] == b"$EndNodes" {
+                    pos += 9;
+                    if pos < bytes.len() && bytes[pos] == b'\n' {
+                        pos += 1;
+                    }
+                }
+            }
+            "$Elements" => {
+                let _ = read_line(&mut pos); // total count line
+                loop {
+                    if pos >= bytes.len() {
+                        break;
+                    }
+                    if bytes[pos..].starts_with(b"$EndElements") {
+                        pos += b"$EndElements".len();
+                        if pos < bytes.len() && bytes[pos] == b'\n' {
+                            pos += 1;
+                        }
+                        break;
+                    }
+                    if bytes[pos] == b'\n' {
+                        pos += 1;
+                        continue;
+                    }
+
+                    let element_type_id = read_i32_le(&mut pos)?;
+                    let n_elems = read_i32_le(&mut pos)? as usize;
+                    let n_tags = read_i32_le(&mut pos)? as usize;
+                    let etype = ElementType::from_gmsh_type_id(element_type_id);
+                    let n_nodes_per = etype.node_count();
+
+                    if n_nodes_per == 0 && !matches!(etype, ElementType::Unknown(_)) {
+                        return Err(MshError::Parse {
+                            line: 0,
+                            message: format!("binary v2: unsupported element type {}", element_type_id),
+                        });
+                    }
+
+                    for _ in 0..n_elems {
+                        let elem_id = read_i32_le(&mut pos)? as u64;
+                        let mut physical_tag: Option<i32> = None;
+                        for ti in 0..n_tags {
+                            let tag = read_i32_le(&mut pos)?;
+                            if ti == 0 {
+                                physical_tag = Some(tag);
+                            }
+                        }
+
+                        let mut node_ids = Vec::with_capacity(n_nodes_per);
+                        for _ in 0..n_nodes_per {
+                            node_ids.push(read_i32_le(&mut pos)? as u64);
+                        }
+
+                        let mut elem = Element::new(elem_id, etype, node_ids);
+                        elem.physical_tag = physical_tag;
+                        mesh.add_element(elem);
+                    }
+                }
+            }
+            _ if line.starts_with('$') => {
+                let end_marker = format!("$End{}", &line[1..]);
+                skip_to_marker(&mut pos, bytes, end_marker.as_bytes());
+            }
+            _ => {}
+        }
+    }
+
+    if mesh.nodes.is_empty() {
+        return Err(MshError::Parse {
+            line: 0,
+            message: "binary v2: no nodes found".into(),
+        });
+    }
+    if mesh.elements.is_empty() {
+        return Err(MshError::Parse {
+            line: 0,
+            message: "binary v2: no elements found".into(),
+        });
+    }
+
+    Ok(mesh)
 }
 
 #[cfg(test)]
@@ -716,6 +949,70 @@ $EndElements
         );
         assert_eq!(mesh.elements[0].node_ids, vec![1, 2, 3]);
         assert_eq!(mesh.elements[1].node_ids, vec![1, 2, 3, 4]);
+        assert_eq!(mesh.elements[0].physical_tag, Some(0));
+        assert_eq!(mesh.elements[1].physical_tag, Some(0));
+    }
+
+    #[test]
+    fn test_parse_msh_v4_sets_entity_as_physical_tag() {
+        let msh_data = r#"$MeshFormat
+4.1 0 8
+$EndMeshFormat
+$Nodes
+1 3 1 3
+2 1 0 3
+1
+2
+3
+0.0 0.0 0.0
+1.0 0.0 0.0
+0.0 1.0 0.0
+$EndNodes
+$Elements
+1 1 1 1
+2 42 2 1
+1 1 2 3
+$EndElements
+"#;
+        let mesh = parse_msh(Cursor::new(msh_data.as_bytes())).unwrap();
+        assert_eq!(mesh.elements.len(), 1);
+        assert_eq!(mesh.elements[0].physical_tag, Some(42));
+    }
+
+    #[test]
+    fn test_load_msh_from_bytes_binary_v2() {
+        let mut data = Vec::<u8>::new();
+        data.extend_from_slice(b"$MeshFormat\n2.2 1 8\n");
+        data.extend_from_slice(&1_i32.to_le_bytes());
+        data.extend_from_slice(b"\n$EndMeshFormat\n");
+
+        data.extend_from_slice(b"$Nodes\n2\n");
+        data.extend_from_slice(&1_i32.to_le_bytes());
+        data.extend_from_slice(&0.0f64.to_le_bytes());
+        data.extend_from_slice(&0.0f64.to_le_bytes());
+        data.extend_from_slice(&0.0f64.to_le_bytes());
+        data.extend_from_slice(&2_i32.to_le_bytes());
+        data.extend_from_slice(&1.0f64.to_le_bytes());
+        data.extend_from_slice(&0.0f64.to_le_bytes());
+        data.extend_from_slice(&0.0f64.to_le_bytes());
+        data.extend_from_slice(b"\n$EndNodes\n");
+
+        data.extend_from_slice(b"$Elements\n1\n");
+        data.extend_from_slice(&1_i32.to_le_bytes()); // type line2
+        data.extend_from_slice(&1_i32.to_le_bytes()); // n elems
+        data.extend_from_slice(&2_i32.to_le_bytes()); // n tags
+        data.extend_from_slice(&1_i32.to_le_bytes()); // elem id
+        data.extend_from_slice(&77_i32.to_le_bytes()); // physical tag
+        data.extend_from_slice(&0_i32.to_le_bytes()); // geometrical tag
+        data.extend_from_slice(&1_i32.to_le_bytes()); // n1
+        data.extend_from_slice(&2_i32.to_le_bytes()); // n2
+        data.extend_from_slice(b"$EndElements\n");
+
+        let mesh = load_msh_from_bytes(&data).expect("binary v2 should parse");
+        assert_eq!(mesh.node_count(), 2);
+        assert_eq!(mesh.element_count(), 1);
+        assert_eq!(mesh.elements[0].physical_tag, Some(77));
+        assert_eq!(mesh.elements[0].node_ids, vec![1, 2]);
     }
 
     #[test]

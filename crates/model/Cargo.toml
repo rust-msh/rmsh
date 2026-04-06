@@ -1,10 +1,10 @@
 [package]
 name = "rmsh-model"
-version.workspace = true
-edition.workspace = true
+version = "0.1.0"
+edition = "2021"
 
 [dependencies]
-nalgebra = { workspace = true }
-serde = { workspace = true }
-bytemuck = { workspace = true }
-thiserror = { workspace = true }
+nalgebra = { version = "0.33", features = ["serde-serialize"] }
+serde = { version = "1", features = ["derive"] }
+bytemuck = { version = "1", features = ["derive"] }
+thiserror = "2"

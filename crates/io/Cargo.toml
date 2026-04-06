@@ -1,12 +1,9 @@
 [package]
 name = "rmsh-io"
-version.workspace = true
-edition.workspace = true
+version = "0.1.0"
+edition = "2021"
 
 [dependencies]
-rmsh-model = { workspace = true }
-rcad-step = { workspace = true }
-rcad-kernel = { workspace = true }
-glam = { workspace = true }
-thiserror = { workspace = true }
-log = { workspace = true }
+rmsh-model = { path = "../model" }
+thiserror = "2"
+log = "0.4"
