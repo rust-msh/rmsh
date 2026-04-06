@@ -9,7 +9,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 emstudio-domain = { path = "../domain" }
-emstudio-solver = { path = "../solver" }
 rmp-serde.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -22,3 +21,9 @@ web-sys = { workspace = true, features = [
 ] }
 js-sys.workspace = true
 console_error_panic_hook.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+emstudio-solver = { path = "../solver" }

@@ -45,6 +45,14 @@ pub fn show_menu_bar(ui: &mut Ui, edition: Edition, is_web: bool) -> Option<Ribb
                     action = Some(RibbonAction::ImportSat);
                     ui.close();
                 }
+                if ui.add_enabled(file_ops, egui::Button::new("Import HFSS (.aedt/.py)")).clicked() {
+                    action = Some(RibbonAction::ImportHfssAedt);
+                    ui.close();
+                }
+                if ui.add_enabled(file_ops, egui::Button::new("Import Q3D (.aedt/.py)")).clicked() {
+                    action = Some(RibbonAction::ImportQ3dAedt);
+                    ui.close();
+                }
             });
             ui.menu_button("Export", |ui| {
                 if ui.add_enabled(file_ops, egui::Button::new("Export STEP")).clicked() {
@@ -53,6 +61,14 @@ pub fn show_menu_bar(ui: &mut Ui, edition: Edition, is_web: bool) -> Option<Ribb
                 }
                 if ui.add_enabled(file_ops, egui::Button::new("Export SAT")).clicked() {
                     action = Some(RibbonAction::ExportSat);
+                    ui.close();
+                }
+                if ui.add_enabled(file_ops, egui::Button::new("Export HFSS Script (.py)")).clicked() {
+                    action = Some(RibbonAction::ExportHfssPyAedt);
+                    ui.close();
+                }
+                if ui.add_enabled(file_ops, egui::Button::new("Export Q3D Script (.py)")).clicked() {
+                    action = Some(RibbonAction::ExportQ3dPyAedt);
                     ui.close();
                 }
             });

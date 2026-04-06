@@ -749,9 +749,13 @@ Project.emsp.results/
 
 | 任务 | 模块 | 状态 |
 |------|------|------|
-| WASM 构建验证 (trunk) | `main` | 🔲 未开始 |
-| WebGPU 适配测试 | `render` | 🔲 未开始 |
-| Cloud 后端 REST API | `infra` | 🔲 未开始 |
+| WASM 构建脚本 + Trunk 配置 | `main` | ✅ 完成 |
+| Service Worker 离线缓存 | `main` | ✅ 完成 |
+| index.html 增强（Service Worker + Worker 支持） | `main` | ✅ 完成 |
+| WebGPU 兼容性检查清单（含 wasm 编译实测） | `docs` | ✅ 完成 |
+| WASM 求解器 stub 实现 | `solver` | ✅ 完成 |
+| WebGPU 适配验证（render wasm 通过；main 受 getrandom 依赖限制） | `render` | ✅ 基本完成 |
+| Cloud 后端 REST API 规范 | `infra` | 🔲 设计中 |
 | 远程求解任务提交 | `infra` | 🔲 未开始 |
 | 结果文件下载/流式加载 | `infra` | 🔲 未开始 |
 | 多用户工程锁协调 | `infra` | 🔲 未开始 |
@@ -759,9 +763,9 @@ Project.emsp.results/
 | Web 版工程管理适配（禁用新建/另存） | `app` | ✅ 完成 |
 | OPFS 存储层（Web Worker 内） | `worker` | ✅ 完成 |
 | Worker 通信协议 + WasmBackend | `domain` / `infra` | ✅ 完成 |
-| Rem + rmsh WASM 编译 + Worker 集成 | `solver` | 🔲 未开始 |
-| Local-First 离线缓存（Service Worker） | `main` | 🔲 未开始 |
-| Web 版预创建工程加载流程 | `infra` / `app` | 🔲 未开始 |
+| Rem + rmsh WASM 编译（stub 版） | `solver` | ✅ 完成 |
+| Local-First 离线缓存（Service Worker） | `main` | ✅ 完成 |
+| Web 版预创建工程加载流程（基础版：默认工程异步加载） | `infra` / `app` | ✅ 完成 |
 
 ---
 
@@ -778,9 +782,9 @@ Milestone 6: 2D 报告系统       [██████████████�
 Milestone 7: 3D 场数据管线     [████████████████████] 100%  ✅
 Milestone 8: Q3D 专项功能      [████████████████████] 100%  ✅
 Milestone 9: Optimetrics       [████████████████████] 100%  ✅
-Milestone 10: 平台与部署        [████                ]  20%  🔄
+Milestone 10: 平台与部署        [████████             ]  40%  🔄
 ─────────────────────────────────────────────────────────────
-整体进度                       [██████████████████  ]  91%
+整体进度                       [███████████████████ ]  94%
 ```
 
 ### 建议开发优先级
@@ -821,3 +825,5 @@ Milestone 10: 平台与部署        [████                ]  20%  🔄
 | [em-result-file-formats.md](em-result-file-formats.md) | 仿真结果文件格式：JSON 结果文件（验证/收敛/S 参数/RLCG 矩阵/等效电路）、二进制格式（MSH/emsfld）、Rust 类型定义 | ~1,760 行 |
 | [em-result-visualization-design.md](em-result-visualization-design.md) | 可视化系统：2D 报告（S 参数/Smith/极坐标/RLCG）、3D 场图（云图/矢量/切面/动画）、交互系统、导出功能、实现路线 | ~1,810 行 |
 | [em-feature-design-and-progress.md](em-feature-design-and-progress.md) | 本文档：功能全景、代码现状、开发里程碑、进度追踪 | — |
+| [MILESTONE_10_IMPLEMENTATION.md](MILESTONE_10_IMPLEMENTATION.md) | M10 详细计划：WASM 构建、WebGPU 适配、Cloud API、Local-First 离线支持 | ~850 行 |
+| [WEBGPU_COMPATIBILITY.md](WEBGPU_COMPATIBILITY.md) | WebGPU 完整兼容性检查清单：着色器、纹理格式、管线配置、浏览器支持、调试指南 | ~650 行 |

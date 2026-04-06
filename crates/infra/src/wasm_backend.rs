@@ -37,6 +37,7 @@ pub struct WasmBackend {
     _onerror: Closure<dyn FnMut(web_sys::ErrorEvent)>,
     // Cached state
     projects_cache: HashMap<String, Project>,
+    pending_loaded_project: Option<Project>,
     pending_solve_result: Option<SolveResult>,
     project_list: Vec<ProjectEntry>,
     // Error buffer for reporting to the UI
@@ -92,6 +93,7 @@ impl WasmBackend {
             _onmessage: onmessage,
             _onerror: onerror,
             projects_cache: HashMap::new(),
+            pending_loaded_project: None,
             pending_solve_result: None,
             project_list: Vec::new(),
             last_error: None,
@@ -175,6 +177,7 @@ impl Backend for WasmBackend {
                 WorkerResponse::ProjectLoaded { data } => {
                     match rmp_serde::from_slice::<Project>(&data) {
                         Ok(project) => {
+                            self.pending_loaded_project = Some(project.clone());
                             self.projects_cache.insert(project.id.clone(), project);
                         }
                         Err(e) => {
@@ -210,5 +213,9 @@ impl Backend for WasmBackend {
 
     fn take_solve_result(&mut self) -> Option<SolveResult> {
         self.pending_solve_result.take()
+    }
+
+    fn take_loaded_project(&mut self) -> Option<Project> {
+        self.pending_loaded_project.take()
     }
 }

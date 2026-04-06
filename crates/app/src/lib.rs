@@ -20,7 +20,10 @@ use emstudio_domain::result_store::ResultDataStore;
 use emstudio_domain::variable::Variable;
 use emstudio_infra::{Backend, RunMode, default_backend};
 #[cfg(not(target_arch = "wasm32"))]
-use emstudio_infra::{load_project_from_file, save_project_to_file};
+use emstudio_infra::{
+    export_hfss_project_to_file, export_q3d_project_to_file, import_hfss_project_from_file,
+    import_q3d_project_from_file, load_project_from_file, save_project_to_file,
+};
 use emstudio_render::SceneViewport;
 
 // ---------------------------------------------------------------------------
@@ -30,6 +33,10 @@ use emstudio_render::SceneViewport;
 enum FileDialogResult {
     OpenFile(PathBuf),
     SaveFile(PathBuf),
+    ImportHfssAedt(PathBuf),
+    ImportQ3dAedt(PathBuf),
+    ExportHfssPy(PathBuf),
+    ExportQ3dPy(PathBuf),
 }
 
 fn spawn_future<F: std::future::Future<Output = ()> + 'static>(f: F) {
@@ -315,7 +322,7 @@ impl App {
 
         let (tx, rx) = mpsc::channel();
 
-        Self {
+        let mut app = Self {
             project,
             backend: default_backend(mode),
             edition,
@@ -354,7 +361,14 @@ impl App {
             show_message_manager: true,
             left_panel_active_tab: LeftPanelTab::ProjectManager,
             bottom_tab: BottomTab::Messages,
+        };
+
+        if mode == RunMode::LocalFirst {
+            app.load_from_backend("default");
+            app.status_text = "Loading default web project...".into();
         }
+
+        app
     }
 
     pub fn new_default(cc: &eframe::CreationContext<'_>) -> Self {
@@ -429,6 +443,88 @@ impl App {
         });
     }
 
+    fn spawn_import_hfss_dialog(&self, ctx: &egui::Context) {
+        let tx = self.file_dialog_tx.clone();
+        let ctx = ctx.clone();
+        spawn_future(async move {
+            let file = rfd::AsyncFileDialog::new()
+                .add_filter("Ansys Project", &["aedt", "py", "txt"])
+                .pick_file()
+                .await;
+            if let Some(handle) = file {
+                #[cfg(not(target_arch = "wasm32"))]
+                let path = handle.path().to_path_buf();
+                #[cfg(target_arch = "wasm32")]
+                let path = PathBuf::from(handle.file_name());
+
+                let _ = tx.send(FileDialogResult::ImportHfssAedt(path));
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    fn spawn_import_q3d_dialog(&self, ctx: &egui::Context) {
+        let tx = self.file_dialog_tx.clone();
+        let ctx = ctx.clone();
+        spawn_future(async move {
+            let file = rfd::AsyncFileDialog::new()
+                .add_filter("Ansys Project", &["aedt", "py", "txt"])
+                .pick_file()
+                .await;
+            if let Some(handle) = file {
+                #[cfg(not(target_arch = "wasm32"))]
+                let path = handle.path().to_path_buf();
+                #[cfg(target_arch = "wasm32")]
+                let path = PathBuf::from(handle.file_name());
+
+                let _ = tx.send(FileDialogResult::ImportQ3dAedt(path));
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    fn spawn_export_hfss_dialog(&self, ctx: &egui::Context) {
+        let tx = self.file_dialog_tx.clone();
+        let ctx = ctx.clone();
+        spawn_future(async move {
+            let file = rfd::AsyncFileDialog::new()
+                .add_filter("Python Script", &["py"])
+                .set_file_name("hfss_export.py")
+                .save_file()
+                .await;
+            if let Some(handle) = file {
+                #[cfg(not(target_arch = "wasm32"))]
+                let path = handle.path().to_path_buf();
+                #[cfg(target_arch = "wasm32")]
+                let path = PathBuf::from(handle.file_name());
+
+                let _ = tx.send(FileDialogResult::ExportHfssPy(path));
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    fn spawn_export_q3d_dialog(&self, ctx: &egui::Context) {
+        let tx = self.file_dialog_tx.clone();
+        let ctx = ctx.clone();
+        spawn_future(async move {
+            let file = rfd::AsyncFileDialog::new()
+                .add_filter("Python Script", &["py"])
+                .set_file_name("q3d_export.py")
+                .save_file()
+                .await;
+            if let Some(handle) = file {
+                #[cfg(not(target_arch = "wasm32"))]
+                let path = handle.path().to_path_buf();
+                #[cfg(target_arch = "wasm32")]
+                let path = PathBuf::from(handle.file_name());
+
+                let _ = tx.send(FileDialogResult::ExportQ3dPy(path));
+                ctx.request_repaint();
+            }
+        });
+    }
+
     /// Poll for completed file dialog results. Called each frame in update().
     fn poll_file_dialogs(&mut self) {
         while let Ok(result) = self.file_dialog_rx.try_recv() {
@@ -438,6 +534,88 @@ impl App {
                 }
                 FileDialogResult::SaveFile(path) => {
                     self.save_to(&path);
+                }
+                FileDialogResult::ImportHfssAedt(path) => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        match import_hfss_project_from_file(&path) {
+                            Ok(project) => {
+                                self.project = project;
+                                self.current_file = None;
+                                self.unsaved_changes = true;
+                                self.status_text = format!("Imported HFSS: {}", path.display());
+                                self.messages.push(MessageEntry::info(format!(
+                                    "Imported HFSS project from {}",
+                                    path.display()
+                                )));
+                            }
+                            Err(e) => {
+                                self.status_text = format!("HFSS import failed: {e}");
+                                self.messages
+                                    .push(MessageEntry::error(format!("HFSS import failed: {e}")));
+                            }
+                        }
+                    }
+                }
+                FileDialogResult::ImportQ3dAedt(path) => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        match import_q3d_project_from_file(&path) {
+                            Ok(project) => {
+                                self.project = project;
+                                self.current_file = None;
+                                self.unsaved_changes = true;
+                                self.status_text = format!("Imported Q3D: {}", path.display());
+                                self.messages.push(MessageEntry::info(format!(
+                                    "Imported Q3D project from {}",
+                                    path.display()
+                                )));
+                            }
+                            Err(e) => {
+                                self.status_text = format!("Q3D import failed: {e}");
+                                self.messages
+                                    .push(MessageEntry::error(format!("Q3D import failed: {e}")));
+                            }
+                        }
+                    }
+                }
+                FileDialogResult::ExportHfssPy(path) => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        match export_hfss_project_to_file(&self.project, &path) {
+                            Ok(()) => {
+                                self.status_text = format!("Exported HFSS script: {}", path.display());
+                                self.messages.push(MessageEntry::info(format!(
+                                    "Exported HFSS script to {}",
+                                    path.display()
+                                )));
+                            }
+                            Err(e) => {
+                                self.status_text = format!("HFSS export failed: {e}");
+                                self.messages
+                                    .push(MessageEntry::error(format!("HFSS export failed: {e}")));
+                            }
+                        }
+                    }
+                }
+                FileDialogResult::ExportQ3dPy(path) => {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        match export_q3d_project_to_file(&self.project, &path) {
+                            Ok(()) => {
+                                self.status_text = format!("Exported Q3D script: {}", path.display());
+                                self.messages.push(MessageEntry::info(format!(
+                                    "Exported Q3D script to {}",
+                                    path.display()
+                                )));
+                            }
+                            Err(e) => {
+                                self.status_text = format!("Q3D export failed: {e}");
+                                self.messages
+                                    .push(MessageEntry::error(format!("Q3D export failed: {e}")));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -461,6 +639,22 @@ impl App {
 
     fn do_open(&self, ctx: &egui::Context) {
         self.spawn_open_dialog(ctx);
+    }
+
+    fn do_import_hfss(&self, ctx: &egui::Context) {
+        self.spawn_import_hfss_dialog(ctx);
+    }
+
+    fn do_import_q3d(&self, ctx: &egui::Context) {
+        self.spawn_import_q3d_dialog(ctx);
+    }
+
+    fn do_export_hfss(&self, ctx: &egui::Context) {
+        self.spawn_export_hfss_dialog(ctx);
+    }
+
+    fn do_export_q3d(&self, ctx: &egui::Context) {
+        self.spawn_export_q3d_dialog(ctx);
     }
 
     fn do_new(&mut self) {
@@ -617,6 +811,10 @@ impl App {
             RibbonAction::SaveProject => self.do_save(ctx),
             RibbonAction::SaveAs => self.do_save_as(ctx),
             RibbonAction::OpenProject => self.do_open(ctx),
+            RibbonAction::ImportHfssAedt => self.do_import_hfss(ctx),
+            RibbonAction::ImportQ3dAedt => self.do_import_q3d(ctx),
+            RibbonAction::ExportHfssPyAedt => self.do_export_hfss(ctx),
+            RibbonAction::ExportQ3dPyAedt => self.do_export_q3d(ctx),
             _ => self.on_ribbon_action(action),
         }
     }
@@ -783,6 +981,19 @@ impl eframe::App for App {
             self.log_text.push_str("\n[solver] async solve completed");
             self.messages
                 .push(MessageEntry::info("Solve completed (async)."));
+        }
+
+        // Check for async project load results (WASM worker responses)
+        if let Some(project) = self.backend.take_loaded_project() {
+            let project_id = project.id.clone();
+            self.project = project;
+            self.unsaved_changes = false;
+            self.status_text = format!("Opened project: {project_id}");
+            self.log_text
+                .push_str(&format!("\n[file] opened project {project_id} (async)"));
+            self.messages
+                .push(MessageEntry::info(format!("Project loaded: {project_id}")));
+            self.report_panels.clear();
         }
 
         // =================================================================

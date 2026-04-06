@@ -15,10 +15,60 @@
         height: 100%;
         display: block;
       }
+      /* Offline indicator */
+      #offline-banner {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        background: #ff9800;
+        color: white;
+        padding: 10px;
+        text-align: center;
+        font-weight: bold;
+        z-index: 9999;
+      }
+      #offline-banner.show {
+        display: block;
+      }
     </style>
     <link data-trunk rel="rust" data-target-name="emstudio_main" />
   </head>
   <body>
+    <div id="offline-banner">⚠️ Offline Mode - Changes will be saved locally</div>
     <canvas id="emstudio-canvas"></canvas>
+
+    <script>
+      // Register Service Worker for offline support
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker
+          .register('/sw.js')
+          .then((reg) => {
+            console.log('[ServiceWorker] Registered:', reg);
+          })
+          .catch((err) => {
+            console.warn('[ServiceWorker] Registration failed:', err);
+          });
+      }
+
+      // Online/Offline event listeners
+      window.addEventListener('offline', () => {
+        document.getElementById('offline-banner').classList.add('show');
+        console.log('[Offline]', 'Network connection lost');
+      });
+      window.addEventListener('online', () => {
+        document.getElementById('offline-banner').classList.remove('show');
+        console.log('[Online]', 'Network connection restored');
+      });
+
+      // Detect initial offline state
+      if (!navigator.onLine) {
+        document.getElementById('offline-banner').classList.add('show');
+      }
+
+      // Worker path for Local-First mode
+      window.WORKER_PATH = '/worker/emstudio_worker.js';
+    </script>
   </body>
 </html>

@@ -11,7 +11,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
 use emstudio_domain::worker_protocol::*;
-use emstudio_domain::Project;
+use emstudio_domain::{Project, SolveResult};
+#[cfg(not(target_arch = "wasm32"))]
 use emstudio_solver::{PlaceholderSolver, Solver};
 
 // ---------------------------------------------------------------------------
@@ -160,8 +161,21 @@ fn handle_solve(data: Vec<u8>) -> WorkerResponse {
         }
     };
 
-    let solver = PlaceholderSolver;
-    let result = solver.solve(&project.model);
+    #[cfg(target_arch = "wasm32")]
+    let result = SolveResult {
+        field_preview: format!(
+            "WASM worker placeholder result for '{}' with {} objects",
+            project.model.name,
+            project.model.objects.len()
+        ),
+        converged: true,
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    let result = {
+        let solver = PlaceholderSolver;
+        solver.solve(&project.model)
+    };
 
     match rmp_serde::to_vec(&result) {
         Ok(result_data) => WorkerResponse::SolveResult { data: result_data },
@@ -218,6 +232,24 @@ async fn remove_from_index(dir: &JsValue, id: &str) -> Result<(), String> {
     save_index(dir, &entries).await
 }
 
+async fn ensure_default_project(dir: &JsValue) -> Result<(), String> {
+    let default_project = Project::default();
+    let filename = format!("{}.emsp", default_project.id);
+
+    // Already exists -> only ensure index consistency.
+    if opfs::read_file(dir, &filename).await.is_ok() {
+        return update_index(dir, &default_project).await;
+    }
+
+    let data = rmp_serde::to_vec(&default_project)
+        .map_err(|e| format!("serialize default project: {e}"))?;
+    opfs::write_file(dir, &filename, &data)
+        .await
+        .map_err(|e| format!("write default project: {e:?}"))?;
+
+    update_index(dir, &default_project).await
+}
+
 // ---------------------------------------------------------------------------
 // Worker entry point
 // ---------------------------------------------------------------------------
@@ -227,6 +259,24 @@ pub fn worker_entry() {
     console_error_panic_hook::set_once();
 
     let scope = worker_global_scope();
+
+    // Ensure OPFS has a bootstrap default project for Local-First startup.
+    spawn_local(async {
+        match opfs::ensure_projects_dir().await {
+            Ok(dir) => {
+                if let Err(e) = ensure_default_project(&dir).await {
+                    web_sys::console::warn_1(
+                        &format!("failed to ensure default project: {e}").into(),
+                    );
+                }
+            }
+            Err(e) => {
+                web_sys::console::warn_1(
+                    &format!("failed to access OPFS projects dir: {e:?}").into(),
+                );
+            }
+        }
+    });
 
     // Register the onmessage handler
     let onmessage = Closure::wrap(Box::new(move |event: web_sys::MessageEvent| {

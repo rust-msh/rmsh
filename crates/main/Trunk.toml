@@ -6,3 +6,14 @@ public_url = "/"
 [serve]
 address = "127.0.0.1"
 port = 8080
+
+# Post-build hooks: Build worker WASM after building main app
+[[hooks.build]]
+stage = "post_build"
+command = "sh"
+command_args = ["-c", "cd ../worker && wasm-pack build --target web --out-dir ../../dist/worker 2>&1 || echo 'Worker build may require manual configuration'"]
+
+[[hooks.build]]
+stage = "post_build"
+command = "cp"
+command_args = ["public/sw.js", "dist/sw.js"]

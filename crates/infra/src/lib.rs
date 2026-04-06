@@ -2,6 +2,11 @@ use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
+#[cfg(not(target_arch = "wasm32"))]
+use emstudio_ansys_exchange::{
+    AnsysDesign, AnsysDesignKind, AnsysProject, AnsysSolutionType, export_pyaedt_script_file,
+    import_aedt_file,
+};
 use emstudio_domain::{Project, SolveResult};
 use emstudio_solver::{PlaceholderSolver, Solver};
 use thiserror::Error;
@@ -35,6 +40,8 @@ pub enum BackendError {
     SerializeError(String),
     #[error("deserialize error: {0}")]
     DeserializeError(String),
+    #[error("ansys exchange error: {0}")]
+    AnsysExchangeError(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -57,6 +64,82 @@ pub fn load_project_from_file(path: &Path) -> Result<Project, BackendError> {
     Ok(project)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+pub fn import_hfss_project_from_file(path: &Path) -> Result<Project, BackendError> {
+    let ansys_project =
+        import_aedt_file(path).map_err(|e| BackendError::AnsysExchangeError(e.to_string()))?;
+    let design = ansys_project
+        .designs
+        .iter()
+        .find(|d| d.kind == AnsysDesignKind::Hfss)
+        .cloned()
+        .ok_or_else(|| {
+            BackendError::AnsysExchangeError("no HFSS design found in input".to_string())
+        })?;
+
+    Ok(legacy_project_from_ansys_design(&ansys_project.name, &design))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn import_q3d_project_from_file(path: &Path) -> Result<Project, BackendError> {
+    let ansys_project =
+        import_aedt_file(path).map_err(|e| BackendError::AnsysExchangeError(e.to_string()))?;
+    let design = ansys_project
+        .designs
+        .iter()
+        .find(|d| d.kind == AnsysDesignKind::Q3d)
+        .cloned()
+        .ok_or_else(|| {
+            BackendError::AnsysExchangeError("no Q3D design found in input".to_string())
+        })?;
+
+    Ok(legacy_project_from_ansys_design(&ansys_project.name, &design))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn export_hfss_project_to_file(project: &Project, path: &Path) -> Result<(), BackendError> {
+    let ansys = ansys_project_from_legacy(project, AnsysDesignKind::Hfss);
+    export_pyaedt_script_file(&ansys, path)
+        .map_err(|e| BackendError::AnsysExchangeError(e.to_string()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn export_q3d_project_to_file(project: &Project, path: &Path) -> Result<(), BackendError> {
+    let ansys = ansys_project_from_legacy(project, AnsysDesignKind::Q3d);
+    export_pyaedt_script_file(&ansys, path)
+        .map_err(|e| BackendError::AnsysExchangeError(e.to_string()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn legacy_project_from_ansys_design(project_name: &str, design: &AnsysDesign) -> Project {
+    let mut project = Project::default();
+    project.id = format!(
+        "ansys-import-{}",
+        design.name.to_ascii_lowercase().replace(' ', "-")
+    );
+    project.title = format!("{} / {}", project_name, design.name);
+    project.model.name = design.name.clone();
+    project
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ansys_project_from_legacy(project: &Project, kind: AnsysDesignKind) -> AnsysProject {
+    let solution_type = match kind {
+        AnsysDesignKind::Hfss => AnsysSolutionType::DrivenModal,
+        AnsysDesignKind::Q3d => AnsysSolutionType::Q3dC,
+    };
+
+    AnsysProject {
+        name: project.title.clone(),
+        designs: vec![AnsysDesign {
+            name: project.model.name.clone(),
+            kind,
+            solution_type,
+            variables: Default::default(),
+        }],
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
@@ -72,6 +155,11 @@ pub trait Backend {
 
     /// Take a pending solve result, if one has arrived. Default returns `None`.
     fn take_solve_result(&mut self) -> Option<SolveResult> {
+        None
+    }
+
+    /// Take a pending loaded project, if one has arrived asynchronously.
+    fn take_loaded_project(&mut self) -> Option<Project> {
         None
     }
 }
@@ -277,5 +365,41 @@ mod tests {
         let result = backend.solve(&p).unwrap();
         // PlaceholderSolver returns something
         assert!(!result.field_preview.is_empty());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn import_hfss_project_from_aedt_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample_hfss.aedt");
+        fs::write(
+            &path,
+            r#"
+oProject = oDesktop.NewProject("RFSystem")
+oProject.InsertDesign("HFSS", "PatchAntenna", "DrivenModal", "")
+"#,
+        )
+        .unwrap();
+
+        let p = import_hfss_project_from_file(&path).unwrap();
+        assert_eq!(p.title, "RFSystem / PatchAntenna");
+        assert_eq!(p.model.name, "PatchAntenna");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn export_q3d_project_to_pyaedt_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("q3d_export.py");
+
+        let mut p = Project::default();
+        p.title = "BoardParasitics".into();
+        p.model.name = "Interconnect".into();
+
+        export_q3d_project_to_file(&p, &path).unwrap();
+        let script = fs::read_to_string(&path).unwrap();
+        assert!(script.contains("Q3d("));
+        assert!(script.contains("BoardParasitics"));
+        assert!(script.contains("Interconnect"));
     }
 }

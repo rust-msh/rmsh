@@ -43,8 +43,12 @@ pub enum RibbonAction {
     CloseProject,
     ImportStep,
     ImportSat,
+    ImportHfssAedt,
+    ImportQ3dAedt,
     ExportStep,
     ExportSat,
+    ExportHfssPyAedt,
+    ExportQ3dPyAedt,
     // View
     ToggleGrid,
     ToggleRuler,
@@ -1060,6 +1064,8 @@ fn build_desktop_tab(is_web: bool) -> RibbonTab {
                             menu_items: vec![
                                 MenuItem { label: "Import STEP".into(), action: RibbonAction::ImportStep, enabled: file_ops },
                                 MenuItem { label: "Import SAT".into(), action: RibbonAction::ImportSat, enabled: file_ops },
+                                MenuItem { label: "Import HFSS (.aedt/.py)".into(), action: RibbonAction::ImportHfssAedt, enabled: file_ops },
+                                MenuItem { label: "Import Q3D (.aedt/.py)".into(), action: RibbonAction::ImportQ3dAedt, enabled: file_ops },
                             ],
                         },
                         RibbonItem::LargeSplitButton {
@@ -1071,6 +1077,8 @@ fn build_desktop_tab(is_web: bool) -> RibbonTab {
                             menu_items: vec![
                                 MenuItem { label: "Export STEP".into(), action: RibbonAction::ExportStep, enabled: file_ops },
                                 MenuItem { label: "Export SAT".into(), action: RibbonAction::ExportSat, enabled: file_ops },
+                                MenuItem { label: "Export HFSS Script (.py)".into(), action: RibbonAction::ExportHfssPyAedt, enabled: file_ops },
+                                MenuItem { label: "Export Q3D Script (.py)".into(), action: RibbonAction::ExportQ3dPyAedt, enabled: file_ops },
                             ],
                         },
                     ],

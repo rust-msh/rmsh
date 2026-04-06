@@ -11,12 +11,16 @@ pub mod adaptive;
 pub mod sweep;
 pub mod results;
 pub mod solver_log;
+pub mod wasm_compat;
 
 use emstudio_domain::{EmModel, SolveResult};
 
 pub use error::SolverError;
 pub use pipeline::{SolverPipeline, SolverOutput};
 pub use progress::{ProgressCallback, SolverProgress, NoOpProgress};
+
+// Route to platform-specific solver implementation
+pub use wasm_compat::dispatch_solver;
 
 // ---------------------------------------------------------------------------
 // Legacy interface (kept for backward compatibility with worker crate)

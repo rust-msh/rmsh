@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+emstudio-ansys-exchange = { path = "../ansys-exchange" }
 emstudio-domain = { path = "../domain" }
 emstudio-solver = { path = "../solver" }
 rmp-serde.workspace = true
