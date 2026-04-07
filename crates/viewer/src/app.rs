@@ -11,6 +11,7 @@ use rmsh_algo::{
 use rmsh_geo::extract::{PointData, SurfaceData, WireframeData};
 use rmsh_model::{GSelection, Mesh, Point3, Topology, Vector3};
 use rmsh_renderer::{CameraExt, RenderConfig, Scene};
+use rcad_render::Camera as RcadCamera;
 
 use crate::io::{
     IoEvent, IoQueue, MshSaveFormat, default_save_name, drain_io_events, enqueue_event,
@@ -1414,6 +1415,7 @@ impl eframe::App for RmshApp {
             let mut renderer = render_state.renderer.write();
             if let Some(scene) = renderer.callback_resources.get_mut::<Scene>() {
                 scene.config = self.config.clone();
+                scene.sync_config();
             }
         }
 
@@ -1526,19 +1528,22 @@ impl eframe::App for RmshApp {
 
         // Left panel — display controls
         egui::SidePanel::left("controls_panel")
-            .default_width(200.0)
+            .default_width(220.0)
             .show(ctx, |ui| {
                 ui.heading("Display");
                 ui.separator();
 
-                ui.checkbox(&mut self.config.show_nodes, "Show Nodes");
-                ui.checkbox(&mut self.config.show_edges, "Show Edges");
-                ui.checkbox(&mut self.config.show_faces, "Show Faces");
-                ui.checkbox(&mut self.config.show_volumes, "Show Volumes");
+                // ── Visibility ────────────────────────────────────────────────
+                ui.checkbox(&mut self.config.show_nodes, "Nodes");
+                ui.checkbox(&mut self.config.show_edges, "Edges");
+                ui.checkbox(&mut self.config.show_faces, "Faces");
+                ui.checkbox(&mut self.config.show_volumes, "Volumes");
                 ui.separator();
-                ui.checkbox(&mut self.config.show_gizmo, "Show Axes Gizmo");
+                ui.checkbox(&mut self.config.show_gizmo, "Axes Gizmo");
+                ui.checkbox(&mut self.config.show_scale_ruler, "Scale Ruler");
                 ui.separator();
 
+                // ── View ──────────────────────────────────────────────────────
                 if ui.button("Isometric View").clicked() {
                     if let Some(ref render_state) = self.render_state {
                         let mut renderer = render_state.renderer.write();
@@ -1548,22 +1553,13 @@ impl eframe::App for RmshApp {
                     }
                 }
 
-                // Projection mode toggle
                 let proj_label = {
                     if let Some(ref render_state) = self.render_state {
                         let renderer = render_state.renderer.read();
                         if let Some(scene) = renderer.callback_resources.get::<Scene>() {
-                            if scene.camera.orthographic() {
-                                "Perspective"
-                            } else {
-                                "Orthographic"
-                            }
-                        } else {
-                            "Orthographic"
-                        }
-                    } else {
-                        "Orthographic"
-                    }
+                            if scene.camera.orthographic() { "Perspective" } else { "Orthographic" }
+                        } else { "Orthographic" }
+                    } else { "Orthographic" }
                 };
                 if ui.button(proj_label).clicked() {
                     if let Some(ref render_state) = self.render_state {
@@ -1575,13 +1571,39 @@ impl eframe::App for RmshApp {
                 }
                 ui.separator();
 
-                ui.label("Surface Opacity");
-                ui.add(egui::Slider::new(
-                    &mut self.config.surface_opacity,
-                    0.0..=1.0,
-                ));
+                // ── Appearance ────────────────────────────────────────────────
+                ui.collapsing("Appearance", |ui| {
+                    ui.label("Surface opacity");
+                    ui.add(egui::Slider::new(&mut self.config.surface_opacity, 0.0..=1.0));
 
+                    ui.label("Face color");
+                    egui::color_picker::color_edit_button_rgb(ui, &mut self.config.face_color);
+
+                    ui.label("Edge color");
+                    egui::color_picker::color_edit_button_rgb(ui, &mut self.config.edge_color);
+
+                    ui.label("Node color");
+                    egui::color_picker::color_edit_button_rgb(ui, &mut self.config.node_color);
+
+                    ui.label("Background top");
+                    egui::color_picker::color_edit_button_rgb(ui, &mut self.config.bg_color_top);
+
+                    ui.label("Background bottom");
+                    egui::color_picker::color_edit_button_rgb(ui, &mut self.config.bg_color_bottom);
+
+                    if ui.button("Reset to defaults").clicked() {
+                        let d = RenderConfig::default();
+                        self.config.face_color = d.face_color;
+                        self.config.edge_color = d.edge_color;
+                        self.config.node_color = d.node_color;
+                        self.config.surface_opacity = d.surface_opacity;
+                        self.config.bg_color_top = d.bg_color_top;
+                        self.config.bg_color_bottom = d.bg_color_bottom;
+                    }
+                });
                 ui.separator();
+
+                // ── Mesh stats ────────────────────────────────────────────────
                 if let Some(ref mesh) = self.mesh {
                     ui.label(format!("Nodes: {}", mesh.node_count()));
                     ui.label(format!("Elements: {}", mesh.element_count()));
@@ -1590,21 +1612,13 @@ impl eframe::App for RmshApp {
                     let dim2 = mesh.elements_by_dimension(2).len();
                     let dim1 = mesh.elements_by_dimension(1).len();
                     let dim0 = mesh.elements_by_dimension(0).len();
-                    if dim3 > 0 {
-                        ui.label(format!("  Volume: {}", dim3));
-                    }
-                    if dim2 > 0 {
-                        ui.label(format!("  Surface: {}", dim2));
-                    }
-                    if dim1 > 0 {
-                        ui.label(format!("  Edge: {}", dim1));
-                    }
-                    if dim0 > 0 {
-                        ui.label(format!("  Point: {}", dim0));
-                    }
+                    if dim3 > 0 { ui.label(format!("  Volume: {}", dim3)); }
+                    if dim2 > 0 { ui.label(format!("  Surface: {}", dim2)); }
+                    if dim1 > 0 { ui.label(format!("  Edge: {}", dim1)); }
+                    if dim0 > 0 { ui.label(format!("  Point: {}", dim0)); }
                 } else {
                     ui.label("No mesh loaded");
-                    ui.label("Drag & drop a .msh file");
+                    ui.label("Drag & drop a .msh/.step file");
                 }
             });
 
@@ -2105,9 +2119,41 @@ impl eframe::App for RmshApp {
         });
 
         // Central panel — 3D viewport
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ctx, |ui| {
             let available = ui.available_size();
             let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
+
+            // ── Gradient background ───────────────────────────────────────────
+            {
+                let [r0, g0, b0] = self.config.bg_color_bottom;
+                let [r1, g1, b1] = self.config.bg_color_top;
+                let col_bottom = egui::Color32::from_rgb(
+                    (r0 * 255.0) as u8, (g0 * 255.0) as u8, (b0 * 255.0) as u8,
+                );
+                let col_top = egui::Color32::from_rgb(
+                    (r1 * 255.0) as u8, (g1 * 255.0) as u8, (b1 * 255.0) as u8,
+                );
+                ui.painter().add(egui::epaint::RectShape::new(
+                    rect,
+                    egui::CornerRadius::ZERO,
+                    egui::epaint::Color32::TRANSPARENT,
+                    egui::Stroke::NONE,
+                    egui::epaint::StrokeKind::Inside,
+                ));
+                // Vertical gradient via two triangles
+                ui.painter().add(egui::Shape::mesh({
+                    let mut mesh = egui::epaint::Mesh::default();
+                    mesh.colored_vertex(rect.left_top(), col_top);
+                    mesh.colored_vertex(rect.right_top(), col_top);
+                    mesh.colored_vertex(rect.right_bottom(), col_bottom);
+                    mesh.colored_vertex(rect.left_bottom(), col_bottom);
+                    mesh.add_triangle(0, 1, 2);
+                    mesh.add_triangle(0, 2, 3);
+                    mesh
+                }));
+            }
 
             // Handle mouse input for camera control
             if let Some(ref render_state) = self.render_state {
@@ -2120,7 +2166,100 @@ impl eframe::App for RmshApp {
             // Queue custom wgpu rendering
             let cb = egui_wgpu::Callback::new_paint_callback(rect, ViewportCallback);
             ui.painter().add(cb);
+
+            // ── Scale ruler ───────────────────────────────────────────────────
+            if self.config.show_scale_ruler {
+                if let Some(ref render_state) = self.render_state {
+                    let renderer = render_state.renderer.read();
+                    if let Some(scene) = renderer.callback_resources.get::<Scene>() {
+                        draw_scale_ruler(ui, rect, &scene.camera);
+                    }
+                }
+            }
         });
+    }
+}
+
+/// Draw a Gmsh-style scale ruler in the bottom-left corner of the viewport.
+///
+/// The ruler width is chosen as the largest power-of-ten (or ½ × that) that
+/// fits in roughly 20% of the viewport width.  The world-space length is
+/// derived from the camera distance, assuming 45° FOV perspective.
+fn draw_scale_ruler(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    camera: &RcadCamera,
+) {
+    // Estimate world units per pixel at the target distance
+    let fov_rad = 45.0_f32.to_radians();
+    let h_world = 2.0 * camera.distance * (fov_rad / 2.0).tan();
+    let px_height = rect.height().max(1.0);
+    let world_per_px = h_world / px_height;
+
+    // Target ruler: about 15% of viewport width
+    let target_world = world_per_px * rect.width() * 0.15;
+
+    // Round to a nice value: 1, 2, 5 × 10^n
+    let exp = target_world.log10().floor();
+    let base = 10f32.powf(exp);
+    let nice = if target_world / base < 1.5 {
+        base
+    } else if target_world / base < 3.5 {
+        base * 2.0
+    } else {
+        base * 5.0
+    };
+
+    let ruler_px = nice / world_per_px;
+    if ruler_px < 4.0 { return; }
+
+    let margin = 14.0_f32;
+    let ruler_y = rect.bottom() - margin - 6.0;
+    let ruler_x0 = rect.left() + margin;
+    let ruler_x1 = ruler_x0 + ruler_px;
+
+    let tick_h = 5.0_f32;
+    let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(220, 220, 220));
+    let painter = ui.painter_at(rect);
+
+    // Horizontal bar
+    painter.line_segment(
+        [egui::pos2(ruler_x0, ruler_y), egui::pos2(ruler_x1, ruler_y)],
+        stroke,
+    );
+    // Left tick
+    painter.line_segment(
+        [egui::pos2(ruler_x0, ruler_y - tick_h), egui::pos2(ruler_x0, ruler_y)],
+        stroke,
+    );
+    // Right tick
+    painter.line_segment(
+        [egui::pos2(ruler_x1, ruler_y - tick_h), egui::pos2(ruler_x1, ruler_y)],
+        stroke,
+    );
+
+    // Label
+    let label = format_ruler_length(nice);
+    painter.text(
+        egui::pos2((ruler_x0 + ruler_x1) / 2.0, ruler_y - tick_h - 3.0),
+        egui::Align2::CENTER_BOTTOM,
+        &label,
+        egui::FontId::proportional(11.0),
+        egui::Color32::from_rgb(220, 220, 220),
+    );
+}
+
+fn format_ruler_length(v: f32) -> String {
+    if v >= 1.0 {
+        if (v - v.round()).abs() < v * 0.01 {
+            format!("{}", v.round() as i64)
+        } else {
+            format!("{:.2}", v)
+        }
+    } else if v >= 0.01 {
+        format!("{:.3}", v)
+    } else {
+        format!("{:.2e}", v)
     }
 }
 

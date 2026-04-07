@@ -13,6 +13,7 @@ rmsh-geo = {  workspace = true }
 rmsh-io = { workspace = true }
 rmsh-algo = { workspace = true }
 rmsh-renderer = { workspace = true }
+rcad-render = { workspace = true }
 egui = { workspace = true }
 eframe = { workspace = true, features = ["wgpu"] }
 wgpu = { workspace = true }
