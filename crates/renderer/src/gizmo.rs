@@ -174,7 +174,7 @@ impl GizmoRenderer {
         let half = 1.5f32;
         let scale_x = gizmo_size_px / w;
         let scale_y = gizmo_size_px / h;
-        let offset_x = -1.0 + scale_x;
+        let offset_x = 1.0 - scale_x;
         let offset_y = -1.0 + scale_y;
 
         let proj = glam::Mat4::orthographic_rh(-half, half, -half, half, 0.1, 100.0);
