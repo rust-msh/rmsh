@@ -1,20 +1,13 @@
 //! STEP (.step / .stp) import and export via `rcad-step`.
 //!
-//! # Load path
-//! `StepReader::read_file` / `StepReader::parse_string`  →  `BRep`
-//! The resulting `BRep` is converted to an `rmsh_model::Mesh` by
-//! extracting every triangle stored in `Face::triangles`.
-//!
-//! # Save path
-//! The `Mesh` nodes and triangular/quad elements are packed into a
-//! minimal `BRep` (one shell, one face per element, triangle list),
-//! then `StepWriter::write_string` serialises it as ISO-10303-21.
+//! The heavy lifting (BRep parsing, triangle extraction, STEP serialisation)
+//! lives in `rcad-step`.  This module is a thin adapter that converts between
+//! `rcad-step`'s raw `(Vec<DVec3>, Vec<[usize;3]>)` representation and
+//! `rmsh_model::Mesh`.
 
-use std::collections::HashMap;
 use std::path::Path;
 
-use rcad_kernel::{BRep, Face, Shell, Solid, Vertex, Wire};
-use rcad_step::writer::{ExportSelection, StepWriter};
+use rcad_step::writer::StepWriter;
 use rcad_step::StepReader;
 use rmsh_model::{Element, ElementType, Mesh, Node};
 use thiserror::Error;
@@ -27,11 +20,11 @@ pub enum StepError {
     Parse(String),
 }
 
-// ── Public API (unchanged signatures) ─────────────────────────────────────────
+// ── Public API ─────────────────────────────────────────────────────────────────
 
 pub fn load_step_from_path(path: &Path) -> Result<Mesh, StepError> {
-    let brep = StepReader::read_file(path).map_err(StepError::Parse)?;
-    Ok(brep_to_mesh(&brep))
+    let (verts, tris) = StepReader::read_trimesh(path).map_err(StepError::Parse)?;
+    Ok(trimesh_to_mesh(verts, tris))
 }
 
 pub fn load_step_from_bytes(data: &[u8]) -> Result<Mesh, StepError> {
@@ -40,14 +33,8 @@ pub fn load_step_from_bytes(data: &[u8]) -> Result<Mesh, StepError> {
 }
 
 pub fn parse_step(text: &str) -> Result<Mesh, StepError> {
-    let brep = StepReader::parse_string(text).map_err(StepError::Parse)?;
-    let mesh = brep_to_mesh(&brep);
-    if mesh.node_count() == 0 || mesh.element_count() == 0 {
-        return Err(StepError::Parse(
-            "No polygonal faces found in STEP data".to_string(),
-        ));
-    }
-    Ok(mesh)
+    let (verts, tris) = StepReader::parse_trimesh(text).map_err(StepError::Parse)?;
+    Ok(trimesh_to_mesh(verts, tris))
 }
 
 pub fn save_step_to_path(path: &Path, mesh: &Mesh) -> Result<(), StepError> {
@@ -57,90 +44,46 @@ pub fn save_step_to_path(path: &Path, mesh: &Mesh) -> Result<(), StepError> {
 }
 
 pub fn write_step(mesh: &Mesh) -> Result<String, StepError> {
-    if mesh.nodes.is_empty() || mesh.elements.is_empty() {
-        return Err(StepError::Parse(
-            "cannot write empty mesh to STEP".to_string(),
-        ));
-    }
-    let brep = mesh_to_brep(mesh)?;
-    let all_faces: Vec<usize> = (0..brep
-        .solids
-        .first()
-        .and_then(|s| s.shells.first())
-        .map(|sh| sh.faces.len())
-        .unwrap_or(0))
-        .collect();
-    let selection = ExportSelection {
-        selected_faces: &all_faces,
-        selected_edges: &[],
-    };
-    Ok(StepWriter::write_string(&brep, selection))
+    let (verts, tris) = mesh_to_trimesh(mesh);
+    StepWriter::write_trimesh(&verts, &tris).map_err(StepError::Parse)
 }
 
-// ── BRep ↔ Mesh conversions ───────────────────────────────────────────────────
+// ── Mesh ↔ trimesh conversions ─────────────────────────────────────────────────
 
-/// Convert a `BRep` produced by `rcad-step` into an `rmsh_model::Mesh`.
-///
-/// Each `Face::triangles` entry becomes one `Triangle3` element; the
-/// corresponding `BRep::vertices` supply the node coordinates.
-fn brep_to_mesh(brep: &BRep) -> Mesh {
+fn trimesh_to_mesh(verts: Vec<glam::DVec3>, tris: Vec<[usize; 3]>) -> Mesh {
     let mut mesh = Mesh::new();
-    let mut vi_to_node: HashMap<usize, u64> = HashMap::new();
-    let mut node_id: u64 = 1;
-    let mut elem_id: u64 = 1;
-
-    for solid in &brep.solids {
-        for shell in &solid.shells {
-            for face in &shell.faces {
-                for &[i0, i1, i2] in &face.triangles {
-                    let mut nids = Vec::with_capacity(3);
-                    for vi in [i0, i1, i2] {
-                        let nid = *vi_to_node.entry(vi).or_insert_with(|| {
-                            let id = node_id;
-                            node_id += 1;
-                            if let Some(v) = brep.vertices.get(vi) {
-                                mesh.add_node(Node::new(id, v.point.x, v.point.y, v.point.z));
-                            }
-                            id
-                        });
-                        nids.push(nid);
-                    }
-                    mesh.add_element(Element::new(elem_id, ElementType::Triangle3, nids));
-                    elem_id += 1;
-                }
-            }
-        }
+    for (i, v) in verts.iter().enumerate() {
+        mesh.add_node(Node::new((i + 1) as u64, v.x, v.y, v.z));
+    }
+    for (i, &[a, b, c]) in tris.iter().enumerate() {
+        mesh.add_element(Element::new(
+            (i + 1) as u64,
+            ElementType::Triangle3,
+            vec![(a + 1) as u64, (b + 1) as u64, (c + 1) as u64],
+        ));
     }
     mesh
 }
 
-/// Pack an `rmsh_model::Mesh` into a minimal `BRep` for STEP export.
-///
-/// Each 2-D element becomes one `Face` whose `triangles` list holds the
-/// fan-triangulated polygon.  The `BRep` has a single shell / solid.
-fn mesh_to_brep(mesh: &Mesh) -> Result<BRep, StepError> {
-    // Collect vertices in node-id order so indices are stable.
+fn mesh_to_trimesh(mesh: &Mesh) -> (Vec<glam::DVec3>, Vec<[usize; 3]>) {
     let mut node_ids: Vec<u64> = mesh.nodes.keys().copied().collect();
     node_ids.sort_unstable();
-    let vi_map: HashMap<u64, usize> = node_ids
+    let vi_map: std::collections::HashMap<u64, usize> = node_ids
         .iter()
         .copied()
         .enumerate()
         .map(|(i, nid)| (nid, i))
         .collect();
 
-    let vertices: Vec<Vertex> = node_ids
+    let verts: Vec<glam::DVec3> = node_ids
         .iter()
         .map(|nid| {
             let p = &mesh.nodes[nid].position;
-            Vertex {
-                point: glam::DVec3::new(p.x, p.y, p.z),
-            }
+            glam::DVec3::new(p.x, p.y, p.z)
         })
         .collect();
 
-    let mut faces: Vec<Face> = Vec::new();
-
+    let mut tris: Vec<[usize; 3]> = Vec::new();
     for elem in &mesh.elements {
         if elem.dimension() < 2 || elem.node_ids.len() < 3 {
             continue;
@@ -153,36 +96,13 @@ fn mesh_to_brep(mesh: &Mesh) -> Result<BRep, StepError> {
         if indices.len() < 3 {
             continue;
         }
-
-        // Fan-triangulate the face polygon.
-        let mut triangles: Vec<[usize; 3]> = Vec::new();
+        // Fan-triangulate the polygon.
         let root = indices[0];
         for i in 1..(indices.len() - 1) {
-            triangles.push([root, indices[i], indices[i + 1]]);
+            tris.push([root, indices[i], indices[i + 1]]);
         }
-
-        faces.push(Face {
-            outer_wire: Wire { edges: Vec::new() },
-            inner_wires: Vec::new(),
-            normal: glam::DVec3::Z,
-            triangles,
-        });
     }
-
-    if faces.is_empty() {
-        return Err(StepError::Parse(
-            "no 2-D elements to write as STEP faces".to_string(),
-        ));
-    }
-
-    Ok(BRep {
-        vertices,
-        edges: Vec::new(),
-        solids: vec![Solid {
-            shells: vec![Shell { faces }],
-        }],
-        geom: rcad_kernel::GeomStore::default(),
-    })
+    (verts, tris)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -252,7 +172,6 @@ END-ISO-10303-21;
     #[test]
     fn roundtrip_write_then_parse() {
         use rmsh_model::{Element, ElementType, Mesh, Node};
-        // Simple triangle mesh: two triangles forming a square.
         let mut mesh = Mesh::new();
         mesh.add_node(Node::new(1, 0.0, 0.0, 0.0));
         mesh.add_node(Node::new(2, 1.0, 0.0, 0.0));
@@ -282,7 +201,7 @@ END-ISO-10303-21;
             .join("simple_tetra.step");
 
         if !path.exists() {
-            return; // file not present in all CI environments
+            return;
         }
         let mesh = load_step_from_path(&path).expect("generated STEP file should parse");
         assert!(mesh.node_count() > 0);
