@@ -15,12 +15,12 @@ DATA;
 #13=VERTEX_POINT('',#3);
 #14=VERTEX_POINT('',#4);
 
-#21=EDGE_CURVE('',#11,#12,#999,.T.);
-#22=EDGE_CURVE('',#12,#13,#999,.T.);
-#23=EDGE_CURVE('',#13,#11,#999,.T.);
-#24=EDGE_CURVE('',#11,#14,#999,.T.);
-#25=EDGE_CURVE('',#12,#14,#999,.T.);
-#26=EDGE_CURVE('',#13,#14,#999,.T.);
+#21=EDGE_CURVE('',#11,#12,$,.T.);
+#22=EDGE_CURVE('',#12,#13,$,.T.);
+#23=EDGE_CURVE('',#13,#11,$,.T.);
+#24=EDGE_CURVE('',#11,#14,$,.T.);
+#25=EDGE_CURVE('',#12,#14,$,.T.);
+#26=EDGE_CURVE('',#13,#14,$,.T.);
 
 #31=ORIENTED_EDGE('',*,*,#21,.T.);
 #32=ORIENTED_EDGE('',*,*,#22,.T.);
@@ -48,10 +48,10 @@ DATA;
 #63=FACE_OUTER_BOUND('',#53,.T.);
 #64=FACE_OUTER_BOUND('',#54,.T.);
 
-#71=ADVANCED_FACE('',(#61),#998,.T.);
-#72=ADVANCED_FACE('',(#62),#998,.T.);
-#73=ADVANCED_FACE('',(#63),#998,.T.);
-#74=ADVANCED_FACE('',(#64),#998,.T.);
+#71=ADVANCED_FACE('',(#61),$,.T.);
+#72=ADVANCED_FACE('',(#62),$,.T.);
+#73=ADVANCED_FACE('',(#63),$,.T.);
+#74=ADVANCED_FACE('',(#64),$,.T.);
 
 #81=CLOSED_SHELL('',(#71,#72,#73,#74));
 #82=MANIFOLD_SOLID_BREP('',#81);

@@ -791,12 +791,25 @@ fn parse_msh_v2_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
                 }
             }
             "$Elements" => {
-                let _ = read_line(&mut pos); // total element count line (ASCII)
+                let Some(total_line) = read_line(&mut pos) else {
+                    break;
+                };
+                let total_elements: usize = total_line.trim().parse().map_err(|_| MshError::Parse {
+                    line: 0,
+                    message: "binary v2: invalid total element count".into(),
+                })?;
 
-                // Gmsh v2 binary format: int32 n_element_types, followed by blocks
-                // [elem_type, n_elems_in_block, n_tags] and per-element records.
-                let n_element_types = read_i32_le(&mut pos)? as usize;
-                for _ in 0..n_element_types {
+                let mut parsed_elements = 0usize;
+                while parsed_elements < total_elements {
+                    while pos < bytes.len() && matches!(bytes[pos], b'\n' | b'\r') {
+                        pos += 1;
+                    }
+                    if pos + b"$EndElements".len() <= bytes.len()
+                        && bytes[pos..].starts_with(b"$EndElements")
+                    {
+                        break;
+                    }
+
                     let element_type_id = read_i32_le(&mut pos)?;
                     let n_elems = read_i32_le(&mut pos)? as usize;
                     let n_tags = read_i32_le(&mut pos)? as usize;
@@ -823,12 +836,22 @@ fn parse_msh_v2_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
                             node_ids.push(read_i32_le(&mut pos)? as u64);
                         }
 
-                        if !matches!(etype, ElementType::Unknown(_)) {
-                            let mut elem = Element::new(elem_id, etype, node_ids);
-                            elem.physical_tag = physical_tag;
-                            mesh.add_element(elem);
-                        }
+                        let mut elem = Element::new(elem_id, etype, node_ids);
+                        elem.physical_tag = physical_tag;
+                        mesh.add_element(elem);
                     }
+
+                    parsed_elements += n_elems;
+                }
+
+                if parsed_elements != total_elements {
+                    return Err(MshError::Parse {
+                        line: 0,
+                        message: format!(
+                            "binary v2: expected {} elements, parsed {}",
+                            total_elements, parsed_elements
+                        ),
+                    });
                 }
 
                 // Consume trailing newline and $EndElements marker.

@@ -1,8 +1,6 @@
-use rcad_render::{Camera, RendererStyle, Tessellator, WgpuRenderer};
+use rcad_render::{Camera, DisplayMode, Tessellator, WgpuRenderer};
 use rcad_kernel::{BRep, Shell, Solid, Vertex, Wire, Face};
 use rmsh_geo::extract::{PointData, SurfaceData, WireframeData};
-
-use crate::gizmo::GizmoRenderer;
 
 /// Re-export rcad-render Camera as the orbit camera.
 pub use rcad_render::Camera as OrbitCamera;
@@ -62,7 +60,7 @@ pub struct RenderConfig {
     pub show_edges: bool,
     pub show_faces: bool,
     pub show_volumes: bool,
-    pub show_gizmo: bool,
+    pub show_axes: bool,
     pub show_scale_ruler: bool,
 
     // ── Background ─────────────────────────────────────────────────────────────
@@ -98,7 +96,7 @@ impl Default for RenderConfig {
             show_edges: true,
             show_faces: true,
             show_volumes: true,
-            show_gizmo: true,
+            show_axes: true,
             show_scale_ruler: true,
 
             // Gmsh: dark gradient background  (top ≈ #1a1f2e, bottom ≈ #0d1117)
@@ -122,30 +120,22 @@ impl Default for RenderConfig {
 }
 
 impl RenderConfig {
-    /// Convert to a `RendererStyle` for rcad-render.
-    pub fn to_renderer_style(&self) -> RendererStyle {
-        RendererStyle {
-            face_color: [
-                self.face_color[0],
-                self.face_color[1],
-                self.face_color[2],
-                self.surface_opacity,
-            ],
-            edge_color: [
-                self.edge_color[0],
-                self.edge_color[1],
-                self.edge_color[2],
-                1.0,
-            ],
-            node_color: [
-                self.node_color[0],
-                self.node_color[1],
-                self.node_color[2],
-                1.0,
-            ],
-            face_highlight_color: self.face_highlight_color,
-            edge_highlight_color: self.edge_highlight_color,
+    fn to_display_mode(&self) -> DisplayMode {
+        match (self.show_faces, self.show_edges) {
+            (true, true) => DisplayMode::SolidWithEdges,
+            (true, false) => DisplayMode::Solid,
+            (false, true) => DisplayMode::Wireframe,
+            (false, false) => DisplayMode::Wireframe,
         }
+    }
+
+    fn model_color_rgba(&self) -> [f32; 4] {
+        [
+            self.face_color[0],
+            self.face_color[1],
+            self.face_color[2],
+            self.surface_opacity,
+        ]
     }
 }
 
@@ -154,7 +144,6 @@ pub struct Scene {
     pub camera: Camera,
     pub config: RenderConfig,
     pub renderer: WgpuRenderer,
-    pub gizmo: GizmoRenderer,
 }
 
 impl Scene {
@@ -163,7 +152,6 @@ impl Scene {
             camera: Camera::new(),
             config: RenderConfig::default(),
             renderer: WgpuRenderer::new(device, target_format),
-            gizmo: GizmoRenderer::new(device, target_format),
         }
     }
 
@@ -173,19 +161,11 @@ impl Scene {
         device: &wgpu::Device,
         surface: &SurfaceData,
         wireframe: &WireframeData,
-        points: &PointData,
+        _points: &PointData,
     ) {
         let brep = surface_wireframe_to_brep(surface, wireframe);
         let mesh = Tessellator::tessellate(&brep);
         self.renderer.upload_mesh(device, &mesh);
-
-        // Upload node positions for point rendering
-        let node_positions: Vec<[f32; 3]> = points
-            .positions
-            .iter()
-            .map(|p| [p[0], p[1], p[2]])
-            .collect();
-        self.renderer.upload_nodes(device, &node_positions);
     }
 
     /// Upload highlight geometry.
@@ -218,25 +198,21 @@ impl Scene {
         }
         let aspect = width as f32 / height as f32;
         self.renderer.update_camera(queue, &self.camera, aspect);
-        self.renderer.update_style(queue, &self.config.to_renderer_style());
-        if self.config.show_gizmo {
-            self.gizmo.update(queue, &self.camera, width, height);
-        }
+        self.renderer
+            .set_model_color(queue, self.config.model_color_rgba());
     }
 
     /// Sync draw flags from config to renderer.
     pub fn sync_config(&mut self) {
-        self.renderer.show_faces = self.config.show_faces;
-        self.renderer.show_edges = self.config.show_edges;
-        self.renderer.show_nodes = self.config.show_nodes;
+        self.renderer
+            .set_display_mode(self.config.to_display_mode());
+        self.renderer.set_show_axes(self.config.show_axes);
+        self.renderer.set_show_grid(self.config.show_scale_ruler);
     }
 
     /// Draw into an active render pass (called from egui paint callback).
     pub fn draw_in_render_pass(&self, render_pass: &mut wgpu::RenderPass<'_>) {
         self.renderer.draw_in_render_pass(render_pass, false);
-        if self.config.show_gizmo {
-            self.gizmo.draw(render_pass);
-        }
     }
 }
 
@@ -267,6 +243,7 @@ fn surface_wireframe_to_brep(surface: &SurfaceData, wireframe: &WireframeData) -
         inner_wires: Vec::new(),
         normal: glam::DVec3::Z,
         triangles,
+        mesh_dirty: true,
     };
 
     BRep {

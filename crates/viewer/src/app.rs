@@ -1539,7 +1539,7 @@ impl eframe::App for RmshApp {
                 ui.checkbox(&mut self.config.show_faces, "Faces");
                 ui.checkbox(&mut self.config.show_volumes, "Volumes");
                 ui.separator();
-                ui.checkbox(&mut self.config.show_gizmo, "Axes Gizmo");
+                ui.checkbox(&mut self.config.show_axes, "Axes");
                 ui.checkbox(&mut self.config.show_scale_ruler, "Scale Ruler");
                 ui.separator();
 

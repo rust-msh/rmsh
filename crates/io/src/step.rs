@@ -7,6 +7,9 @@
 
 use std::path::Path;
 
+use rcad_algorithms::{TessellationParams, mesh_brep};
+use rcad_kernel::{BRep, Face, Shell, Solid, Vertex, Wire};
+use rcad_step::ExportSelection;
 use rcad_step::writer::StepWriter;
 use rcad_step::StepReader;
 use rmsh_model::{Element, ElementType, Mesh, Node};
@@ -23,7 +26,8 @@ pub enum StepError {
 // ── Public API ─────────────────────────────────────────────────────────────────
 
 pub fn load_step_from_path(path: &Path) -> Result<Mesh, StepError> {
-    let (verts, tris) = StepReader::read_trimesh(path).map_err(StepError::Parse)?;
+    let brep = read_tessellated_brep_from_path(path)?;
+    let (verts, tris) = brep_to_trimesh(&brep);
     Ok(trimesh_to_mesh(verts, tris))
 }
 
@@ -33,7 +37,8 @@ pub fn load_step_from_bytes(data: &[u8]) -> Result<Mesh, StepError> {
 }
 
 pub fn parse_step(text: &str) -> Result<Mesh, StepError> {
-    let (verts, tris) = StepReader::parse_trimesh(text).map_err(StepError::Parse)?;
+    let brep = parse_tessellated_brep(text)?;
+    let (verts, tris) = brep_to_trimesh(&brep);
     Ok(trimesh_to_mesh(verts, tris))
 }
 
@@ -45,7 +50,20 @@ pub fn save_step_to_path(path: &Path, mesh: &Mesh) -> Result<(), StepError> {
 
 pub fn write_step(mesh: &Mesh) -> Result<String, StepError> {
     let (verts, tris) = mesh_to_trimesh(mesh);
-    StepWriter::write_trimesh(&verts, &tris).map_err(StepError::Parse)
+    if verts.is_empty() || tris.is_empty() {
+        return Err(StepError::Parse(
+            "mesh has no vertices/triangles to export".to_string(),
+        ));
+    }
+
+    let brep = trimesh_to_brep(&verts, &tris);
+    Ok(StepWriter::write_string(
+        &brep,
+        ExportSelection {
+            selected_faces: &[],
+            selected_edges: &[],
+        },
+    ))
 }
 
 // ── Mesh ↔ trimesh conversions ─────────────────────────────────────────────────
@@ -103,6 +121,66 @@ fn mesh_to_trimesh(mesh: &Mesh) -> (Vec<glam::DVec3>, Vec<[usize; 3]>) {
         }
     }
     (verts, tris)
+}
+
+fn read_tessellated_brep_from_path(path: &Path) -> Result<BRep, StepError> {
+    let mut brep = StepReader::read_file(path).map_err(|e| StepError::Parse(e.to_string()))?;
+    tessellate_brep_if_needed(&mut brep);
+    Ok(brep)
+}
+
+fn parse_tessellated_brep(text: &str) -> Result<BRep, StepError> {
+    let mut brep = StepReader::parse_string(text).map_err(|e| StepError::Parse(e.to_string()))?;
+    tessellate_brep_if_needed(&mut brep);
+    Ok(brep)
+}
+
+fn tessellate_brep_if_needed(brep: &mut BRep) {
+    if brep
+        .solids
+        .iter()
+        .flat_map(|solid| solid.shells.iter())
+        .flat_map(|shell| shell.faces.iter())
+        .any(|face| face.mesh_dirty || face.triangles.is_empty())
+    {
+        mesh_brep(brep, &TessellationParams::default());
+    }
+}
+
+fn brep_to_trimesh(brep: &BRep) -> (Vec<glam::DVec3>, Vec<[usize; 3]>) {
+    let verts = brep.vertices.iter().map(|v| v.point).collect();
+    let tris = brep
+        .solids
+        .iter()
+        .flat_map(|s| s.shells.iter())
+        .flat_map(|sh| sh.faces.iter())
+        .flat_map(|f| f.triangles.iter().copied())
+        .collect();
+    (verts, tris)
+}
+
+fn trimesh_to_brep(verts: &[glam::DVec3], tris: &[[usize; 3]]) -> BRep {
+    let vertices = verts
+        .iter()
+        .map(|&point| Vertex { point })
+        .collect::<Vec<_>>();
+
+    let face = Face {
+        outer_wire: Wire { edges: Vec::new() },
+        inner_wires: Vec::new(),
+        normal: glam::DVec3::Z,
+        triangles: tris.to_vec(),
+        mesh_dirty: true,
+    };
+
+    BRep {
+        vertices,
+        edges: Vec::new(),
+        solids: vec![Solid {
+            shells: vec![Shell { faces: vec![face] }],
+        }],
+        geom: rcad_kernel::GeomStore::default(),
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
