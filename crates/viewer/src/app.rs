@@ -1310,13 +1310,7 @@ impl RmshApp {
         if let Some(scene) = renderer.callback_resources.get_mut::<Scene>() {
             scene.upload_mesh(device, &surface, &wireframe, &points);
             scene.clear_highlight(device);
-
-            // Fit camera to mesh
-            let center = mesh.center();
-            let diag = mesh.diagonal_length() as f32;
-            scene
-                .camera
-                .fit_to_bbox([center.x as f32, center.y as f32, center.z as f32], diag);
+            fit_scene_camera_to_mesh(scene, mesh);
         }
         self.scene_initialized = true;
         self.highlight_dirty = true;
@@ -1352,6 +1346,16 @@ impl RmshApp {
         let (surface, wireframe) = rmsh_geo::extract::extract_highlight(mesh, topo, sel);
         scene.upload_highlight(device, surface.as_ref(), wireframe.as_ref());
     }
+}
+
+fn fit_scene_camera_to_mesh(scene: &mut Scene, mesh: &Mesh) {
+    let center = mesh.center();
+    let diagonal = (mesh.diagonal_length() as f32).max(0.1);
+    scene.camera.set_isometric();
+    scene.camera.fit_to_bbox(
+        [center.x as f32, center.y as f32, center.z as f32],
+        diagonal,
+    );
 }
 
 impl eframe::App for RmshApp {
@@ -1548,7 +1552,11 @@ impl eframe::App for RmshApp {
                     if let Some(ref render_state) = self.render_state {
                         let mut renderer = render_state.renderer.write();
                         if let Some(scene) = renderer.callback_resources.get_mut::<Scene>() {
-                            scene.camera.set_isometric();
+                            if let Some(mesh) = &self.mesh {
+                                fit_scene_camera_to_mesh(scene, mesh);
+                            } else {
+                                scene.camera.set_isometric();
+                            }
                         }
                     }
                 }

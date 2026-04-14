@@ -647,39 +647,110 @@ fn skip_to_marker(pos: &mut usize, bytes: &[u8], marker: &[u8]) {
 
 fn v2_nodes_per_element(element_type_id: i32) -> Option<usize> {
     match element_type_id {
-        1 => Some(2),   // line2
-        2 => Some(3),   // tri3
-        3 => Some(4),   // quad4
-        4 => Some(4),   // tet4
-        5 => Some(8),   // hex8
-        6 => Some(6),   // prism6
-        7 => Some(5),   // pyramid5
-        8 => Some(3),   // line3
-        9 => Some(6),   // tri6
-        10 => Some(9),  // quad9
-        11 => Some(10), // tet10
-        12 => Some(20), // hex20
-        13 => Some(15), // prism15
-        14 => Some(13), // pyramid13
-        15 => Some(1),  // point
-        16 => Some(8),  // quad8
-        17 => Some(20), // hex20 (serendipity)
-        18 => Some(15), // prism15
-        19 => Some(13), // pyramid13
-        20 => Some(9),  // tri9
-        21 => Some(10), // tri10
-        22 => Some(12), // tri12
-        23 => Some(15), // tri15
-        26 => Some(4),  // line4
-        29 => Some(20), // tet20
-        36 => Some(16), // quad16
-        37 => Some(25), // hex25
-        92 => Some(27), // hex27
-        93 => Some(18), // prism18
+        1 => Some(2),
+        2 => Some(3),
+        3 => Some(4),
+        4 => Some(4),
+        5 => Some(8),
+        6 => Some(6),
+        7 => Some(5),
+        8 => Some(3),
+        9 => Some(6),
+        10 => Some(9),
+        11 => Some(10),
+        12 => Some(27),
+        13 => Some(18),
+        14 => Some(14),
+        15 => Some(1),
+        16 => Some(8),
+        17 => Some(20),
+        18 => Some(15),
+        19 => Some(13),
+        20 => Some(9),
+        21 => Some(10),
+        22 => Some(12),
+        23 => Some(15),
+        24 => Some(15),
+        25 => Some(21),
+        26 => Some(4),
+        27 => Some(5),
+        28 => Some(6),
+        29 => Some(20),
+        30 => Some(35),
+        31 => Some(56),
+        32 => Some(22),
+        33 => Some(28),
+        36 => Some(16),
+        37 => Some(25),
+        38 => Some(36),
+        39 => Some(12),
+        40 => Some(16),
+        41 => Some(20),
+        42 => Some(28),
+        43 => Some(36),
+        44 => Some(45),
+        45 => Some(55),
+        46 => Some(66),
+        47 => Some(49),
+        48 => Some(64),
+        49 => Some(81),
+        50 => Some(100),
+        51 => Some(121),
+        52 => Some(18),
+        53 => Some(21),
+        54 => Some(24),
+        55 => Some(27),
+        56 => Some(30),
+        57 => Some(24),
+        58 => Some(28),
+        59 => Some(32),
+        60 => Some(36),
+        61 => Some(40),
+        90 => Some(40),
+        91 => Some(75),
+        92 => Some(64),
+        93 => Some(125),
+        94 => Some(216),
+        95 => Some(343),
+        96 => Some(512),
+        97 => Some(729),
+        98 => Some(1000),
+        99 => Some(32),
+        100 => Some(44),
+        101 => Some(56),
+        102 => Some(68),
+        103 => Some(80),
+        104 => Some(92),
+        105 => Some(104),
+        106 => Some(126),
+        107 => Some(196),
+        108 => Some(288),
+        109 => Some(405),
+        110 => Some(550),
+        111 => Some(24),
+        112 => Some(33),
+        113 => Some(42),
+        114 => Some(51),
+        115 => Some(60),
+        116 => Some(69),
+        117 => Some(78),
+        118 => Some(30),
+        119 => Some(55),
+        120 => Some(91),
+        121 => Some(140),
+        122 => Some(204),
+        123 => Some(285),
+        124 => Some(385),
+        125 => Some(21),
+        126 => Some(29),
+        127 => Some(37),
+        128 => Some(45),
+        129 => Some(53),
+        130 => Some(61),
+        131 => Some(69),
         _ => None,
     }
 }
-
 fn parse_msh_v2_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
     let mut pos = 0usize;
     let mut mesh = Mesh::new();
@@ -801,9 +872,6 @@ fn parse_msh_v2_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
 
                 let mut parsed_elements = 0usize;
                 while parsed_elements < total_elements {
-                    while pos < bytes.len() && matches!(bytes[pos], b'\n' | b'\r') {
-                        pos += 1;
-                    }
                     if pos + b"$EndElements".len() <= bytes.len()
                         && bytes[pos..].starts_with(b"$EndElements")
                     {
@@ -1075,6 +1143,137 @@ $EndElements
         assert_eq!(mesh.element_count(), 1);
         assert_eq!(mesh.elements[0].physical_tag, Some(77));
         assert_eq!(mesh.elements[0].node_ids, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_load_msh_from_bytes_binary_v2_first_block_type_10() {
+        let mut data = Vec::<u8>::new();
+        data.extend_from_slice(b"$MeshFormat\n2.2 1 8\n");
+        data.extend_from_slice(&1_i32.to_le_bytes());
+        data.extend_from_slice(b"\n$EndMeshFormat\n");
+
+        data.extend_from_slice(b"$Nodes\n9\n");
+        for (id, x, y, z) in [
+            (1_i32, 0.0_f64, 0.0_f64, 0.0_f64),
+            (2, 1.0_f64, 0.0_f64, 0.0_f64),
+            (3, 0.0_f64, 1.0_f64, 0.0_f64),
+            (4, 0.5_f64, 0.0_f64, 0.0_f64),
+            (5, 0.5_f64, 0.5_f64, 0.0_f64),
+            (6, 0.0_f64, 0.5_f64, 0.0_f64),
+            (7, 0.25_f64, 0.0_f64, 0.0_f64),
+            (8, 0.75_f64, 0.0_f64, 0.0_f64),
+            (9, 0.5_f64, 0.25_f64, 0.0_f64),
+        ] {
+            data.extend_from_slice(&id.to_le_bytes());
+            data.extend_from_slice(&x.to_le_bytes());
+            data.extend_from_slice(&y.to_le_bytes());
+            data.extend_from_slice(&z.to_le_bytes());
+        }
+        data.extend_from_slice(b"\n$EndNodes\n");
+
+        data.extend_from_slice(b"$Elements\n1\n");
+        data.extend_from_slice(&10_i32.to_le_bytes()); // type 10, low byte is 0x0A
+        data.extend_from_slice(&1_i32.to_le_bytes()); // n elems
+        data.extend_from_slice(&2_i32.to_le_bytes()); // n tags
+        data.extend_from_slice(&1_i32.to_le_bytes()); // elem id
+        data.extend_from_slice(&88_i32.to_le_bytes()); // physical tag
+        data.extend_from_slice(&0_i32.to_le_bytes()); // geometrical tag
+        for node_id in [1_i32, 2, 3, 4, 5, 6, 7, 8, 9] {
+            data.extend_from_slice(&node_id.to_le_bytes());
+        }
+        data.extend_from_slice(b"$EndElements\n");
+
+        let mesh = load_msh_from_bytes(&data).expect("binary v2 type-10 first block should parse");
+        assert_eq!(mesh.node_count(), 9);
+        assert_eq!(mesh.element_count(), 1);
+        assert_eq!(mesh.elements[0].physical_tag, Some(88));
+        assert_eq!(mesh.elements[0].node_ids, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn test_load_msh_from_bytes_binary_v2_type_10_then_type_12() {
+        let mut data = Vec::<u8>::new();
+        data.extend_from_slice(b"$MeshFormat\n2.2 1 8\n");
+        data.extend_from_slice(&1_i32.to_le_bytes());
+        data.extend_from_slice(b"\n$EndMeshFormat\n");
+
+        data.extend_from_slice(b"$Nodes\n27\n");
+        for id in 1_i32..=27_i32 {
+            let coord = id as f64;
+            data.extend_from_slice(&id.to_le_bytes());
+            data.extend_from_slice(&coord.to_le_bytes());
+            data.extend_from_slice(&0.0_f64.to_le_bytes());
+            data.extend_from_slice(&0.0_f64.to_le_bytes());
+        }
+        data.extend_from_slice(b"\n$EndNodes\n");
+
+        data.extend_from_slice(b"$Elements\n2\n");
+
+        data.extend_from_slice(&10_i32.to_le_bytes());
+        data.extend_from_slice(&1_i32.to_le_bytes());
+        data.extend_from_slice(&2_i32.to_le_bytes());
+        data.extend_from_slice(&1_i32.to_le_bytes());
+        data.extend_from_slice(&88_i32.to_le_bytes());
+        data.extend_from_slice(&0_i32.to_le_bytes());
+        for node_id in [1_i32, 2, 3, 4, 5, 6, 7, 8, 9] {
+            data.extend_from_slice(&node_id.to_le_bytes());
+        }
+
+        data.extend_from_slice(&12_i32.to_le_bytes());
+        data.extend_from_slice(&1_i32.to_le_bytes());
+        data.extend_from_slice(&2_i32.to_le_bytes());
+        data.extend_from_slice(&2_i32.to_le_bytes());
+        data.extend_from_slice(&99_i32.to_le_bytes());
+        data.extend_from_slice(&0_i32.to_le_bytes());
+        for node_id in 1_i32..=27_i32 {
+            data.extend_from_slice(&node_id.to_le_bytes());
+        }
+        data.extend_from_slice(b"$EndElements\n");
+
+        let mesh = load_msh_from_bytes(&data).expect("binary v2 type-10 and type-12 blocks should parse");
+        assert_eq!(mesh.node_count(), 27);
+        assert_eq!(mesh.element_count(), 2);
+        assert_eq!(mesh.elements[0].physical_tag, Some(88));
+        assert_eq!(mesh.elements[1].physical_tag, Some(99));
+        assert_eq!(mesh.elements[1].node_ids.len(), 27);
+    }
+
+    #[test]
+    fn test_load_msh_from_bytes_binary_v2_preserves_unknown_high_order_elements() {
+        let mut data = Vec::<u8>::new();
+        data.extend_from_slice(b"$MeshFormat\n2.2 1 8\n");
+        data.extend_from_slice(&1_i32.to_le_bytes());
+        data.extend_from_slice(b"\n$EndMeshFormat\n");
+
+        data.extend_from_slice(b"$Nodes\n30\n");
+        for id in 1_i32..=30_i32 {
+            let coord = id as f64;
+            data.extend_from_slice(&id.to_le_bytes());
+            data.extend_from_slice(&coord.to_le_bytes());
+            data.extend_from_slice(&0.0_f64.to_le_bytes());
+            data.extend_from_slice(&0.0_f64.to_le_bytes());
+        }
+        data.extend_from_slice(b"\n$EndNodes\n");
+
+        data.extend_from_slice(b"$Elements\n1\n");
+        data.extend_from_slice(&118_i32.to_le_bytes());
+        data.extend_from_slice(&1_i32.to_le_bytes());
+        data.extend_from_slice(&2_i32.to_le_bytes());
+        data.extend_from_slice(&7_i32.to_le_bytes());
+        data.extend_from_slice(&123_i32.to_le_bytes());
+        data.extend_from_slice(&0_i32.to_le_bytes());
+        for node_id in 1_i32..=30_i32 {
+            data.extend_from_slice(&node_id.to_le_bytes());
+        }
+        data.extend_from_slice(b"$EndElements\n");
+
+        let mesh = load_msh_from_bytes(&data)
+            .expect("binary v2 unknown high-order element should be preserved");
+        assert_eq!(mesh.node_count(), 30);
+        assert_eq!(mesh.element_count(), 1);
+        assert_eq!(mesh.elements[0].etype, rmsh_model::ElementType::Unknown(118));
+        assert_eq!(mesh.elements[0].physical_tag, Some(123));
+        assert_eq!(mesh.elements[0].node_ids.len(), 30);
     }
 
     #[test]
