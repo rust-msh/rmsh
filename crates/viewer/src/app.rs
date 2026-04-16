@@ -27,6 +27,10 @@ pub struct RmshApp {
     mesh_name: Option<String>,
     /// Render configuration (what to show).
     config: RenderConfig,
+    /// Whether to show the corner axis gizmo.
+    show_axis_gizmo: bool,
+    /// Scene axes world scale.
+    scene_axes_scale: f32,
     /// Mesh info string for status bar.
     mesh_info: String,
     /// Whether the scene has been initialized with GPU resources.
@@ -442,6 +446,8 @@ impl RmshApp {
             mesh: None,
             mesh_name: None,
             config: RenderConfig::default(),
+            show_axis_gizmo: true,
+            scene_axes_scale: 0.3,
             mesh_info: String::new(),
             scene_initialized: false,
             render_state,
@@ -1420,6 +1426,8 @@ impl eframe::App for RmshApp {
             if let Some(scene) = renderer.callback_resources.get_mut::<Scene>() {
                 scene.config = self.config.clone();
                 scene.sync_config();
+                scene.set_show_axis_gizmo(self.show_axis_gizmo);
+                scene.set_scene_axes_scale(self.scene_axes_scale);
             }
         }
 
@@ -1543,8 +1551,13 @@ impl eframe::App for RmshApp {
                 ui.checkbox(&mut self.config.show_faces, "Faces");
                 ui.checkbox(&mut self.config.show_volumes, "Volumes");
                 ui.separator();
-                ui.checkbox(&mut self.config.show_axes, "Axes");
+                ui.checkbox(&mut self.config.show_axes, "Scene Axes");
+                ui.checkbox(&mut self.show_axis_gizmo, "Corner Axis Gizmo");
                 ui.checkbox(&mut self.config.show_scale_ruler, "Scale Ruler");
+                ui.add(
+                    egui::Slider::new(&mut self.scene_axes_scale, 0.05..=2.0)
+                        .text("Axes Scale")
+                );
                 ui.separator();
 
                 // ── View ──────────────────────────────────────────────────────

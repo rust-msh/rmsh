@@ -99,16 +99,16 @@ impl Default for RenderConfig {
             show_axes: true,
             show_scale_ruler: true,
 
-            // Gmsh: dark gradient background  (top ≈ #1a1f2e, bottom ≈ #0d1117)
-            bg_color_top: [0.10, 0.12, 0.18],
-            bg_color_bottom: [0.05, 0.07, 0.10],
+            // Sky gradient: white at bottom, light blue at top
+            bg_color_top: [0.53, 0.81, 0.92],      // Light sky blue
+            bg_color_bottom: [1.0, 1.0, 1.0],      // White
 
             // Gmsh: light steel-blue surfaces
             face_color: [0.75, 0.85, 0.95],
             surface_opacity: 0.92,
 
-            // Gmsh: near-black edges for contrast
-            edge_color: [0.12, 0.12, 0.14],
+            // Dark gray edges for contrast on light background
+            edge_color: [0.2, 0.2, 0.25],
 
             // Gmsh: orange node dots
             node_color: [1.0, 0.60, 0.10],
@@ -144,6 +144,7 @@ pub struct Scene {
     pub camera: Camera,
     pub config: RenderConfig,
     pub renderer: WgpuRenderer,
+    pub show_axis_gizmo: bool,
 }
 
 impl Scene {
@@ -152,6 +153,7 @@ impl Scene {
             camera: Camera::new(),
             config: RenderConfig::default(),
             renderer: WgpuRenderer::new(device, target_format),
+            show_axis_gizmo: true,
         }
     }
 
@@ -198,6 +200,7 @@ impl Scene {
         }
         let aspect = width as f32 / height as f32;
         self.renderer.update_camera(queue, &self.camera, aspect);
+        self.renderer.update_axis_gizmo_camera(queue, &self.camera);
         self.renderer
             .set_model_color(queue, self.config.model_color_rgba());
     }
@@ -208,6 +211,38 @@ impl Scene {
             .set_display_mode(self.config.to_display_mode());
         self.renderer.set_show_axes(self.config.show_axes);
         self.renderer.set_show_grid(self.config.show_scale_ruler);
+    }
+
+    /// Set the scene axes scale factor (default 0.3).
+    pub fn set_scene_axes_scale(&self, scale: f32) {
+        self.renderer.set_scene_axes_scale(scale);
+    }
+
+    /// Get the scene axes scale factor.
+    pub fn scene_axes_scale(&self) -> f32 {
+        self.renderer.scene_axes_scale()
+    }
+
+    /// Enable or disable corner axis gizmo.
+    pub fn set_show_axis_gizmo(&mut self, show: bool) {
+        self.show_axis_gizmo = show;
+    }
+
+    /// Draw corner axis gizmo when enabled.
+    pub fn draw_axis_gizmo_in_render_pass(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        viewport_origin_px: [u32; 2],
+        viewport_size_px: [u32; 2],
+    ) {
+        if !self.show_axis_gizmo {
+            return;
+        }
+        self.renderer.draw_axis_gizmo_in_render_pass(
+            render_pass,
+            viewport_origin_px,
+            viewport_size_px,
+        );
     }
 
     /// Draw into an active render pass (called from egui paint callback).
@@ -253,6 +288,8 @@ fn surface_wireframe_to_brep(surface: &SurfaceData, wireframe: &WireframeData) -
             shells: vec![Shell { faces: vec![face] }],
         }],
         geom: rcad_kernel::GeomStore::default(),
+        compound: None,
+        compsolid: None,
     }
 }
 
@@ -280,5 +317,7 @@ fn wireframe_to_brep(wireframe: &WireframeData) -> BRep {
         edges,
         solids: Vec::new(),
         geom: rcad_kernel::GeomStore::default(),
+        compound: None,
+        compsolid: None,
     }
 }

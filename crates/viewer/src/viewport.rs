@@ -52,5 +52,12 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
 
         // Delegate all rendering to rcad-render's WgpuRenderer
         scene.draw_in_render_pass(render_pass);
+
+        // Draw axis gizmo in bottom-right corner
+        scene.draw_axis_gizmo_in_render_pass(
+            render_pass,
+            [viewport.left_px as u32, viewport.top_px as u32],
+            [width, height],
+        );
     }
 }
