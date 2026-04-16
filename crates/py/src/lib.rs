@@ -47,11 +47,20 @@ macro_rules! stub_pyfunction {
 #[derive(Default)]
 struct RuntimeState {
     initialized: bool,
+    model_name: String,
+    mesh_order: i32,
     current_mesh: Option<Mesh>,
     current_path: Option<PathBuf>,
     option_numbers: HashMap<String, f64>,
     option_strings: HashMap<String, String>,
     option_colors: HashMap<String, (i32, i32, i32, i32)>,
+    entity_names: HashMap<(i32, i32), String>,
+    physical_groups: HashMap<(i32, i32), Vec<i32>>,
+    physical_names: HashMap<(i32, i32), String>,
+    plugin_numbers: HashMap<(String, String), f64>,
+    plugin_strings: HashMap<(String, String), String>,
+    logger_enabled: bool,
+    logs: Vec<String>,
     /// CAD shapes created via model.occ.add* functions, keyed by tag.
     cad_shapes: HashMap<i32, BRep>,
     /// Next auto-assigned tag for CAD shapes.
@@ -270,6 +279,160 @@ fn option_number(state: &RuntimeState, name: &str) -> Option<f64> {
     state.option_numbers.get(name).copied()
 }
 
+fn push_log(state: &mut RuntimeState, msg: impl Into<String>) {
+    if state.logger_enabled {
+        state.logs.push(msg.into());
+    }
+}
+
+fn refine_triangles_once(mesh: &mut Mesh) -> usize {
+    use std::collections::HashMap;
+
+    let mut next_node_id = mesh.nodes.keys().max().copied().unwrap_or(0) + 1;
+    let mut next_elem_id = mesh.elements.iter().map(|e| e.id).max().unwrap_or(0) + 1;
+    let mut edge_midpoint_node: HashMap<(u64, u64), u64> = HashMap::new();
+
+    let elements_snapshot = mesh.elements.clone();
+    let mut refined: Vec<Element> = Vec::with_capacity(elements_snapshot.len() * 2);
+    let mut refined_count = 0usize;
+
+    for elem in elements_snapshot {
+        if elem.etype != ElementType::Triangle3 || elem.node_ids.len() != 3 {
+            refined.push(elem);
+            continue;
+        }
+
+        let a = elem.node_ids[0];
+        let b = elem.node_ids[1];
+        let c = elem.node_ids[2];
+
+        let midpoint = |u: u64,
+                        v: u64,
+                        mesh: &mut Mesh,
+                        next_node_id: &mut u64,
+                        edge_midpoint_node: &mut HashMap<(u64, u64), u64>|
+         -> Option<u64> {
+            let key = if u < v { (u, v) } else { (v, u) };
+            if let Some(id) = edge_midpoint_node.get(&key).copied() {
+                return Some(id);
+            }
+            let pu = mesh.nodes.get(&u)?.position;
+            let pv = mesh.nodes.get(&v)?.position;
+            let id = *next_node_id;
+            *next_node_id += 1;
+            mesh.add_node(Node::new(
+                id,
+                0.5 * (pu.x + pv.x),
+                0.5 * (pu.y + pv.y),
+                0.5 * (pu.z + pv.z),
+            ));
+            edge_midpoint_node.insert(key, id);
+            Some(id)
+        };
+
+        let Some(ab) = midpoint(a, b, mesh, &mut next_node_id, &mut edge_midpoint_node) else {
+            refined.push(elem);
+            continue;
+        };
+        let Some(bc) = midpoint(b, c, mesh, &mut next_node_id, &mut edge_midpoint_node) else {
+            refined.push(elem);
+            continue;
+        };
+        let Some(ca) = midpoint(c, a, mesh, &mut next_node_id, &mut edge_midpoint_node) else {
+            refined.push(elem);
+            continue;
+        };
+
+        let mut push_tri = |n0: u64, n1: u64, n2: u64, phys: Option<i32>| {
+            let mut e = Element::new(next_elem_id, ElementType::Triangle3, vec![n0, n1, n2]);
+            e.physical_tag = phys;
+            next_elem_id += 1;
+            refined.push(e);
+        };
+
+        push_tri(a, ab, ca, elem.physical_tag);
+        push_tri(ab, b, bc, elem.physical_tag);
+        push_tri(ca, bc, c, elem.physical_tag);
+        push_tri(ab, bc, ca, elem.physical_tag);
+        refined_count += 1;
+    }
+
+    mesh.elements = refined;
+    refined_count
+}
+
+fn recombine_triangles_to_quads(mesh: &mut Mesh) -> usize {
+    use std::collections::HashMap;
+
+    let elements_snapshot = mesh.elements.clone();
+    let mut next_elem_id = mesh.elements.iter().map(|e| e.id).max().unwrap_or(0) + 1;
+    let mut tri_edges: HashMap<(u64, u64), Vec<(usize, [u64; 3], Option<i32>)>> = HashMap::new();
+    let mut tri_indices: Vec<usize> = Vec::new();
+
+    for (idx, elem) in elements_snapshot.iter().enumerate() {
+        if elem.etype != ElementType::Triangle3 || elem.node_ids.len() != 3 {
+            continue;
+        }
+        tri_indices.push(idx);
+        let tri = [elem.node_ids[0], elem.node_ids[1], elem.node_ids[2]];
+        let edges = [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])];
+        for (u, v) in edges {
+            let key = if u < v { (u, v) } else { (v, u) };
+            tri_edges
+                .entry(key)
+                .or_default()
+                .push((idx, tri, elem.physical_tag));
+        }
+    }
+
+    let mut consumed: HashSet<usize> = HashSet::new();
+    let mut recombined: Vec<Element> = Vec::new();
+    let mut recombined_count = 0usize;
+
+    for shared in tri_edges.values() {
+        if shared.len() != 2 {
+            continue;
+        }
+        let (i0, t0, p0) = shared[0];
+        let (i1, t1, p1) = shared[1];
+        if consumed.contains(&i0) || consumed.contains(&i1) {
+            continue;
+        }
+        let mut common: Vec<u64> = t0.iter().copied().filter(|v| t1.contains(v)).collect();
+        common.sort_unstable();
+        common.dedup();
+        if common.len() != 2 {
+            continue;
+        }
+        let c0 = common[0];
+        let c1 = common[1];
+        let o0 = t0.iter().copied().find(|v| *v != c0 && *v != c1);
+        let o1 = t1.iter().copied().find(|v| *v != c0 && *v != c1);
+        let (Some(o0), Some(o1)) = (o0, o1) else {
+            continue;
+        };
+
+        let mut quad = Element::new(next_elem_id, ElementType::Quad4, vec![o0, c0, o1, c1]);
+        quad.physical_tag = if p0.is_some() { p0 } else { p1 };
+        next_elem_id += 1;
+        recombined.push(quad);
+        consumed.insert(i0);
+        consumed.insert(i1);
+        recombined_count += 1;
+    }
+
+    let mut out: Vec<Element> = Vec::with_capacity(elements_snapshot.len());
+    for (idx, elem) in elements_snapshot.into_iter().enumerate() {
+        if consumed.contains(&idx) {
+            continue;
+        }
+        out.push(elem);
+    }
+    out.extend(recombined);
+    mesh.elements = out;
+    recombined_count
+}
+
 fn gmsh_type_id(etype: ElementType) -> i32 {
     match etype {
         ElementType::Point1 => 15,
@@ -300,8 +463,17 @@ fn initialize_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>
         .lock()
         .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
     state.initialized = true;
+    state.model_name = "default".to_string();
+    state.mesh_order = 1;
     state.current_mesh = None;
     state.current_path = None;
+    state.entity_names.clear();
+    state.physical_groups.clear();
+    state.physical_names.clear();
+    state.plugin_numbers.clear();
+    state.plugin_strings.clear();
+    state.logger_enabled = false;
+    state.logs.clear();
     Ok(())
 }
 
@@ -318,6 +490,13 @@ fn finalize_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) 
     state.option_numbers.clear();
     state.option_strings.clear();
     state.option_colors.clear();
+    state.entity_names.clear();
+    state.physical_groups.clear();
+    state.physical_names.clear();
+    state.plugin_numbers.clear();
+    state.plugin_strings.clear();
+    state.logger_enabled = false;
+    state.logs.clear();
     state.cad_shapes.clear();
     state.next_cad_tag = 0;
     Ok(())
@@ -333,6 +512,9 @@ fn clear_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> 
     ensure_initialized(&state)?;
     state.current_mesh = None;
     state.current_path = None;
+    state.entity_names.clear();
+    state.physical_groups.clear();
+    state.physical_names.clear();
     state.cad_shapes.clear();
     state.next_cad_tag = 0;
     Ok(())
@@ -387,15 +569,42 @@ fn write_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> 
         .lock()
         .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
     ensure_initialized(&state)?;
-    let mesh = state.current_mesh.as_ref().ok_or_else(|| {
-        pyo3::exceptions::PyRuntimeError::new_err("no mesh loaded; call open() or generate() first")
-    })?;
 
     match ext.as_deref() {
-        Some("msh") => rmsh_io::save_msh_v4_to_path(&path, mesh)
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?,
-        Some("step") | Some("stp") => rmsh_io::save_step_to_path(&path, mesh)
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?,
+        Some("msh") => {
+            let mesh = state.current_mesh.as_ref().ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("no mesh loaded; call open() or generate() first")
+            })?;
+            rmsh_io::save_msh_v4_to_path(&path, mesh)
+                .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+        }
+        Some("step") | Some("stp") => {
+            if !state.cad_shapes.is_empty() {
+                let mut tags: Vec<i32> = state.cad_shapes.keys().copied().collect();
+                tags.sort_unstable();
+                let shapes: Vec<BRep> = tags
+                    .iter()
+                    .filter_map(|tag| state.cad_shapes.get(tag).cloned())
+                    .collect();
+
+                let shape = if shapes.len() == 1 {
+                    shapes[0].clone()
+                } else {
+                    BRep::compound_from_shapes(&shapes)
+                };
+
+                rmsh_io::save_brep_step_to_path(&path, &shape)
+                    .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+            } else {
+                let mesh = state.current_mesh.as_ref().ok_or_else(|| {
+                    pyo3::exceptions::PyRuntimeError::new_err(
+                        "no CAD shape or mesh loaded; call model.occ.add*()/synchronize()/generate() first",
+                    )
+                })?;
+                rmsh_io::save_step_to_path(&path, mesh)
+                    .map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))?;
+            }
+        }
         _ => {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "unsupported write format; only .msh and .step/.stp are currently supported",
@@ -514,14 +723,99 @@ fn option_restore_defaults_impl(
     Ok(())
 }
 
-stub_pyfunction!(logger_start_impl, "logger_start", "rmshLoggerStart(int *ierr)");
-stub_pyfunction!(logger_stop_impl, "logger_stop", "rmshLoggerStop(int *ierr)");
-stub_pyfunction!(logger_get_impl, "logger_get", "rmshLoggerGet(char ***log, size_t *log_n, int *ierr)");
+#[pyfunction]
+#[pyo3(name = "logger_start", signature = (*args, **kwargs))]
+fn logger_start_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
+    let _ = (args, kwargs);
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    state.logger_enabled = true;
+    state.logs.clear();
+    push_log(&mut state, "logger started");
+    Ok(())
+}
 
-stub_pyfunction!(model_add_impl, "model_add", "rmshModelAdd(const char *name, int *ierr)");
-stub_pyfunction!(model_remove_impl, "model_remove", "rmshModelRemove(int *ierr)");
-stub_pyfunction!(model_get_current_impl, "model_get_current", "rmshModelGetCurrent(char **name, int *ierr)");
-stub_pyfunction!(model_set_current_impl, "model_set_current", "rmshModelSetCurrent(const char *name, int *ierr)");
+#[pyfunction]
+#[pyo3(name = "logger_stop", signature = (*args, **kwargs))]
+fn logger_stop_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
+    let _ = (args, kwargs);
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    push_log(&mut state, "logger stopped");
+    state.logger_enabled = false;
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "logger_get", signature = (*args, **kwargs))]
+fn logger_get_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Vec<String>> {
+    let _ = (args, kwargs);
+    let state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    Ok(state.logs.clone())
+}
+
+#[pyfunction]
+#[pyo3(name = "model_add", signature = (*args, **kwargs))]
+fn model_add_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
+    let name: String = extract_required(args, kwargs, 0, &["name"], "str")?;
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    state.model_name = name.clone();
+    push_log(&mut state, format!("model add: {name}"));
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "model_remove", signature = (*args, **kwargs))]
+fn model_remove_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
+    let _ = (args, kwargs);
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    state.current_mesh = None;
+    state.current_path = None;
+    state.cad_shapes.clear();
+    state.next_cad_tag = 0;
+    state.entity_names.clear();
+    state.physical_groups.clear();
+    state.physical_names.clear();
+    push_log(&mut state, "model removed".to_string());
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "model_get_current", signature = (*args, **kwargs))]
+fn model_get_current_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<String> {
+    let _ = (args, kwargs);
+    let state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    Ok(state.model_name.clone())
+}
+
+#[pyfunction]
+#[pyo3(name = "model_set_current", signature = (*args, **kwargs))]
+fn model_set_current_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
+    let name: String = extract_required(args, kwargs, 0, &["name"], "str")?;
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    state.model_name = name.clone();
+    push_log(&mut state, format!("model current set: {name}"));
+    Ok(())
+}
 
 #[pyfunction]
 #[pyo3(name = "model_get_dimension", signature = (*args, **kwargs))]
@@ -583,8 +877,42 @@ fn model_get_entities_impl(
     Ok(out)
 }
 
-stub_pyfunction!(model_get_entity_name_impl, "model_get_entity_name", "rmshModelGetEntityName(int dim, int tag, char **name, int *ierr)");
-stub_pyfunction!(model_set_entity_name_impl, "model_set_entity_name", "rmshModelSetEntityName(int dim, int tag, const char *name, int *ierr)");
+#[pyfunction]
+#[pyo3(name = "model_get_entity_name", signature = (*args, **kwargs))]
+fn model_get_entity_name_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<String> {
+    let dim: i32 = extract_required(args, kwargs, 0, &["dim"], "int")?;
+    let tag: i32 = extract_required(args, kwargs, 1, &["tag"], "int")?;
+    let state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    Ok(state
+        .entity_names
+        .get(&(dim, tag))
+        .cloned()
+        .unwrap_or_else(|| format!("Entity({dim},{tag})")))
+}
+
+#[pyfunction]
+#[pyo3(name = "model_set_entity_name", signature = (*args, **kwargs))]
+fn model_set_entity_name_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<()> {
+    let dim: i32 = extract_required(args, kwargs, 0, &["dim"], "int")?;
+    let tag: i32 = extract_required(args, kwargs, 1, &["tag"], "int")?;
+    let name: String = extract_required(args, kwargs, 2, &["name"], "str")?;
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    state.entity_names.insert((dim, tag), name.clone());
+    push_log(&mut state, format!("entity name set ({dim},{tag})={name}"));
+    Ok(())
+}
 
 #[pyfunction]
 #[pyo3(name = "model_get_bounding_box", signature = (*args, **kwargs))]
@@ -628,10 +956,96 @@ fn model_get_bounding_box_impl(
     Ok((min.x, min.y, min.z, max.x, max.y, max.z))
 }
 
-stub_pyfunction!(model_add_physical_group_impl, "model_add_physical_group", "rmshModelAddPhysicalGroup(int dim, const int *tags, size_t tags_n, int tag, const char *name, int *ierr)");
-stub_pyfunction!(model_get_physical_groups_impl, "model_get_physical_groups", "rmshModelGetPhysicalGroups(int **dimTags, size_t *dimTags_n, int dim, int *ierr)");
-stub_pyfunction!(model_set_physical_name_impl, "model_set_physical_name", "rmshModelSetPhysicalName(int dim, int tag, const char *name, int *ierr)");
-stub_pyfunction!(model_get_physical_name_impl, "model_get_physical_name", "rmshModelGetPhysicalName(int dim, int tag, char **name, int *ierr)");
+#[pyfunction]
+#[pyo3(name = "model_add_physical_group", signature = (*args, **kwargs))]
+fn model_add_physical_group_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<i32> {
+    let dim: i32 = extract_required(args, kwargs, 0, &["dim"], "int")?;
+    let tags: Vec<i32> = extract_required(args, kwargs, 1, &["tags"], "list[int]")?;
+    let requested_tag: i32 = extract_required(args, kwargs, 2, &["tag"], "int").unwrap_or(-1);
+    let name: String = extract_required(args, kwargs, 3, &["name"], "str").unwrap_or_default();
+
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+
+    let next_tag = state
+        .physical_groups
+        .keys()
+        .filter(|(d, _)| *d == dim)
+        .map(|(_, t)| *t)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let tag = if requested_tag > 0 { requested_tag } else { next_tag };
+    state.physical_groups.insert((dim, tag), tags.clone());
+    if !name.is_empty() {
+        state.physical_names.insert((dim, tag), name.clone());
+    }
+    push_log(&mut state, format!("physical group add ({dim},{tag}) with {} entities", tags.len()));
+    Ok(tag)
+}
+
+#[pyfunction]
+#[pyo3(name = "model_get_physical_groups", signature = (*args, **kwargs))]
+fn model_get_physical_groups_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Vec<(i32, i32)>> {
+    let dim: i32 = extract_required(args, kwargs, 0, &["dim"], "int").unwrap_or(-1);
+    let state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+
+    let mut out: Vec<(i32, i32)> = state
+        .physical_groups
+        .keys()
+        .filter(|(d, _)| dim < 0 || *d == dim)
+        .copied()
+        .collect();
+    out.sort_unstable();
+    Ok(out)
+}
+
+#[pyfunction]
+#[pyo3(name = "model_set_physical_name", signature = (*args, **kwargs))]
+fn model_set_physical_name_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<()> {
+    let dim: i32 = extract_required(args, kwargs, 0, &["dim"], "int")?;
+    let tag: i32 = extract_required(args, kwargs, 1, &["tag"], "int")?;
+    let name: String = extract_required(args, kwargs, 2, &["name"], "str")?;
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    state.physical_names.insert((dim, tag), name);
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "model_get_physical_name", signature = (*args, **kwargs))]
+fn model_get_physical_name_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<String> {
+    let dim: i32 = extract_required(args, kwargs, 0, &["dim"], "int")?;
+    let tag: i32 = extract_required(args, kwargs, 1, &["tag"], "int")?;
+    let state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    state
+        .physical_names
+        .get(&(dim, tag))
+        .cloned()
+        .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(format!("physical name not set: ({dim},{tag})")))
+}
 
 #[pyfunction]
 #[pyo3(name = "model_occ_add_box", signature = (*args, **kwargs))]
@@ -1011,11 +1425,17 @@ fn model_mesh_set_order_impl(
     kwargs: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<()> {
     let order: i32 = extract_required(args, kwargs, 0, &["order"], "int")?;
-    if order != 1 {
-        return Err(PyNotImplementedError::new_err(
-            "only first-order elements are currently supported",
+    if order < 1 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "mesh order must be >= 1",
         ));
     }
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    state.mesh_order = order;
+    push_log(&mut state, format!("mesh order set to {order}"));
     Ok(())
 }
 
@@ -1165,12 +1585,153 @@ fn model_mesh_optimize_impl(
     Ok(())
 }
 
-stub_pyfunction!(model_mesh_refine_impl, "model_mesh_refine", "rmshModelMeshRefine(int *ierr)");
-stub_pyfunction!(model_mesh_recombine_impl, "model_mesh_recombine", "rmshModelMeshRecombine(int dim, int tag, double angle, int *ierr)");
+#[pyfunction]
+#[pyo3(name = "model_mesh_refine", signature = (*args, **kwargs))]
+fn model_mesh_refine_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<usize> {
+    let _ = (args, kwargs);
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    let mesh = state.current_mesh.as_mut().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("no mesh loaded")
+    })?;
 
-stub_pyfunction!(plugin_set_number_impl, "plugin_set_number", "rmshPluginSetNumber(const char *name, const char *option, double value, int *ierr)");
-stub_pyfunction!(plugin_set_string_impl, "plugin_set_string", "rmshPluginSetString(const char *name, const char *option, const char *value, int *ierr)");
-stub_pyfunction!(plugin_run_impl, "plugin_run", "rmshPluginRun(const char *name, int *ierr)");
+    let refined = refine_triangles_once(mesh);
+    push_log(&mut state, format!("mesh refine: {refined} triangle elements refined"));
+    Ok(refined)
+}
+
+#[pyfunction]
+#[pyo3(name = "model_mesh_recombine", signature = (*args, **kwargs))]
+fn model_mesh_recombine_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<usize> {
+    let dim: i32 = extract_required(args, kwargs, 0, &["dim"], "int").unwrap_or(2);
+    let _tag: i32 = extract_required(args, kwargs, 1, &["tag"], "int").unwrap_or(-1);
+    let _angle: f64 = extract_required(args, kwargs, 2, &["angle"], "float").unwrap_or(45.0);
+
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    let mesh = state.current_mesh.as_mut().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("no mesh loaded")
+    })?;
+
+    if dim != 2 {
+        push_log(&mut state, format!("mesh recombine skipped for dim={dim}"));
+        return Ok(0);
+    }
+
+    let recombined = recombine_triangles_to_quads(mesh);
+    push_log(&mut state, format!("mesh recombine: {recombined} quads created"));
+    Ok(recombined)
+}
+
+#[pyfunction]
+#[pyo3(name = "plugin_set_number", signature = (*args, **kwargs))]
+fn plugin_set_number_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<()> {
+    let name: String = extract_required(args, kwargs, 0, &["name"], "str")?;
+    let option: String = extract_required(args, kwargs, 1, &["option"], "str")?;
+    let value: f64 = extract_required(args, kwargs, 2, &["value"], "float")?;
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    state
+        .plugin_numbers
+        .insert((name.clone(), option.clone()), value);
+    push_log(&mut state, format!("plugin number set: {name}.{option}={value}"));
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "plugin_set_string", signature = (*args, **kwargs))]
+fn plugin_set_string_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<()> {
+    let name: String = extract_required(args, kwargs, 0, &["name"], "str")?;
+    let option: String = extract_required(args, kwargs, 1, &["option"], "str")?;
+    let value: String = extract_required(args, kwargs, 2, &["value"], "str")?;
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    state
+        .plugin_strings
+        .insert((name.clone(), option.clone()), value.clone());
+    push_log(&mut state, format!("plugin string set: {name}.{option}={value}"));
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "plugin_run", signature = (*args, **kwargs))]
+fn plugin_run_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<()> {
+    let name: String = extract_required(args, kwargs, 0, &["name"], "str")?;
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+
+    let lname = name.to_ascii_lowercase();
+    match lname.as_str() {
+        "refine" | "refinemesh" => {
+            let refined = {
+                let mesh = state.current_mesh.as_mut().ok_or_else(|| {
+                    pyo3::exceptions::PyRuntimeError::new_err("no mesh loaded")
+                })?;
+                refine_triangles_once(mesh)
+            };
+            push_log(&mut state, format!("plugin run refine: {refined} triangles refined"));
+        }
+        "recombine" => {
+            let recombined = {
+                let mesh = state.current_mesh.as_mut().ok_or_else(|| {
+                    pyo3::exceptions::PyRuntimeError::new_err("no mesh loaded")
+                })?;
+                recombine_triangles_to_quads(mesh)
+            };
+            push_log(&mut state, format!("plugin run recombine: {recombined} quads created"));
+        }
+        "smooth" | "laplace" => {
+            let niter = state
+                .plugin_numbers
+                .get(&(name.clone(), "niter".to_string()))
+                .copied()
+                .unwrap_or(10.0)
+                .max(1.0) as u32;
+            {
+                let mesh = state.current_mesh.as_mut().ok_or_else(|| {
+                    pyo3::exceptions::PyRuntimeError::new_err("no mesh loaded")
+                })?;
+                let params = OptimizeParams {
+                    iterations: niter,
+                    ..Default::default()
+                };
+                LaplacianSmooth::default()
+                    .optimize(mesh, &params)
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+            }
+            push_log(&mut state, format!("plugin run smooth: {niter} iterations"));
+        }
+        _ => {
+            push_log(&mut state, format!("plugin run no-op: {name}"));
+        }
+    }
+    Ok(())
+}
 
 #[pyfunction]
 #[pyo3(name = "gui_initialize", signature = (*args, **kwargs))]

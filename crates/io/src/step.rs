@@ -48,6 +48,12 @@ pub fn save_step_to_path(path: &Path, mesh: &Mesh) -> Result<(), StepError> {
     Ok(())
 }
 
+pub fn save_brep_step_to_path(path: &Path, brep: &BRep) -> Result<(), StepError> {
+    let content = write_brep_step(brep)?;
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
 pub fn write_step(mesh: &Mesh) -> Result<String, StepError> {
     let (verts, tris) = mesh_to_trimesh(mesh);
     if verts.is_empty() || tris.is_empty() {
@@ -59,6 +65,16 @@ pub fn write_step(mesh: &Mesh) -> Result<String, StepError> {
     let brep = trimesh_to_brep(&verts, &tris);
     Ok(StepWriter::write_string(
         &brep,
+        ExportSelection {
+            selected_faces: &[],
+            selected_edges: &[],
+        },
+    ))
+}
+
+pub fn write_brep_step(brep: &BRep) -> Result<String, StepError> {
+    Ok(StepWriter::write_string(
+        brep,
         ExportSelection {
             selected_faces: &[],
             selected_edges: &[],
