@@ -2,3 +2,5 @@
 dist/
 *.wasm
 Cargo.lock
+/*.msh
+/*.step
