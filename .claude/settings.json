@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/lilu/works/rmsh/crates/algo/src -name \"*.rs\" -type f ! -path \"*/target/*\" -exec grep -l \"#\\\\[test\\\\]\" {} \\\\;)",
+      "Bash(wc -l crates/algo/src/*.rs)",
+      "Bash(find \"c:\\\\Users\\\\lilu\\\\works\\\\rmsh\\\\crates\\\\cad\\\\src\" -name \"*.rs\" -exec wc -l {} +)",
+      "Read(//c/Users/lilu/works/rmsh/**)",
+      "Bash(wc -l \"c:\\\\Users\\\\lilu\\\\works\\\\rmsh\\\\crates\\\\cad\\\\src\"/*.rs)",
+      "Bash(find \"c:\\\\Users\\\\lilu\\\\works\\\\rmsh\" -name \"Cargo.toml\" -exec grep -l \"rmsh-cad\" {} \\\\;)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(git submodule:*)",
+      "Bash(mkdir -p vendor)",
+      "Bash(mv rcad2:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m ':*)",
+      "WebSearch",
+      "WebFetch(domain:gmsh.info)",
+      "WebFetch(domain:glvis.org)",
+      "WebFetch(domain:github.com)",
+      "Bash(.venv/Scripts/python.exe -c \"import rmsh; print\\('rmsh imported successfully'\\)\")",
+      "Bash(.venv/Scripts/python.exe examples/tutorials.py)",
+      "Bash(taskkill /F /IM rmsh.exe)",
+      "Bash(taskkill //F //IM rmsh.exe)"
+    ],
+    "additionalDirectories": [
+      "c:\\Users\\lilu\\works\\rmsh\\vendor\\rcad2"
+    ]
+  }
+}

@@ -5,9 +5,9 @@ edition = "2021"
 
 [dependencies]
 rmsh-model = { path = "../model" }
-rcad-algorithms = { path = "../../vendor/rcad/libs/rcad-algorithms" }
-rcad-step = { path = "../../vendor/rcad/libs/rcad-step" }
-rcad-kernel = { path = "../../vendor/rcad/libs/rcad-kernel" }
+rcad-algorithms = { workspace = true }
+rcad-step = { workspace = true }
+rcad-kernel = { workspace = true }
 glam.workspace = true
 thiserror = "2"
 log = "0.4"

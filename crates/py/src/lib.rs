@@ -13,6 +13,7 @@ use rcad_algorithms::{
     brep_repair::repair,
 };
 use rcad_modeling::builder::{
+    make_edge, make_face, make_vertex, make_wire,
     cone_brep, torus_brep,
     fillet::{chamfer_edge, fillet_edges},
     ops::{extrude, revolve},
@@ -246,6 +247,104 @@ fn tessellate_brep(brep: &BRep) -> Mesh {
         }
     }
     mesh
+}
+
+/// Merge multiple disconnected BReps into one exportable BRep by reindexing
+/// vertices/edges/wires/faces and corresponding GeomStore pools.
+fn merge_breps_for_export(shapes: &[BRep]) -> BRep {
+    let mut out = BRep::new();
+
+    for shape in shapes {
+        let vertex_offset = out.vertices.len();
+        let edge_offset = out.edges.len();
+        let curve_offset = out.geom.curves.len();
+        let surface_offset = out.geom.surfaces.len();
+        let curve2d_offset = out.geom.curve2ds.len();
+
+        out.vertices.extend(shape.vertices.iter().cloned());
+        out.edges.extend(shape.edges.iter().map(|e| rcad_kernel::topology::Edge {
+            start: e.start + vertex_offset,
+            end: e.end + vertex_offset,
+        }));
+
+        for mut solid in shape.solids.clone() {
+            for shell in &mut solid.shells {
+                for face in &mut shell.faces {
+                    for we in &mut face.outer_wire.edges {
+                        we.idx += edge_offset;
+                    }
+                    for iw in &mut face.inner_wires {
+                        for we in &mut iw.edges {
+                            we.idx += edge_offset;
+                        }
+                    }
+                    for tri in &mut face.triangles {
+                        tri[0] += vertex_offset;
+                        tri[1] += vertex_offset;
+                        tri[2] += vertex_offset;
+                    }
+                }
+            }
+            out.solids.push(solid);
+        }
+
+        out.geom.curves.extend(shape.geom.curves.iter().cloned());
+        out.geom.surfaces.extend(shape.geom.surfaces.iter().cloned());
+        out.geom.curve2ds.extend(shape.geom.curve2ds.iter().cloned());
+
+        out.geom.edge_curve.extend(
+            shape
+                .geom
+                .edge_curve
+                .iter()
+                .map(|idx| idx.map(|i| i + curve_offset)),
+        );
+        out.geom.face_surface.extend(
+            shape
+                .geom
+                .face_surface
+                .iter()
+                .map(|idx| idx.map(|i| i + surface_offset)),
+        );
+        out.geom.edge_pcurves.extend(shape.geom.edge_pcurves.iter().map(|pcs| {
+            pcs.iter()
+                .map(|pc| rcad_kernel::PCurve {
+                    surface_idx: pc.surface_idx + surface_offset,
+                    curve2d_idx: pc.curve2d_idx + curve2d_offset,
+                })
+                .collect()
+        }));
+
+        out.geom
+            .edge_curve_range
+            .extend(shape.geom.edge_curve_range.iter().copied());
+        out.geom
+            .edge_degenerated
+            .extend(shape.geom.edge_degenerated.iter().copied());
+        out.geom
+            .vertex_tolerance
+            .extend(shape.geom.vertex_tolerance.iter().copied());
+        out.geom
+            .edge_tolerance
+            .extend(shape.geom.edge_tolerance.iter().copied());
+        out.geom
+            .face_tolerance
+            .extend(shape.geom.face_tolerance.iter().copied());
+        out.geom
+            .curve2d_range
+            .extend(shape.geom.curve2d_range.iter().copied());
+        out.geom
+            .face_surface_range
+            .extend(shape.geom.face_surface_range.iter().copied());
+        out.geom
+            .edge_same_parameter
+            .extend(shape.geom.edge_same_parameter.iter().copied());
+        out.geom
+            .edge_same_range
+            .extend(shape.geom.edge_same_range.iter().copied());
+    }
+
+    out
 }
 
 fn extract_required<T>(
@@ -590,7 +689,7 @@ fn write_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> 
                 let shape = if shapes.len() == 1 {
                     shapes[0].clone()
                 } else {
-                    BRep::compound_from_shapes(&shapes)
+                    merge_breps_for_export(&shapes)
                 };
 
                 rmsh_io::save_brep_step_to_path(&path, &shape)
@@ -1360,9 +1459,29 @@ fn model_mesh_generate_impl(
         .lock()
         .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
     ensure_initialized(&state)?;
-    let surface = state.current_mesh.clone().ok_or_else(|| {
-        pyo3::exceptions::PyRuntimeError::new_err("no mesh loaded; call open() first")
-    })?;
+    let surface = if let Some(mesh) = state.current_mesh.clone() {
+        mesh
+    } else if !state.cad_shapes.is_empty() {
+        let mut tags: Vec<i32> = state.cad_shapes.keys().copied().collect();
+        tags.sort_unstable();
+        let shapes: Vec<BRep> = tags
+            .iter()
+            .filter_map(|tag| state.cad_shapes.get(tag).cloned())
+            .collect();
+
+        let shape = if shapes.len() == 1 {
+            shapes[0].clone()
+        } else {
+            merge_breps_for_export(&shapes)
+        };
+
+        // No persistent tessellation cache: build temporary surface mesh now.
+        tessellate_brep(&shape)
+    } else {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "no mesh loaded and no CAD shape available",
+        ));
+    };
 
     // Resolve element size from options (new names take priority over deprecated ones)
     let size_max = option_number(&state, "Mesh.MeshSizeMax")
@@ -1990,31 +2109,89 @@ fn model_occ_add_torus_impl(
 /// Signature matches gmsh.model.occ.addRectangle:
 ///   addRectangle(x, y, z, dx, dy, tag=-1) -> tag
 ///
-/// Unlike addBox this creates a *surface* entity (2D boundary mesh in current_mesh)
-/// suitable for 2D meshing with model.mesh.generate(2).
+/// Unlike addBox this creates a *surface* CAD entity suitable for 2D meshing.
 #[pyfunction]
 #[pyo3(name = "model_occ_add_rectangle", signature = (*args, **kwargs))]
 fn model_occ_add_rectangle_impl(
     args: &Bound<'_, PyTuple>,
     kwargs: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<i32> {
-    let x: f64  = extract_required(args, kwargs, 0, &["x"],  "float")?;
-    let y: f64  = extract_required(args, kwargs, 1, &["y"],  "float")?;
-    let _z: f64 = extract_required(args, kwargs, 2, &["z"],  "float").unwrap_or(0.0);
+    let x: f64 = extract_required(args, kwargs, 0, &["x"], "float")?;
+    let y: f64 = extract_required(args, kwargs, 1, &["y"], "float")?;
+    let z: f64 = extract_required(args, kwargs, 2, &["z"], "float").unwrap_or(0.0);
     let dx: f64 = extract_required(args, kwargs, 3, &["dx"], "float")?;
     let dy: f64 = extract_required(args, kwargs, 4, &["dy"], "float")?;
     let tag: i32 = extract_required(args, kwargs, 5, &["tag"], "int").unwrap_or(-1);
 
-    // Build a single quad boundary mesh of 2 triangles representing the rectangle
-    let mut mesh = Mesh::new();
-    // Nodes: four corners
-    mesh.add_node(Node::new(1, x,      y,      0.0));
-    mesh.add_node(Node::new(2, x + dx, y,      0.0));
-    mesh.add_node(Node::new(3, x + dx, y + dy, 0.0));
-    mesh.add_node(Node::new(4, x,      y + dy, 0.0));
-    // Two triangles to fill the rectangle
-    mesh.add_element(Element::new(1, ElementType::Triangle3, vec![1, 2, 3]));
-    mesh.add_element(Element::new(2, ElementType::Triangle3, vec![1, 3, 4]));
+    if !x.is_finite() || !y.is_finite() || !z.is_finite() || !dx.is_finite() || !dy.is_finite() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "rectangle parameters must be finite",
+        ));
+    }
+    if dx.abs() < 1e-12 || dy.abs() < 1e-12 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "dx and dy must be non-zero",
+        ));
+    }
+
+    let p0 = DVec3::new(x, y, z);
+    let p1 = DVec3::new(x + dx, y, z);
+    let p2 = DVec3::new(x + dx, y + dy, z);
+    let p3 = DVec3::new(x, y + dy, z);
+
+    let mut shape = BRep::new();
+
+    let v0 = make_vertex(&mut shape, p0);
+    let v1 = make_vertex(&mut shape, p1);
+    let v2 = make_vertex(&mut shape, p2);
+    let v3 = make_vertex(&mut shape, p3);
+
+    let make_line_edge = |brep: &mut BRep, a: DVec3, b: DVec3, va: usize, vb: usize| -> PyResult<usize> {
+        let seg = b - a;
+        let len = seg.length();
+        if len < 1e-12 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "degenerate rectangle edge",
+            ));
+        }
+        let dir = seg / len;
+        make_edge(
+            brep,
+            rcad_kernel::geom::Curve3::Line(rcad_kernel::geom::Line3 {
+                origin: a,
+                direction: dir,
+            }),
+            0.0,
+            len,
+            va,
+            vb,
+        )
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    };
+
+    let e0 = make_line_edge(&mut shape, p0, p1, v0, v1)?;
+    let e1 = make_line_edge(&mut shape, p1, p2, v1, v2)?;
+    let e2 = make_line_edge(&mut shape, p2, p3, v2, v3)?;
+    let e3 = make_line_edge(&mut shape, p3, p0, v3, v0)?;
+
+    let outer = make_wire(vec![
+        rcad_kernel::topology::WireEdge::fwd(e0),
+        rcad_kernel::topology::WireEdge::fwd(e1),
+        rcad_kernel::topology::WireEdge::fwd(e2),
+        rcad_kernel::topology::WireEdge::fwd(e3),
+    ]);
+
+    let normal = (p1 - p0).cross(p3 - p0).normalize_or_zero();
+    make_face(
+        &mut shape,
+        rcad_kernel::geom::Surface3::Plane(rcad_kernel::geom::Plane {
+            origin: p0,
+            normal,
+        }),
+        outer,
+        Vec::new(),
+    )
+    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
 
     let mut state = STATE
         .lock()
@@ -2023,8 +2200,9 @@ fn model_occ_add_rectangle_impl(
 
     let assigned_tag = if tag > 0 { tag } else { state.next_cad_tag + 1 };
     state.next_cad_tag = assigned_tag.max(state.next_cad_tag);
-    // Store surface mesh as current_mesh so generate(2) can use it
-    state.current_mesh = Some(mesh);
+    state.cad_shapes.insert(assigned_tag, shape);
+    // Clear stale mesh cache: meshing will derive from CAD on demand.
+    state.current_mesh = None;
     Ok(assigned_tag)
 }
 

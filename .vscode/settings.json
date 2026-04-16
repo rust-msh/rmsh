@@ -1,0 +1,19 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "git submodule": true,
+        "ForEach-Object": true,
+        "Push-Location": true,
+        "Pop-Location": true,
+        "git config": true,
+        "Test-Path": true,
+        "git -C vendor/rcad": true,
+        "git add": true,
+        "git commit": true,
+        "&": true,
+        "cargo build": true,
+        "/^powershell -ExecutionPolicy Bypass -File \"\\.\\\\scripts\\\\refresh-rmsh-py\\.ps1\"$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
