@@ -1,7 +1,7 @@
 ﻿use pyo3::exceptions::PyNotImplementedError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
@@ -270,6 +270,28 @@ fn option_number(state: &RuntimeState, name: &str) -> Option<f64> {
     state.option_numbers.get(name).copied()
 }
 
+fn gmsh_type_id(etype: ElementType) -> i32 {
+    match etype {
+        ElementType::Point1 => 15,
+        ElementType::Line2 => 1,
+        ElementType::Triangle3 => 2,
+        ElementType::Quad4 => 3,
+        ElementType::Tetrahedron4 => 4,
+        ElementType::Hexahedron8 => 5,
+        ElementType::Prism6 => 6,
+        ElementType::Pyramid5 => 7,
+        ElementType::Unknown(id) => id,
+    }
+}
+
+fn mesh_max_dimension(mesh: &Mesh) -> i32 {
+    mesh.elements
+        .iter()
+        .map(|e| i32::from(e.dimension()))
+        .max()
+        .unwrap_or(0)
+}
+
 #[pyfunction]
 #[pyo3(name = "initialize", signature = (*args, **kwargs))]
 fn initialize_impl(args: &Bound<'_, PyTuple>, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
@@ -500,11 +522,112 @@ stub_pyfunction!(model_add_impl, "model_add", "rmshModelAdd(const char *name, in
 stub_pyfunction!(model_remove_impl, "model_remove", "rmshModelRemove(int *ierr)");
 stub_pyfunction!(model_get_current_impl, "model_get_current", "rmshModelGetCurrent(char **name, int *ierr)");
 stub_pyfunction!(model_set_current_impl, "model_set_current", "rmshModelSetCurrent(const char *name, int *ierr)");
-stub_pyfunction!(model_get_dimension_impl, "model_get_dimension", "rmshModelGetDimension(int *dim, int *ierr)");
-stub_pyfunction!(model_get_entities_impl, "model_get_entities", "rmshModelGetEntities(int **dimTags, size_t *dimTags_n, int dim, int *ierr)");
+
+#[pyfunction]
+#[pyo3(name = "model_get_dimension", signature = (*args, **kwargs))]
+fn model_get_dimension_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<i32> {
+    let _ = (args, kwargs);
+    let state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+
+    if !state.cad_shapes.is_empty() {
+        return Ok(3);
+    }
+    if let Some(mesh) = state.current_mesh.as_ref() {
+        return Ok(mesh_max_dimension(mesh));
+    }
+    Ok(0)
+}
+
+#[pyfunction]
+#[pyo3(name = "model_get_entities", signature = (*args, **kwargs))]
+fn model_get_entities_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Vec<(i32, i32)>> {
+    let dim: i32 = extract_required(args, kwargs, 0, &["dim"], "int").unwrap_or(-1);
+
+    let state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+
+    let mut out = Vec::new();
+    for tag in state.cad_shapes.keys().copied() {
+        if dim < 0 || dim == 3 {
+            out.push((3, tag));
+        }
+    }
+
+    if out.is_empty() {
+        if let Some(mesh) = state.current_mesh.as_ref() {
+            let mut dims: HashSet<i32> = HashSet::new();
+            for e in &mesh.elements {
+                dims.insert(i32::from(e.dimension()));
+            }
+            let mut dims_sorted: Vec<i32> = dims.into_iter().collect();
+            dims_sorted.sort_unstable();
+            for d in dims_sorted {
+                if dim < 0 || dim == d {
+                    out.push((d, 1));
+                }
+            }
+        }
+    }
+
+    Ok(out)
+}
+
 stub_pyfunction!(model_get_entity_name_impl, "model_get_entity_name", "rmshModelGetEntityName(int dim, int tag, char **name, int *ierr)");
 stub_pyfunction!(model_set_entity_name_impl, "model_set_entity_name", "rmshModelSetEntityName(int dim, int tag, const char *name, int *ierr)");
-stub_pyfunction!(model_get_bounding_box_impl, "model_get_bounding_box", "rmshModelGetBoundingBox(int dim, int tag, double *xmin, double *ymin, double *zmin, double *xmax, double *ymax, double *zmax, int *ierr)");
+
+#[pyfunction]
+#[pyo3(name = "model_get_bounding_box", signature = (*args, **kwargs))]
+fn model_get_bounding_box_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<(f64, f64, f64, f64, f64, f64)> {
+    let dim: i32 = extract_required(args, kwargs, 0, &["dim"], "int").unwrap_or(-1);
+    let tag: i32 = extract_required(args, kwargs, 1, &["tag"], "int").unwrap_or(-1);
+
+    let state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+
+    if (dim < 0 || dim == 3) && tag > 0 {
+        if let Some(shape) = state.cad_shapes.get(&tag) {
+            if shape.vertices.is_empty() {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err("shape has no vertices"));
+            }
+            let mut min = [f64::MAX; 3];
+            let mut max = [f64::MIN; 3];
+            for v in &shape.vertices {
+                min[0] = min[0].min(v.point.x);
+                min[1] = min[1].min(v.point.y);
+                min[2] = min[2].min(v.point.z);
+                max[0] = max[0].max(v.point.x);
+                max[1] = max[1].max(v.point.y);
+                max[2] = max[2].max(v.point.z);
+            }
+            return Ok((min[0], min[1], min[2], max[0], max[1], max[2]));
+        }
+    }
+
+    let mesh = state.current_mesh.as_ref().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("no mesh loaded")
+    })?;
+    let (min, max) = mesh.bounding_box().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("mesh is empty")
+    })?;
+    Ok((min.x, min.y, min.z, max.x, max.y, max.z))
+}
+
 stub_pyfunction!(model_add_physical_group_impl, "model_add_physical_group", "rmshModelAddPhysicalGroup(int dim, const int *tags, size_t tags_n, int tag, const char *name, int *ierr)");
 stub_pyfunction!(model_get_physical_groups_impl, "model_get_physical_groups", "rmshModelGetPhysicalGroups(int **dimTags, size_t *dimTags_n, int dim, int *ierr)");
 stub_pyfunction!(model_set_physical_name_impl, "model_set_physical_name", "rmshModelSetPhysicalName(int dim, int tag, const char *name, int *ierr)");
@@ -789,7 +912,27 @@ fn model_occ_synchronize_impl(
     Ok(())
 }
 
-stub_pyfunction!(model_mesh_set_size_impl, "model_mesh_set_size", "rmshModelMeshSetSize(const int *dimTags, size_t dimTags_n, double size, int *ierr)");
+#[pyfunction]
+#[pyo3(name = "model_mesh_set_size", signature = (*args, **kwargs))]
+fn model_mesh_set_size_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<()> {
+    let size: f64 = extract_required(args, kwargs, 1, &["size"], "float")?;
+    if size <= 0.0 {
+        return Err(pyo3::exceptions::PyValueError::new_err("size must be > 0"));
+    }
+
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    state.option_numbers.insert("Mesh.MeshSizeMin".to_string(), size);
+    state.option_numbers.insert("Mesh.MeshSizeMax".to_string(), size);
+    state.option_numbers.insert("Mesh.CharacteristicLengthMin".to_string(), size);
+    state.option_numbers.insert("Mesh.CharacteristicLengthMax".to_string(), size);
+    Ok(())
+}
 
 #[pyfunction]
 #[pyo3(name = "model_mesh_generate", signature = (*args, **kwargs))]
@@ -861,10 +1004,124 @@ fn model_mesh_generate_impl(
     Ok(())
 }
 
-stub_pyfunction!(model_mesh_set_order_impl, "model_mesh_set_order", "rmshModelMeshSetOrder(int order, int *ierr)");
-stub_pyfunction!(model_mesh_get_nodes_impl, "model_mesh_get_nodes", "rmshModelMeshGetNodes(size_t *nodeTags_n, size_t *coord_n, size_t *parametricCoord_n, int dim, int tag, int includeBoundary, int returnParametricCoord, int *ierr)");
-stub_pyfunction!(model_mesh_get_elements_impl, "model_mesh_get_elements", "rmshModelMeshGetElements(size_t *elementTypes_n, size_t *elementTags_n, size_t *nodeTags_n, int dim, int tag, int *ierr)");
-stub_pyfunction!(model_mesh_clear_impl, "model_mesh_clear", "rmshModelMeshClear(const int *dimTags, size_t dimTags_n, int *ierr)");
+#[pyfunction]
+#[pyo3(name = "model_mesh_set_order", signature = (*args, **kwargs))]
+fn model_mesh_set_order_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<()> {
+    let order: i32 = extract_required(args, kwargs, 0, &["order"], "int")?;
+    if order != 1 {
+        return Err(PyNotImplementedError::new_err(
+            "only first-order elements are currently supported",
+        ));
+    }
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "model_mesh_get_nodes", signature = (*args, **kwargs))]
+fn model_mesh_get_nodes_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<(Vec<u64>, Vec<f64>, Vec<f64>)> {
+    let dim: i32 = extract_required(args, kwargs, 3, &["dim"], "int").unwrap_or(-1);
+    let return_parametric: i32 =
+        extract_required(args, kwargs, 6, &["returnParametricCoord"], "int").unwrap_or(0);
+
+    let state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+
+    let mesh = state.current_mesh.as_ref().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("no mesh loaded")
+    })?;
+
+    if dim >= 0
+        && !mesh
+            .elements
+            .iter()
+            .any(|e| i32::from(e.dimension()) == dim)
+    {
+        return Ok((Vec::new(), Vec::new(), Vec::new()));
+    }
+
+    let mut node_ids: Vec<u64> = mesh.nodes.keys().copied().collect();
+    node_ids.sort_unstable();
+
+    let mut coords = Vec::with_capacity(node_ids.len() * 3);
+    for id in &node_ids {
+        if let Some(n) = mesh.nodes.get(id) {
+            coords.push(n.position.x);
+            coords.push(n.position.y);
+            coords.push(n.position.z);
+        }
+    }
+
+    let parametric = if return_parametric != 0 {
+        vec![0.0; node_ids.len()]
+    } else {
+        Vec::new()
+    };
+
+    Ok((node_ids, coords, parametric))
+}
+
+#[pyfunction]
+#[pyo3(name = "model_mesh_get_elements", signature = (*args, **kwargs))]
+fn model_mesh_get_elements_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<(Vec<i32>, Vec<Vec<u64>>, Vec<Vec<u64>>)> {
+    let dim: i32 = extract_required(args, kwargs, 0, &["dim"], "int").unwrap_or(-1);
+
+    let state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+
+    let mesh = state.current_mesh.as_ref().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("no mesh loaded")
+    })?;
+
+    let mut grouped: BTreeMap<i32, (Vec<u64>, Vec<u64>)> = BTreeMap::new();
+    for elem in &mesh.elements {
+        if dim >= 0 && i32::from(elem.dimension()) != dim {
+            continue;
+        }
+        let type_id = gmsh_type_id(elem.etype);
+        let entry = grouped.entry(type_id).or_insert_with(|| (Vec::new(), Vec::new()));
+        entry.0.push(elem.id);
+        entry.1.extend(elem.node_ids.iter().copied());
+    }
+
+    let mut element_types = Vec::with_capacity(grouped.len());
+    let mut element_tags = Vec::with_capacity(grouped.len());
+    let mut node_tags = Vec::with_capacity(grouped.len());
+    for (etype, (tags, nodes)) in grouped {
+        element_types.push(etype);
+        element_tags.push(tags);
+        node_tags.push(nodes);
+    }
+
+    Ok((element_types, element_tags, node_tags))
+}
+
+#[pyfunction]
+#[pyo3(name = "model_mesh_clear", signature = (*args, **kwargs))]
+fn model_mesh_clear_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<()> {
+    let _ = (args, kwargs);
+    let mut state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    state.current_mesh = None;
+    Ok(())
+}
 
 #[pyfunction]
 #[pyo3(name = "model_mesh_optimize", signature = (*args, **kwargs))]

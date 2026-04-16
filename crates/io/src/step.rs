@@ -180,6 +180,8 @@ fn trimesh_to_brep(verts: &[glam::DVec3], tris: &[[usize; 3]]) -> BRep {
             shells: vec![Shell { faces: vec![face] }],
         }],
         geom: rcad_kernel::GeomStore::default(),
+        compound: None,
+        compsolid: None,
     }
 }
 
