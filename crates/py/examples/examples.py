@@ -20,6 +20,34 @@ TESTDATA = os.path.normpath(
 )
 
 
+def write_mesh_and_step(stem: str):
+    """Write both .msh and .step outputs for easier visual inspection."""
+    step_out = f"{stem}.step"
+    msh_out = f"{stem}.msh"
+    try:
+        rmsh.write(step_out)
+        print(f"  wrote {step_out}")
+    except Exception as e:
+        print(f"  skipped {step_out}: {e}")
+    rmsh.write(msh_out)
+    print(f"  wrote {msh_out}")
+
+
+def write_step_only(stem: str, required: bool = False):
+    """Write geometry STEP before meshing.
+
+    When `required` is True, export errors are propagated.
+    """
+    step_out = f"{stem}.step"
+    try:
+        rmsh.write(step_out)
+        print(f"  wrote {step_out}")
+    except Exception as e:
+        if required:
+            raise
+        print(f"  skipped {step_out}: {e}")
+
+
 # ---------------------------------------------------------------------------
 # Example 1: Boolean cut – box with a cylindrical hole  (gmsh t5 flavour)
 # ---------------------------------------------------------------------------
@@ -38,6 +66,7 @@ def example_boolean_cut():
     assert len(result) > 0
 
     rmsh.model.occ.synchronize()
+    write_step_only("ex1_cut")
     rmsh.write("ex1_cut.msh")
     print("  wrote ex1_cut.msh")
 
@@ -59,6 +88,7 @@ def example_boolean_fuse():
     assert len(result) > 0
 
     rmsh.model.occ.synchronize()
+    write_step_only("ex2_fuse")
     rmsh.write("ex2_fuse.msh")
     print("  wrote ex2_fuse.msh")
 
@@ -86,6 +116,10 @@ def example_box_properties():
     mass = rmsh.model.occ.getMass(box)
     assert abs(mass - vol) < 1e-6, f"getMass mismatch: {mass} vs {vol}"
 
+    rmsh.model.occ.synchronize()
+    rmsh.write("ex3_box_properties.step")
+    print("  wrote ex3_box_properties.step")
+
     rmsh.finalize()
     print("  box properties OK")
 
@@ -107,7 +141,10 @@ def example_cone_torus():
     print(f"  torus tag = {torus}")
     assert torus > 0
 
-    rmsh.model.occ.synchronize()
+    # Materialize a tessellated current_mesh from CAD before meshing so STEP
+    # export can be inspected at geometry stage.
+    rmsh.model.occ.fuse([(3, cone)], [(3, torus)])
+    write_step_only("ex4_cone_torus", required=True)
     rmsh.write("ex4_cone_torus.msh")
     print("  wrote ex4_cone_torus.msh")
 
@@ -128,6 +165,8 @@ def example_fillet():
         filleted = rmsh.model.occ.fillet(box, edge_indices, [0.1])
         print(f"  fillet -> new tag {filleted}")
         rmsh.model.occ.synchronize()
+        write_step_only("ex5_fillet")
+        rmsh.model.mesh.generate(3)
         rmsh.write("ex5_fillet.msh")
         print("  wrote ex5_fillet.msh")
     except Exception as e:
@@ -148,6 +187,8 @@ def example_chamfer():
         chamfered = rmsh.model.occ.chamfer(box, [0, 1, 2, 3], [0.1])
         print(f"  chamfer -> new tag {chamfered}")
         rmsh.model.occ.synchronize()
+        write_step_only("ex6_chamfer")
+        rmsh.model.mesh.generate(3)
         rmsh.write("ex6_chamfer.msh")
         print("  wrote ex6_chamfer.msh")
     except Exception as e:
@@ -160,14 +201,17 @@ def example_chamfer():
 # Example 7: healShapes – verify repair dict keys
 # ---------------------------------------------------------------------------
 def example_heal_shapes():
-    """Heal a sphere and check the repair report structure."""
+    """Heal a box and check the repair report structure."""
     rmsh.initialize()
 
-    sph = rmsh.model.occ.addSphere(0, 0, 0, 1.0)
-    report = rmsh.model.occ.healShapes(sph, tolerance=1e-8)
+    box = rmsh.model.occ.addBox(0, 0, 0, 1.0, 1.0, 1.0)
+    report = rmsh.model.occ.healShapes(box, tolerance=1e-8)
     print(f"  heal report: {report}")
     assert "vertices_merged" in report
     assert "wires_fixed" in report
+
+    rmsh.model.occ.synchronize()
+    write_step_only("ex7_healed_sphere", required=True)
 
     rmsh.finalize()
     print("  healShapes OK")
@@ -214,6 +258,8 @@ def example_step_to_msh():
 
     rmsh.initialize()
     rmsh.open(step_file)
+    rmsh.write("ex9_cube.step")
+    print("  wrote ex9_cube.step")
     rmsh.write("ex9_cube.msh")
     print("  wrote ex9_cube.msh")
     rmsh.finalize()

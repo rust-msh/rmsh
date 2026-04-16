@@ -34,6 +34,32 @@ TESTDATA = os.path.normpath(
 )
 
 
+def write_mesh_and_step(stem: str):
+    """Write both .msh and .step artifacts for easy manual inspection."""
+    step_out = f"{stem}.step"
+    msh_out = f"{stem}.msh"
+    rmsh.write(step_out)
+    rmsh.write(msh_out)
+    print(f"  wrote {step_out}")
+    print(f"  wrote {msh_out}")
+
+
+def write_step_before_meshing(stem: str):
+    """Write STEP from geometry stage before meshing (best-effort)."""
+    step_out = f"{stem}.step"
+    try:
+        rmsh.write(step_out)
+        print(f"  wrote {step_out}")
+    except Exception as e:
+        print(f"  skipped {step_out}: {e}")
+
+
+def write_msh_after_meshing(stem: str):
+    msh_out = f"{stem}.msh"
+    rmsh.write(msh_out)
+    print(f"  wrote {msh_out}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # t1 — Geometry basics: rectangle → 2D mesh
 #
@@ -56,11 +82,12 @@ def tutorial_t1():
     # Mesh size equivalent to Gmsh's characteristic length lc = 1e-2
     rmsh.option.setNumber("Mesh.MeshSizeMax", 1e-2)
 
+    write_step_before_meshing("t1_rectangle")
+
     # gmsh: gmsh.model.mesh.generate(2)
     rmsh.model.mesh.generate(2)
 
-    rmsh.write("t1_rectangle.msh")
-    print("  wrote t1_rectangle.msh")
+    write_msh_after_meshing("t1_rectangle")
 
     rmsh.finalize()
 
@@ -88,9 +115,10 @@ def tutorial_t2():
     rmsh.option.setNumber("Mesh.Algorithm3D", 1)   # Delaunay
     rmsh.option.setNumber("Mesh.MeshSizeMax", 0.03)
 
+    write_step_before_meshing("t2_extrude")
+
     rmsh.model.mesh.generate(3)
-    rmsh.write("t2_extrude.msh")
-    print("  wrote t2_extrude.msh")
+    write_msh_after_meshing("t2_extrude")
 
     rmsh.finalize()
 
@@ -120,9 +148,10 @@ def tutorial_t4():
     rmsh.option.setNumber("Mesh.Algorithm3D", 1)
     rmsh.option.setNumber("Mesh.MeshSizeMax", 0.15)
 
+    write_step_before_meshing("t4_box_with_hole")
+
     rmsh.model.mesh.generate(3)
-    rmsh.write("t4_box_with_hole.msh")
-    print("  wrote t4_box_with_hole.msh")
+    write_msh_after_meshing("t4_box_with_hole")
 
     rmsh.finalize()
 
@@ -154,8 +183,11 @@ def tutorial_t5():
         rmsh.option.setNumber("Mesh.MeshSizeMax",   size_max)
         rmsh.option.setNumber("Mesh.MeshSizeFactor", factor)
 
+        stem = out[:-4] if out.endswith(".msh") else out
+        write_step_before_meshing(stem)
+
         rmsh.model.mesh.generate(2)
-        rmsh.write(out)
+        write_msh_after_meshing(stem)
         print(f"  [{label}] factor={factor}  -> {out}")
 
         rmsh.finalize()
@@ -183,9 +215,10 @@ def tutorial_t6():
     rmsh.option.setNumber("Mesh.MeshSizeMax",    0.25)
     rmsh.option.setNumber("Mesh.MeshSizeFactor", 1.0)
 
+    write_step_before_meshing("t6_structured_quad")
+
     rmsh.model.mesh.generate(2)
-    rmsh.write("t6_structured_quad.msh")
-    print("  wrote t6_structured_quad.msh")
+    write_msh_after_meshing("t6_structured_quad")
 
     rmsh.finalize()
 
@@ -218,9 +251,10 @@ def tutorial_t10():
     rmsh.option.setNumber("Mesh.Algorithm3D", 1)
     rmsh.option.setNumber("Mesh.MeshSizeMax", 0.18)
 
+    write_step_before_meshing("t10_boolean_compound")
+
     rmsh.model.mesh.generate(3)
-    rmsh.write("t10_boolean_compound.msh")
-    print("  wrote t10_boolean_compound.msh")
+    write_msh_after_meshing("t10_boolean_compound")
 
     rmsh.finalize()
 
@@ -245,8 +279,9 @@ def tutorial_t11():
         rmsh.model.occ.synchronize()
         rmsh.option.setNumber("Mesh.Algorithm3D", 1)
         rmsh.option.setNumber("Mesh.MeshSizeMax", 0.15)
+        write_step_before_meshing("t11_fillet")
         rmsh.model.mesh.generate(3)
-        rmsh.write("t11_fillet.msh")
+        write_msh_after_meshing("t11_fillet")
         print(f"  fillet tag={filleted} -> wrote t11_fillet.msh")
     except Exception as e:
         print(f"  fillet: {e}")
@@ -262,8 +297,9 @@ def tutorial_t11():
         rmsh.model.occ.synchronize()
         rmsh.option.setNumber("Mesh.Algorithm3D", 1)
         rmsh.option.setNumber("Mesh.MeshSizeMax", 0.2)
+        write_step_before_meshing("t11_chamfer")
         rmsh.model.mesh.generate(3)
-        rmsh.write("t11_chamfer.msh")
+        write_msh_after_meshing("t11_chamfer")
         print(f"  chamfer tag={chamfered} -> wrote t11_chamfer.msh")
     except Exception as e:
         print(f"  chamfer: {e}")
@@ -298,9 +334,10 @@ def tutorial_t16():
     rmsh.option.setNumber("Mesh.MeshSizeMax", 0.3)
     rmsh.option.setNumber("Mesh.MeshSizeFactor", 0.5)
 
+    write_step_before_meshing("t16_step_volume")
+
     rmsh.model.mesh.generate(3)
-    rmsh.write("t16_step_volume.msh")
-    print("  wrote t16_step_volume.msh")
+    write_msh_after_meshing("t16_step_volume")
 
     rmsh.finalize()
 
@@ -337,9 +374,10 @@ def tutorial_t17():
     rmsh.option.setNumber("Mesh.Algorithm3D", 1)
     rmsh.option.setNumber("Mesh.MeshSizeMax", 0.4)
 
+    write_step_before_meshing("t17_healed_box")
+
     rmsh.model.mesh.generate(3)
-    rmsh.write("t17_healed_box.msh")
-    print("  wrote t17_healed_box.msh")
+    write_msh_after_meshing("t17_healed_box")
 
     rmsh.finalize()
 
@@ -362,8 +400,10 @@ def tutorial_bamg_aniso():
     rmsh.option.setNumber("Mesh.MeshSizeMax",    0.05)
     rmsh.option.setNumber("Mesh.MeshSizeFactor", 1.0)
 
+    write_step_before_meshing("bonus_bamg_strip")
+
     rmsh.model.mesh.generate(2)
-    rmsh.write("bonus_bamg_strip.msh")
+    write_msh_after_meshing("bonus_bamg_strip")
     print("  wrote bonus_bamg_strip.msh  (BAMG on 10:1 strip)")
 
     rmsh.finalize()
@@ -384,12 +424,13 @@ def tutorial_smooth():
 
     rmsh.option.setNumber("Mesh.Algorithm3D", 4)   # Frontal
     rmsh.option.setNumber("Mesh.MeshSizeMax", 0.25)
+    write_step_before_meshing("bonus_smooth")
     rmsh.model.mesh.generate(3)
 
     # gmsh: gmsh.model.mesh.optimize("Laplace2D")
     rmsh.model.mesh.optimize("Laplace", niter=15)
 
-    rmsh.write("bonus_smooth.msh")
+    write_msh_after_meshing("bonus_smooth")
     print("  wrote bonus_smooth.msh  (Frontal-3D + Laplacian 15 passes)")
 
     rmsh.finalize()

@@ -46,6 +46,25 @@ def _count_elements(path: str) -> dict:
     return {}   # placeholder – actual element counts available via model.mesh.getElements (stub)
 
 
+def _write_msh_and_step(stem: str):
+    """Write both .msh and .step outputs (used by legacy call sites)."""
+    step_out = f"{stem}.step"
+    msh_out = f"{stem}.msh"
+    rmsh.write(step_out)
+    rmsh.write(msh_out)
+    return msh_out, step_out
+
+
+def _write_step_before_meshing(stem: str):
+    """Write STEP at geometry stage before meshing (best-effort)."""
+    step_out = f"{stem}.step"
+    try:
+        rmsh.write(step_out)
+        print(f"  wrote {step_out}")
+    except Exception as e:
+        print(f"  skipped {step_out}: {e}")
+
+
 def _run_2d(algo_id: int, algo_name: str, h: float = 0.15) -> str:
     """
     Build a 2×1 planar rectangle and mesh it with the given 2D algorithm.
@@ -61,9 +80,12 @@ def _run_2d(algo_id: int, algo_name: str, h: float = 0.15) -> str:
     rmsh.option.setNumber("Mesh.MeshSizeMax", h)
     rmsh.option.setNumber("Mesh.MeshSizeFactor", 1.0)
 
+    stem = f"algo2d_{algo_id}_{algo_name.replace(' ', '_').lower()}"
+    _write_step_before_meshing(stem)
+
     rmsh.model.mesh.generate(2)
 
-    out = f"algo2d_{algo_id}_{algo_name.replace(' ', '_').lower()}.msh"
+    out = f"{stem}.msh"
     rmsh.write(out)
     rmsh.finalize()
     return out
@@ -83,9 +105,12 @@ def _run_3d(algo_id: int, algo_name: str, h: float = 0.4) -> str:
     rmsh.option.setNumber("Mesh.MeshSizeMax", h)
     rmsh.option.setNumber("Mesh.MeshSizeFactor", 1.0)
 
+    stem = f"algo3d_{algo_id}_{algo_name.replace(' ', '_').lower()}"
+    _write_step_before_meshing(stem)
+
     rmsh.model.mesh.generate(3)
 
-    out = f"algo3d_{algo_id}_{algo_name.replace(' ', '_').lower()}.msh"
+    out = f"{stem}.msh"
     rmsh.write(out)
     rmsh.finalize()
     return out
@@ -131,6 +156,8 @@ def example_2d_quad_paving():
 
     rmsh.option.setNumber("Mesh.Algorithm", 9)
     rmsh.option.setNumber("Mesh.MeshSizeMax", 0.5)
+
+    _write_step_before_meshing("algo2d_9_quad_paving")
 
     rmsh.model.mesh.generate(2)
     out = "algo2d_9_quad_paving.msh"
@@ -184,6 +211,7 @@ def example_size_control():
     rmsh.option.setNumber("Mesh.Algorithm3D", 1)
     rmsh.option.setNumber("Mesh.MeshSizeMax", 0.6)
     rmsh.option.setNumber("Mesh.MeshSizeFactor", 1.0)
+    _write_step_before_meshing("size_coarse")
     rmsh.model.mesh.generate(3)
     rmsh.write("size_coarse.msh")
     print("  wrote size_coarse.msh")
@@ -197,6 +225,7 @@ def example_size_control():
     rmsh.option.setNumber("Mesh.Algorithm3D", 1)
     rmsh.option.setNumber("Mesh.MeshSizeMax", 0.6)
     rmsh.option.setNumber("Mesh.MeshSizeFactor", 0.3)   # 3× finer
+    _write_step_before_meshing("size_fine")
     rmsh.model.mesh.generate(3)
     rmsh.write("size_fine.msh")
     print("  wrote size_fine.msh")
@@ -215,12 +244,14 @@ def example_laplacian_smoothing():
 
     rmsh.option.setNumber("Mesh.Algorithm3D", 1)
     rmsh.option.setNumber("Mesh.MeshSizeMax", 0.35)
+    _write_step_before_meshing("smooth_before")
     rmsh.model.mesh.generate(3)
     rmsh.write("smooth_before.msh")
     print("  wrote smooth_before.msh")
 
     # Smooth with 20 Laplacian iterations
     rmsh.model.mesh.optimize("Laplace", niter=20)
+    _write_step_before_meshing("smooth_after")
     rmsh.write("smooth_after.msh")
     print("  wrote smooth_after.msh  (Laplacian-smoothed, 20 passes)")
 
@@ -284,6 +315,8 @@ def example_step_with_algorithm():
     # Use Frontal 3D with a fine size factor
     rmsh.option.setNumber("Mesh.Algorithm3D", 4)
     rmsh.option.setNumber("Mesh.MeshSizeFactor", 0.5)
+
+    _write_step_before_meshing("step_frontal3d")
 
     rmsh.model.mesh.generate(3)
     rmsh.write("step_frontal3d.msh")
