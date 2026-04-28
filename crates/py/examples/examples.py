@@ -61,9 +61,10 @@ def example_boolean_cut():
     box = rmsh.model.occ.addBox(0, 0, 0, 2.0, 1.0, 1.0)
     cyl = rmsh.model.occ.addCylinder(1.0, 0.5, -0.1,  0, 0, 1.2,  0.3)
 
-    result = rmsh.model.occ.cut([(3, box)], [(3, cyl)])
-    print(f"  cut result tags: {result}")
-    assert len(result) > 0
+    out_dim_tags, out_dim_tags_map = rmsh.model.occ.cut([(3, box)], [(3, cyl)])
+    print(f"  cut result tags: {out_dim_tags}")
+    print(f"  cut result map:  {out_dim_tags_map}")
+    assert len(out_dim_tags) > 0
 
     rmsh.model.occ.synchronize()
     write_step_only("ex1_cut")
@@ -83,9 +84,10 @@ def example_boolean_fuse():
     s1 = rmsh.model.occ.addSphere(0.0, 0.0, 0.0, 1.0)
     s2 = rmsh.model.occ.addSphere(1.2, 0.0, 0.0, 1.0)
 
-    result = rmsh.model.occ.fuse([(3, s1)], [(3, s2)])
-    print(f"  fuse result tags: {result}")
-    assert len(result) > 0
+    out_dim_tags, out_dim_tags_map = rmsh.model.occ.fuse([(3, s1)], [(3, s2)])
+    print(f"  fuse result tags: {out_dim_tags}")
+    print(f"  fuse result map:  {out_dim_tags_map}")
+    assert len(out_dim_tags) > 0
 
     rmsh.model.occ.synchronize()
     write_step_only("ex2_fuse")
@@ -131,13 +133,13 @@ def example_cone_torus():
     """Create a cone and a torus, synchronize, and write."""
     rmsh.initialize()
 
-    # Cone: base at origin, pointing up Z, radius 1, height 2
-    cone = rmsh.model.occ.addCone(0, 0, 0,  0, 0, 2.0,  1.0)
+    # Cone: gmsh-compatible signature (x, y, z, dx, dy, dz, r1, r2)
+    cone = rmsh.model.occ.addCone(0, 0, 0, 0, 0, 2.0, 1.0, 0.0)
     print(f"  cone tag = {cone}")
     assert cone > 0
 
     # Torus: centre (5,0,0), axis Z, R=2, r=0.5
-    torus = rmsh.model.occ.addTorus(5, 0, 0,  0, 0, 1,  2.0, 0.5)
+    torus = rmsh.model.occ.addTorus(5, 0, 0, 2.0, 0.5)
     print(f"  torus tag = {torus}")
     assert torus > 0
 

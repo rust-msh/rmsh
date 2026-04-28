@@ -229,3 +229,78 @@ These apply to individual views (post-processing data sets). Access as `View[i].
 - `Mesh.NbNodes`, `Mesh.NbTriangles`, etc. are read-only stats populated after meshing
 - Deprecated `CharacteristicLength*` keys map to corresponding `MeshSize*` keys
 - `View[i].Key` syntax accesses per-view options by index (future: rmsh may use named views)
+
+---
+
+## Current Alignment Snapshot (2026-04-19)
+
+This section tracks the observed alignment between gmsh options and rmsh options
+for keys that rmsh currently consumes or exposes in common workflows.
+
+Legend:
+
+- `Aligned`: behavior matches gmsh sufficiently for normal scripts.
+- `Compatible`: behavior differs, but still predictable and acceptable.
+- `Divergent`: behavior mismatch that can break gmsh-oriented scripts.
+
+### Option API Surface
+
+| Area | gmsh | rmsh | Status |
+|------|------|------|--------|
+| `setNumber/getNumber` | yes | yes | Aligned |
+| `setString/getString` | yes | yes | Aligned |
+| `setColor/getColor` | yes | yes | Aligned |
+| `restoreDefaults` | yes | yes | Aligned |
+
+### Default Read Semantics (Known Keys)
+
+| Key | gmsh default read | rmsh default read | Status |
+|-----|-------------------|-------------------|--------|
+| `Mesh.MeshSizeMax` | `1e22` | `1e22` | Aligned |
+| `Mesh.MeshSizeMin` | `0` | `0` | Aligned |
+| `Mesh.Algorithm` | `6` | `6` | Aligned |
+| `Mesh.Algorithm3D` | `1` | `1` | Aligned |
+| `Geometry.Points` | `1` | `1` | Aligned |
+| `General.Background` (color) | `(255,255,255,255)` after restore | `(255,255,255,255)` after restore | Aligned |
+
+### rmsh STEP Extension Keys
+
+These keys are rmsh extensions and not native gmsh options.
+
+| Key | gmsh | rmsh | Status |
+|-----|------|------|--------|
+| `STEP.GmshStrict` | unknown option | default `1` + overridable | Compatible |
+| `STEP.Protocol` | unknown option | default `AP214` + overridable | Compatible |
+| `STEP.WriterStyle` | unknown option | default `gmsh-strict` + overridable | Compatible |
+
+### Lifecycle Semantics
+
+| Scenario | gmsh | rmsh | Status |
+|----------|------|------|--------|
+| Option API before `initialize` | requires initialized context | requires initialized context | Aligned |
+| `restoreDefaults` then `get*` known key | returns built-in default | returns built-in default | Aligned |
+
+### Option Consumption in rmsh Runtime
+
+The following keys are actively consumed in code paths (not just stored):
+
+- STEP export profile: `STEP.Protocol`, `Geometry.OCCStepProtocol`, `Geometry.OCCSTEPProtocol`
+- STEP strict toggle: `STEP.GmshStrict`, `Geometry.OCCStepGmshStrict`
+- STEP color: `Geometry.OCCSolidColor`, `STEP.SolidColor`
+- Mesh size and aliases: `Mesh.MeshSizeMin/Max/Factor`, `Mesh.CharacteristicLengthMin/Max/Factor`
+- Mesh algorithms: `Mesh.Algorithm`, `Mesh.Algorithm3D`
+- Viewer toggles: `Geometry.Points`, `Mesh.Points`, `Geometry.Curves`, `Geometry.Lines`, `Geometry.Surfaces`, `Geometry.Volumes`
+
+When `Mesh.MeshSizeMax` is not explicitly set, rmsh now derives a conservative
+default target size from the current geometry scale (surface mesh AABB diagonal)
+instead of using a fixed constant.
+
+Keys not consumed by runtime logic are currently stored and retrievable, but
+have no behavioral effect.
+
+### Remaining Gaps
+
+- The global gmsh option universe is much larger than rmsh's actively consumed
+	subset; many keys are currently no-op in rmsh.
+- Read-only statistics keys (`Mesh.Nb*`) are not yet modeled as live option
+	values in the option API.

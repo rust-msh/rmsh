@@ -42,6 +42,7 @@
 //! **Not yet implemented** — this module provides the public API skeleton only.
 
 use rmsh_model::{Element, ElementType, Mesh, Node};
+use std::collections::HashMap;
 
 use crate::tetrahedralize3d::CentroidStarMesher3D;
 use crate::traits::{MeshAlgoError, MeshParams, Mesher3D};
@@ -120,6 +121,9 @@ fn refine_bad_tetrahedra(
     max_size: f64,
     optimize_passes: u32,
 ) -> Result<Mesh, MeshAlgoError> {
+    let mut stats = RefinementStats::default();
+    let sliver_floor_deg = 0.25_f64;
+
     // Hard edge-length stop criterion combines target and optional max-size cap.
     let edge_limit = target_size.min(max_size);
 
@@ -148,8 +152,9 @@ fn refine_bad_tetrahedra(
 
     for _pass in 0..max_passes {
         let Some((worst_idx, _score)) =
-            find_worst_tetrahedron(&mesh, max_radius_edge_ratio, edge_limit)
+            find_worst_tetrahedron(&mesh, max_radius_edge_ratio, edge_limit, sliver_floor_deg)
         else {
+            stats.exits_no_worst += 1;
             break;
         };
 
@@ -165,58 +170,597 @@ fn refine_bad_tetrahedra(
 
         let ratio = tetra_radius_edge_ratio_from_mesh(&mesh, &worst_nodes)?;
         let longest_edge = tetra_max_edge_length_from_mesh(&mesh, &worst_nodes)?;
-        if ratio <= max_radius_edge_ratio && longest_edge <= edge_limit {
+        let min_dihedral = tetra_min_dihedral_from_mesh(&mesh, &worst_nodes)?;
+        if ratio <= max_radius_edge_ratio
+            && longest_edge <= edge_limit
+            && min_dihedral >= sliver_floor_deg
+        {
+            stats.exits_quality_satisfied += 1;
             break;
         }
 
-        let centroid = tetra_centroid_from_mesh(&mesh, &worst_nodes)?;
+        let (p0, p1, p2, p3) = (
+            node_xyz_from_mesh(&mesh, worst_nodes[0])?,
+            node_xyz_from_mesh(&mesh, worst_nodes[1])?,
+            node_xyz_from_mesh(&mesh, worst_nodes[2])?,
+            node_xyz_from_mesh(&mesh, worst_nodes[3])?,
+        );
+
+        let centroid = [
+            (p0[0] + p1[0] + p2[0] + p3[0]) * 0.25,
+            (p0[1] + p1[1] + p2[1] + p3[1]) * 0.25,
+            (p0[2] + p1[2] + p2[2] + p3[2]) * 0.25,
+        ];
+
+        let sliver_like = min_dihedral < sliver_floor_deg * 2.0 && ratio > max_radius_edge_ratio * 1.1;
+        let best_point = if sliver_like {
+            stats.sliver_priority_inserts += 1;
+            select_fallback_refinement_point(p0, p1, p2, p3)
+                .or_else(|| select_refinement_point(p0, p1, p2, p3))
+                .unwrap_or(centroid)
+        } else {
+            select_refinement_point(p0, p1, p2, p3)
+                .or_else(|| select_fallback_refinement_point(p0, p1, p2, p3))
+                .unwrap_or(centroid)
+        };
+        let mut insertion_point = best_point;
+        let mut edge_split = None::<(usize, usize, usize, usize)>;
+        let predicted_min = min_child_dihedral_for_point(p0, p1, p2, p3, best_point);
+        if predicted_min < sliver_floor_deg * 0.5 {
+            stats.edge_bisection_considered += 1;
+            if let Some((i, j, k, l, edge_point, edge_metrics)) =
+                best_edge_split_partition([p0, p1, p2, p3])
+            {
+                let point_metrics = split_quality_metrics(p0, p1, p2, p3, best_point)
+                    .map(|(_, md, mr, sf)| (md, sf, mr))
+                    .unwrap_or((predicted_min, 1.0, f64::INFINITY));
+
+                let edge_better = (edge_metrics.0 > point_metrics.0 + 1e-6)
+                    || ((edge_metrics.0 - point_metrics.0).abs() < 1e-6
+                        && ((edge_metrics.1 < point_metrics.1 - 1e-9)
+                            || ((edge_metrics.1 - point_metrics.1).abs() < 1e-9
+                                && edge_metrics.2 < point_metrics.2)));
+                let edge_not_exploding = edge_metrics.2 <= point_metrics.2 * 2.5;
+
+                if edge_better && edge_not_exploding {
+                    insertion_point = edge_point;
+                    edge_split = Some((i, j, k, l));
+                    stats.edge_bisection_fallback += 1;
+                } else {
+                    stats.edge_bisection_rejected += 1;
+                }
+            } else {
+                stats.edge_bisection_rejected += 1;
+            }
+        }
+
+        if insertion_point == centroid {
+            stats.centroid_fallback += 1;
+        } else {
+            stats.candidate_selected += 1;
+        }
         let new_node_id = next_node_id;
         next_node_id = next_node_id.saturating_add(1);
 
         mesh.add_node(Node::new(
             new_node_id,
-            centroid[0],
-            centroid[1],
-            centroid[2],
+            insertion_point[0],
+            insertion_point[1],
+            insertion_point[2],
         ));
 
-        // Replace one bad tetrahedron by four children sharing the inserted node.
-        let [a, b, c, d] = worst_nodes;
+        // Replace one bad tetrahedron by four children sharing the inserted node,
+        // or two children via longest-edge bisection for strongly sliver-like cases.
+        let [n0, n1, n2, n3] = worst_nodes;
+        let ids = [n0, n1, n2, n3];
 
         mesh.elements.swap_remove(worst_idx);
-        mesh.add_element(Element::new(
-            next_elem_id,
-            ElementType::Tetrahedron4,
-            vec![a, b, c, new_node_id],
-        ));
-        next_elem_id = next_elem_id.saturating_add(1);
-        mesh.add_element(Element::new(
-            next_elem_id,
-            ElementType::Tetrahedron4,
-            vec![a, b, d, new_node_id],
-        ));
-        next_elem_id = next_elem_id.saturating_add(1);
-        mesh.add_element(Element::new(
-            next_elem_id,
-            ElementType::Tetrahedron4,
-            vec![a, c, d, new_node_id],
-        ));
-        next_elem_id = next_elem_id.saturating_add(1);
-        mesh.add_element(Element::new(
-            next_elem_id,
-            ElementType::Tetrahedron4,
-            vec![b, c, d, new_node_id],
-        ));
-        next_elem_id = next_elem_id.saturating_add(1);
+        if let Some((i, j, k, l)) = edge_split {
+            mesh.add_element(Element::new(
+                next_elem_id,
+                ElementType::Tetrahedron4,
+                vec![ids[i], new_node_id, ids[k], ids[l]],
+            ));
+            next_elem_id = next_elem_id.saturating_add(1);
+            mesh.add_element(Element::new(
+                next_elem_id,
+                ElementType::Tetrahedron4,
+                vec![new_node_id, ids[j], ids[k], ids[l]],
+            ));
+            next_elem_id = next_elem_id.saturating_add(1);
+        } else {
+            mesh.add_element(Element::new(
+                next_elem_id,
+                ElementType::Tetrahedron4,
+                vec![n0, n1, n2, new_node_id],
+            ));
+            next_elem_id = next_elem_id.saturating_add(1);
+            mesh.add_element(Element::new(
+                next_elem_id,
+                ElementType::Tetrahedron4,
+                vec![n0, n1, n3, new_node_id],
+            ));
+            next_elem_id = next_elem_id.saturating_add(1);
+            mesh.add_element(Element::new(
+                next_elem_id,
+                ElementType::Tetrahedron4,
+                vec![n0, n2, n3, new_node_id],
+            ));
+            next_elem_id = next_elem_id.saturating_add(1);
+            mesh.add_element(Element::new(
+                next_elem_id,
+                ElementType::Tetrahedron4,
+                vec![n1, n2, n3, new_node_id],
+            ));
+            next_elem_id = next_elem_id.saturating_add(1);
+        }
+
+        stats.refined_tets += 1;
+    }
+
+    let flip_passes = optimize_passes.clamp(1, 8) as usize;
+    let mut tet_mesh = crate::tet_mesh::TetMesh::from_mesh(&mesh);
+    let (face_flips, edge_flips, edge_sliver_flips) =
+        crate::tet_mesh::optimize_tetmesh_flips(&mut tet_mesh, flip_passes);
+    stats.local_face_flips += face_flips;
+    stats.local_edge_flips += edge_flips;
+    stats.local_edge_sliver_accepts += edge_sliver_flips;
+    mesh = tet_mesh.to_mesh();
+
+    if should_log_refinement_stats() {
+        eprintln!(
+            "delaunay3d refinement stats: refined_tets={}, candidate_selected={}, centroid_fallback={}, sliver_priority_inserts={}, edge_bisection_considered={}, edge_bisection_fallback={}, edge_bisection_rejected={}, local_face_flips={}, local_edge_flips={}, local_edge_sliver_accepts={}, exits_no_worst={}, exits_quality_satisfied={}",
+            stats.refined_tets,
+            stats.candidate_selected,
+            stats.centroid_fallback,
+            stats.sliver_priority_inserts,
+            stats.edge_bisection_considered,
+            stats.edge_bisection_fallback,
+            stats.edge_bisection_rejected,
+            stats.local_face_flips,
+            stats.local_edge_flips,
+            stats.local_edge_sliver_accepts,
+            stats.exits_no_worst,
+            stats.exits_quality_satisfied
+        );
     }
 
     Ok(mesh)
+}
+
+#[derive(Default)]
+struct RefinementStats {
+    refined_tets: usize,
+    candidate_selected: usize,
+    centroid_fallback: usize,
+    sliver_priority_inserts: usize,
+    edge_bisection_considered: usize,
+    edge_bisection_fallback: usize,
+    edge_bisection_rejected: usize,
+    local_face_flips: usize,
+    local_edge_flips: usize,
+    local_edge_sliver_accepts: usize,
+    exits_no_worst: usize,
+    exits_quality_satisfied: usize,
+}
+
+fn optimize_local_face_flips(
+    mesh: &mut Mesh,
+    next_elem_id: &mut u64,
+    max_passes: usize,
+) -> Result<(usize, usize, usize), MeshAlgoError> {
+    let mut accepted_face = 0usize;
+    let mut accepted_edge = 0usize;
+    let mut accepted_edge_sliver = 0usize;
+    for _ in 0..max_passes {
+        let mut face_map: HashMap<[u64; 3], Vec<(usize, u64)>> = HashMap::new();
+        let mut edge_map: HashMap<[u64; 2], Vec<usize>> = HashMap::new();
+        for (ti, e) in mesh.elements.iter().enumerate() {
+            if e.etype != ElementType::Tetrahedron4 || e.node_ids.len() != 4 {
+                continue;
+            }
+            let n = [e.node_ids[0], e.node_ids[1], e.node_ids[2], e.node_ids[3]];
+            let faces = [
+                ([n[0], n[1], n[2]], n[3]),
+                ([n[0], n[1], n[3]], n[2]),
+                ([n[0], n[2], n[3]], n[1]),
+                ([n[1], n[2], n[3]], n[0]),
+            ];
+            for (mut f, opp) in faces {
+                f.sort_unstable();
+                face_map.entry(f).or_default().push((ti, opp));
+            }
+            for (mut e2, _) in [
+                ([n[0], n[1]], n[2]),
+                ([n[0], n[2]], n[1]),
+                ([n[0], n[3]], n[1]),
+                ([n[1], n[2]], n[0]),
+                ([n[1], n[3]], n[0]),
+                ([n[2], n[3]], n[0]),
+            ] {
+                e2.sort_unstable();
+                edge_map.entry(e2).or_default().push(ti);
+            }
+        }
+
+        let mut did_flip = false;
+        let prefer_edge_phase = has_sliver_pressure(mesh, 0.30, 0.12);
+        let mut best_face_flip: Option<(usize, usize, [[u64; 4]; 3], (f64, f64, f64))> = None;
+        let mut face_entries: Vec<_> = face_map.into_iter().collect();
+        face_entries.sort_by_key(|(face, _)| *face);
+        for (face, adjacent) in face_entries {
+            if adjacent.len() != 2 {
+                continue;
+            }
+            let (t0, o0) = adjacent[0];
+            let (t1, o1) = adjacent[1];
+            if t0 == t1 || o0 == o1 {
+                continue;
+            }
+            let Some(e0) = mesh.elements.get(t0) else {
+                continue;
+            };
+            let Some(e1) = mesh.elements.get(t1) else {
+                continue;
+            };
+            if e0.etype != ElementType::Tetrahedron4
+                || e1.etype != ElementType::Tetrahedron4
+                || e0.node_ids.len() != 4
+                || e1.node_ids.len() != 4
+            {
+                continue;
+            }
+
+            let old_tets = [
+                [e0.node_ids[0], e0.node_ids[1], e0.node_ids[2], e0.node_ids[3]],
+                [e1.node_ids[0], e1.node_ids[1], e1.node_ids[2], e1.node_ids[3]],
+            ];
+            let new_tets = [
+                [o0, o1, face[0], face[1]],
+                [o0, o1, face[1], face[2]],
+                [o0, o1, face[2], face[0]],
+            ];
+
+            let Some((old_d, old_s, old_r)) = aggregate_tet_quality(mesh, &old_tets) else {
+                continue;
+            };
+            let Some((new_d, new_s, new_r)) = aggregate_tet_quality(mesh, &new_tets) else {
+                continue;
+            };
+
+            let improves = (new_d > old_d + 1e-6)
+                || ((new_d - old_d).abs() < 1e-6
+                    && ((new_s < old_s - 1e-9)
+                        || ((new_s - old_s).abs() < 1e-9 && new_r < old_r - 1e-9)));
+            if !improves {
+                continue;
+            }
+
+            let new_quality = (new_d, new_s, new_r);
+            match best_face_flip {
+                Some((_, _, _, best_q)) if !is_better_quality(new_quality, best_q) => {}
+                _ => best_face_flip = Some((t0, t1, new_tets, new_quality)),
+            }
+        }
+
+        if !prefer_edge_phase {
+            if let Some((t0, t1, new_tets, _)) = best_face_flip {
+                let hi = t0.max(t1);
+                let lo = t0.min(t1);
+                mesh.elements.swap_remove(hi);
+                mesh.elements.swap_remove(lo);
+
+                for tet in new_tets {
+                    mesh.add_element(Element::new(
+                        *next_elem_id,
+                        ElementType::Tetrahedron4,
+                        vec![tet[0], tet[1], tet[2], tet[3]],
+                    ));
+                    *next_elem_id = next_elem_id.saturating_add(1);
+                }
+
+                accepted_face += 1;
+                did_flip = true;
+            }
+        }
+
+        if !did_flip {
+            let mut best_edge_flip: Option<(
+                Vec<usize>,
+                [[u64; 4]; 2],
+                (f64, f64, f64),
+                f64,
+                bool,
+            )> = None;
+            let mut edge_entries: Vec<_> = edge_map.into_iter().collect();
+            edge_entries.sort_by_key(|(edge, _)| *edge);
+            for (edge, adjacent) in edge_entries {
+                if adjacent.len() != 3 {
+                    continue;
+                }
+
+                let Some(e0) = mesh.elements.get(adjacent[0]) else {
+                    continue;
+                };
+                let Some(e1) = mesh.elements.get(adjacent[1]) else {
+                    continue;
+                };
+                let Some(e2) = mesh.elements.get(adjacent[2]) else {
+                    continue;
+                };
+                if e0.etype != ElementType::Tetrahedron4
+                    || e1.etype != ElementType::Tetrahedron4
+                    || e2.etype != ElementType::Tetrahedron4
+                    || e0.node_ids.len() != 4
+                    || e1.node_ids.len() != 4
+                    || e2.node_ids.len() != 4
+                {
+                    continue;
+                }
+
+                let u = edge[0];
+                let v = edge[1];
+                let mut opposite_pairs = Vec::<[u64; 2]>::with_capacity(3);
+                let mut opposite_vertices = Vec::<u64>::with_capacity(3);
+                let mut old_tets = [[0_u64; 4]; 3];
+                let mut valid = true;
+
+                for (slot, &ti) in adjacent.iter().enumerate() {
+                    let Some(e) = mesh.elements.get(ti) else {
+                        valid = false;
+                        break;
+                    };
+                    let n = [e.node_ids[0], e.node_ids[1], e.node_ids[2], e.node_ids[3]];
+                    old_tets[slot] = n;
+
+                    let mut opp = Vec::<u64>::with_capacity(2);
+                    for &nid in &n {
+                        if nid != u && nid != v {
+                            opp.push(nid);
+                        }
+                    }
+                    if opp.len() != 2 {
+                        valid = false;
+                        break;
+                    }
+                    if !n.contains(&u) || !n.contains(&v) {
+                        valid = false;
+                        break;
+                    }
+                    opp.sort_unstable();
+                    opposite_pairs.push([opp[0], opp[1]]);
+                    opposite_vertices.push(opp[0]);
+                    opposite_vertices.push(opp[1]);
+                }
+                if !valid {
+                    continue;
+                }
+
+                opposite_vertices.sort_unstable();
+                opposite_vertices.dedup();
+                if opposite_vertices.len() != 3 {
+                    continue;
+                }
+                let a = opposite_vertices[0];
+                let b = opposite_vertices[1];
+                let c = opposite_vertices[2];
+                let mut need = vec![[a, b], [b, c], [a, c]];
+                for p in &mut need {
+                    p.sort_unstable();
+                }
+                let mut got = opposite_pairs.clone();
+                got.sort_unstable();
+                need.sort_unstable();
+                if got != need {
+                    continue;
+                }
+
+                let new_tets = [[a, b, c, u], [a, b, c, v]];
+                let Some((old_d, old_s, old_r)) = aggregate_tet_quality(mesh, &old_tets) else {
+                    continue;
+                };
+                let Some((new_d, new_s, new_r)) = aggregate_tet_quality(mesh, &new_tets) else {
+                    continue;
+                };
+
+                let strict_improves = (new_d > old_d + 1e-6)
+                    || ((new_d - old_d).abs() < 1e-6
+                        && ((new_s < old_s - 1e-9)
+                            || ((new_s - old_s).abs() < 1e-9 && new_r < old_r - 1e-9)));
+                let sliver_delta = old_s - new_s;
+                let strong_sliver_reduction = old_s >= 0.66 && new_s <= 0.34;
+                let sliver_relaxed_improves = (sliver_delta > 0.08 || strong_sliver_reduction)
+                    && new_d >= old_d * 0.70
+                    && new_r <= old_r * 1.35;
+                if !strict_improves && !sliver_relaxed_improves {
+                    continue;
+                }
+
+                let new_quality = (new_d, new_s, new_r);
+                let mut remove = vec![adjacent[0], adjacent[1], adjacent[2]];
+                remove.sort_unstable();
+                remove.reverse();
+
+                let used_sliver_relaxed = !strict_improves && sliver_relaxed_improves;
+
+                match best_edge_flip {
+                    Some((_, _, best_q, best_sliver_delta, best_relaxed)) => {
+                        let prefer = if sliver_delta > best_sliver_delta + 1e-9 {
+                            true
+                        } else if (sliver_delta - best_sliver_delta).abs() < 1e-9 {
+                            if used_sliver_relaxed != best_relaxed {
+                                !used_sliver_relaxed
+                            } else {
+                                is_better_quality(new_quality, best_q)
+                            }
+                        } else {
+                            false
+                        };
+                        if prefer {
+                            best_edge_flip = Some((
+                                remove,
+                                new_tets,
+                                new_quality,
+                                sliver_delta,
+                                used_sliver_relaxed,
+                            ));
+                        }
+                    }
+                    _ => {
+                        best_edge_flip = Some((
+                            remove,
+                            new_tets,
+                            new_quality,
+                            sliver_delta,
+                            used_sliver_relaxed,
+                        ))
+                    }
+                }
+            }
+
+            if let Some((remove, new_tets, _q, _d, used_sliver_relaxed)) = best_edge_flip {
+                for idx in remove {
+                    mesh.elements.swap_remove(idx);
+                }
+
+                for tet in new_tets {
+                    mesh.add_element(Element::new(
+                        *next_elem_id,
+                        ElementType::Tetrahedron4,
+                        vec![tet[0], tet[1], tet[2], tet[3]],
+                    ));
+                    *next_elem_id = next_elem_id.saturating_add(1);
+                }
+
+                accepted_edge += 1;
+                if used_sliver_relaxed {
+                    accepted_edge_sliver += 1;
+                }
+                did_flip = true;
+            }
+        }
+
+        if !did_flip && prefer_edge_phase {
+            if let Some((t0, t1, new_tets, _)) = best_face_flip {
+                let hi = t0.max(t1);
+                let lo = t0.min(t1);
+                mesh.elements.swap_remove(hi);
+                mesh.elements.swap_remove(lo);
+
+                for tet in new_tets {
+                    mesh.add_element(Element::new(
+                        *next_elem_id,
+                        ElementType::Tetrahedron4,
+                        vec![tet[0], tet[1], tet[2], tet[3]],
+                    ));
+                    *next_elem_id = next_elem_id.saturating_add(1);
+                }
+
+                accepted_face += 1;
+                did_flip = true;
+            }
+        }
+
+        if !did_flip {
+            break;
+        }
+    }
+    Ok((accepted_face, accepted_edge, accepted_edge_sliver))
+}
+
+pub(crate) fn is_better_quality(a: (f64, f64, f64), b: (f64, f64, f64)) -> bool {
+    (a.0 > b.0 + 1e-6)
+        || ((a.0 - b.0).abs() < 1e-6
+            && ((a.1 < b.1 - 1e-9)
+                || ((a.1 - b.1).abs() < 1e-9 && a.2 < b.2 - 1e-9)))
+}
+
+fn has_sliver_pressure(mesh: &Mesh, sliver_fraction_threshold: f64, min_dihedral_threshold: f64) -> bool {
+    let mut total = 0usize;
+    let mut sliver_like = 0usize;
+    let mut global_min_d = f64::MAX;
+
+    for e in &mesh.elements {
+        if e.etype != ElementType::Tetrahedron4 || e.node_ids.len() != 4 {
+            continue;
+        }
+        let Ok(a) = node_xyz_from_mesh(mesh, e.node_ids[0]) else {
+            continue;
+        };
+        let Ok(b) = node_xyz_from_mesh(mesh, e.node_ids[1]) else {
+            continue;
+        };
+        let Ok(c) = node_xyz_from_mesh(mesh, e.node_ids[2]) else {
+            continue;
+        };
+        let Ok(d) = node_xyz_from_mesh(mesh, e.node_ids[3]) else {
+            continue;
+        };
+        let v = tetra_volume(a, b, c, d);
+        if v <= 1e-15 {
+            continue;
+        }
+
+        total += 1;
+        let dmin = min_dihedral_points(a, b, c, d);
+        let r = radius_edge_ratio_points(a, b, c, d);
+        if !dmin.is_finite() || !r.is_finite() {
+            continue;
+        }
+        global_min_d = global_min_d.min(dmin);
+        if dmin < 6.0 && r > 1.8 {
+            sliver_like += 1;
+        }
+    }
+
+    if total == 0 {
+        return false;
+    }
+
+    let sliver_frac = sliver_like as f64 / total as f64;
+    sliver_frac >= sliver_fraction_threshold || global_min_d <= min_dihedral_threshold
+}
+
+fn aggregate_tet_quality(mesh: &Mesh, tets: &[[u64; 4]]) -> Option<(f64, f64, f64)> {
+    let mut min_d = f64::MAX;
+    let mut max_r = 0.0_f64;
+    let mut sliver_like = 0usize;
+    for tet in tets {
+        let a = node_xyz_from_mesh(mesh, tet[0]).ok()?;
+        let b = node_xyz_from_mesh(mesh, tet[1]).ok()?;
+        let c = node_xyz_from_mesh(mesh, tet[2]).ok()?;
+        let d = node_xyz_from_mesh(mesh, tet[3]).ok()?;
+        let v = tetra_volume(a, b, c, d);
+        if v <= 1e-15 {
+            return None;
+        }
+
+        let dmin = min_dihedral_points(a, b, c, d);
+        let r = radius_edge_ratio_points(a, b, c, d);
+        if !dmin.is_finite() || !r.is_finite() {
+            return None;
+        }
+
+        min_d = min_d.min(dmin);
+        max_r = max_r.max(r);
+        if dmin < 6.0 && r > 1.8 {
+            sliver_like += 1;
+        }
+    }
+    Some((min_d, sliver_like as f64 / (tets.len() as f64), max_r))
+}
+
+fn should_log_refinement_stats() -> bool {
+    std::env::var("RMSH_DEBUG_REFINEMENT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 fn find_worst_tetrahedron(
     mesh: &Mesh,
     max_radius_edge_ratio: f64,
     edge_limit: f64,
+    sliver_floor_deg: f64,
 ) -> Option<(usize, f64)> {
     let mut worst: Option<(usize, f64)> = None;
     for (idx, elem) in mesh.elements.iter().enumerate() {
@@ -229,13 +773,21 @@ fn find_worst_tetrahedron(
         let Ok(lmax) = tetra_max_edge_length_from_mesh(mesh, &elem.node_ids) else {
             continue;
         };
-        if r <= max_radius_edge_ratio && lmax <= edge_limit {
+        let Ok(dmin) = tetra_min_dihedral_from_mesh(mesh, &elem.node_ids) else {
+            continue;
+        };
+        if r <= max_radius_edge_ratio && lmax <= edge_limit && dmin >= sliver_floor_deg {
             continue;
         }
 
         let quality_pressure = r / max_radius_edge_ratio;
         let size_pressure = lmax / edge_limit;
-        let score = quality_pressure.max(size_pressure);
+        let dihedral_pressure = if dmin < sliver_floor_deg {
+            1.0 + (sliver_floor_deg - dmin) / sliver_floor_deg
+        } else {
+            0.0
+        };
+        let score = quality_pressure.max(size_pressure).max(dihedral_pressure);
         match worst {
             Some((_, w)) if score <= w => {}
             _ => worst = Some((idx, score)),
@@ -244,6 +796,7 @@ fn find_worst_tetrahedron(
     worst
 }
 
+#[cfg(test)]
 fn tetra_centroid_from_mesh(mesh: &Mesh, tet: &[u64]) -> Result<[f64; 3], MeshAlgoError> {
     if tet.len() != 4 {
         return Err(MeshAlgoError::Generation(
@@ -261,6 +814,484 @@ fn tetra_centroid_from_mesh(mesh: &Mesh, tet: &[u64]) -> Result<[f64; 3], MeshAl
         sum[2] += node.position.z;
     }
     Ok([sum[0] * 0.25, sum[1] * 0.25, sum[2] * 0.25])
+}
+
+fn node_xyz_from_mesh(mesh: &Mesh, node_id: u64) -> Result<[f64; 3], MeshAlgoError> {
+    let node = mesh
+        .nodes
+        .get(&node_id)
+        .ok_or_else(|| MeshAlgoError::Generation(format!("missing node id {node_id}")))?;
+    Ok([node.position.x, node.position.y, node.position.z])
+}
+
+fn select_refinement_point(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> Option<[f64; 3]> {
+    let parent_ratio = radius_edge_ratio_points(a, b, c, d);
+    let parent_dihedral = min_dihedral_points(a, b, c, d);
+
+    let centroid = [
+        (a[0] + b[0] + c[0] + d[0]) * 0.25,
+        (a[1] + b[1] + c[1] + d[1]) * 0.25,
+        (a[2] + b[2] + c[2] + d[2]) * 0.25,
+    ];
+    let mut candidates = Vec::<[f64; 3]>::with_capacity(16);
+    candidates.push(centroid);
+
+    // Barycentric interior points with controlled distance from faces.
+    for &(wa, wb, wc, wd) in &[
+        (0.40, 0.20, 0.20, 0.20),
+        (0.20, 0.40, 0.20, 0.20),
+        (0.20, 0.20, 0.40, 0.20),
+        (0.20, 0.20, 0.20, 0.40),
+        (0.55, 0.15, 0.15, 0.15),
+        (0.15, 0.55, 0.15, 0.15),
+        (0.15, 0.15, 0.55, 0.15),
+        (0.15, 0.15, 0.15, 0.55),
+    ] {
+        candidates.push([
+            wa * a[0] + wb * b[0] + wc * c[0] + wd * d[0],
+            wa * a[1] + wb * b[1] + wc * c[1] + wd * d[1],
+            wa * a[2] + wb * b[2] + wc * c[2] + wd * d[2],
+        ]);
+    }
+
+    for v in [a, b, c, d] {
+        candidates.push([
+            centroid[0] * 0.85 + v[0] * 0.15,
+            centroid[1] * 0.85 + v[1] * 0.15,
+            centroid[2] * 0.85 + v[2] * 0.15,
+        ]);
+    }
+
+    if let Some(ic) = tetra_incenter(a, b, c, d) {
+        candidates.push(ic);
+    }
+
+    let (cc, _r) = circumsphere(a, b, c, d);
+    if cc[0].is_finite() && cc[1].is_finite() && cc[2].is_finite() {
+        candidates.push([
+            centroid[0] * 0.70 + cc[0] * 0.30,
+            centroid[1] * 0.70 + cc[1] * 0.30,
+            centroid[2] * 0.70 + cc[2] * 0.30,
+        ]);
+    }
+
+    let mut best: Option<([f64; 3], f64, f64, f64)> = None;
+    let mut best_strict: Option<([f64; 3], f64, f64, f64)> = None;
+    for p in candidates {
+        if !point_in_tetrahedron(a, b, c, d, p, 1e-14) {
+            continue;
+        }
+        let Some((_quality, child_min_dihedral, child_max_ratio, child_sliver_frac)) =
+            split_quality_metrics(a, b, c, d, p)
+        else {
+            continue;
+        };
+
+        // Soft guard: reject only extreme blow-ups.
+        if child_max_ratio > parent_ratio * 3.0 && child_min_dihedral < parent_dihedral {
+            continue;
+        }
+        if child_sliver_frac > 0.75 && child_min_dihedral <= parent_dihedral {
+            continue;
+        }
+
+        if child_min_dihedral >= 0.5 {
+            match best_strict {
+                Some((_, bd, bs, br))
+                    if (child_min_dihedral < bd)
+                        || ((child_min_dihedral - bd).abs() < 1e-9
+                            && ((child_sliver_frac > bs)
+                                || ((child_sliver_frac - bs).abs() < 1e-9
+                                    && child_max_ratio >= br))) =>
+                {
+                }
+                _ => {
+                    best_strict =
+                        Some((p, child_min_dihedral, child_sliver_frac, child_max_ratio))
+                }
+            }
+        }
+
+        match best {
+            Some((_, bd, bs, br))
+                if (child_min_dihedral < bd)
+                    || ((child_min_dihedral - bd).abs() < 1e-9
+                        && ((child_sliver_frac > bs)
+                            || ((child_sliver_frac - bs).abs() < 1e-9 && child_max_ratio >= br))) =>
+            {
+            }
+            _ => best = Some((p, child_min_dihedral, child_sliver_frac, child_max_ratio)),
+        }
+    }
+    best_strict.or(best).map(|(p, _, _, _)| p)
+}
+
+fn split_quality_metrics(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    d: [f64; 3],
+    p: [f64; 3],
+) -> Option<(f64, f64, f64, f64)> {
+    let tets = [[a, b, c, p], [a, b, d, p], [a, c, d, p], [b, c, d, p]];
+    let mut min_d = f64::MAX;
+    let mut max_r: f64 = 0.0;
+    let mut sliver_like = 0usize;
+    for t in tets {
+        let v = tetra_volume(t[0], t[1], t[2], t[3]);
+        if v <= 1e-15 {
+            return None;
+        }
+        let dmin = min_dihedral_points(t[0], t[1], t[2], t[3]);
+        if !dmin.is_finite() {
+            return None;
+        }
+        min_d = min_d.min(dmin);
+        let r = radius_edge_ratio_points(t[0], t[1], t[2], t[3]);
+        if !r.is_finite() {
+            return None;
+        }
+        max_r = max_r.max(r);
+        if dmin < 6.0 && r > 1.8 {
+            sliver_like += 1;
+        }
+    }
+    let sliver_frac = sliver_like as f64 / 4.0;
+    // Keep a compact aggregate score for fallback callers; primary ranking uses tuple rules.
+    let score = 1.25 * min_d - 0.60 * max_r - 5.50 * sliver_frac;
+    Some((score, min_d, max_r, sliver_frac))
+}
+
+fn point_in_tetrahedron(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    d: [f64; 3],
+    p: [f64; 3],
+    eps: f64,
+) -> bool {
+    let v = tetra_volume(a, b, c, d);
+    if v <= eps {
+        return false;
+    }
+    let v0 = tetra_volume(p, b, c, d);
+    let v1 = tetra_volume(a, p, c, d);
+    let v2 = tetra_volume(a, b, p, d);
+    let v3 = tetra_volume(a, b, c, p);
+    let sum = v0 + v1 + v2 + v3;
+    if (sum - v).abs() > eps * 32.0 {
+        return false;
+    }
+    v0 > eps && v1 > eps && v2 > eps && v3 > eps
+}
+
+pub(crate) fn min_dihedral_points(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+    [
+        dihedral(a, b, c, d),
+        dihedral(a, c, b, d),
+        dihedral(a, d, b, c),
+        dihedral(b, c, a, d),
+        dihedral(b, d, a, c),
+        dihedral(c, d, a, b),
+    ]
+    .into_iter()
+    .fold(f64::MAX, f64::min)
+}
+
+pub(crate) fn radius_edge_ratio_points(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+    let nodes = [a, b, c, d];
+    radius_edge_ratio(&nodes, [0, 1, 2, 3])
+}
+
+fn tetra_incenter(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> Option<[f64; 3]> {
+    let sa = triangle_area(b, c, d);
+    let sb = triangle_area(a, c, d);
+    let sc = triangle_area(a, b, d);
+    let sd = triangle_area(a, b, c);
+    let sum = sa + sb + sc + sd;
+    if sum <= 1e-15 {
+        return None;
+    }
+    Some([
+        (sa * a[0] + sb * b[0] + sc * c[0] + sd * d[0]) / sum,
+        (sa * a[1] + sb * b[1] + sc * c[1] + sd * d[1]) / sum,
+        (sa * a[2] + sb * b[2] + sc * c[2] + sd * d[2]) / sum,
+    ])
+}
+
+fn triangle_area(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let cross = [
+        ab[1] * ac[2] - ab[2] * ac[1],
+        ab[2] * ac[0] - ab[0] * ac[2],
+        ab[0] * ac[1] - ab[1] * ac[0],
+    ];
+    0.5 * (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt()
+}
+
+fn min_child_dihedral_for_point(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    d: [f64; 3],
+    p: [f64; 3],
+) -> f64 {
+    [
+        min_dihedral_points(a, b, c, p),
+        min_dihedral_points(a, b, d, p),
+        min_dihedral_points(a, c, d, p),
+        min_dihedral_points(b, c, d, p),
+    ]
+    .into_iter()
+    .fold(f64::MAX, f64::min)
+}
+
+fn best_edge_split_partition(
+    points: [[f64; 3]; 4],
+) -> Option<(usize, usize, usize, usize, [f64; 3], (f64, f64, f64))> {
+    let edges = [(0usize, 1usize), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+    let mut best: Option<(usize, usize, usize, usize, [f64; 3], f64, f64, f64)> = None;
+    for (i, j) in edges {
+        let mut others = [0usize; 2];
+        let mut oi = 0usize;
+        for k in 0..4 {
+            if k != i && k != j {
+                others[oi] = k;
+                oi += 1;
+            }
+        }
+        let k = others[0];
+        let l = others[1];
+
+        let Some((best_point, min_d, sliver_frac, max_r)) =
+            edge_split_quality_metrics(points, i, j, k, l)
+        else {
+            continue;
+        };
+
+        match best {
+            Some((_, _, _, _, _, bd, bs, br))
+                if (min_d < bd)
+                    || ((min_d - bd).abs() < 1e-9
+                        && ((sliver_frac > bs)
+                            || ((sliver_frac - bs).abs() < 1e-9 && max_r >= br))) => {}
+            _ => best = Some((i, j, k, l, best_point, min_d, sliver_frac, max_r)),
+        }
+    }
+    best.map(|(i, j, k, l, p, md, sf, mr)| (i, j, k, l, p, (md, sf, mr)))
+}
+
+fn edge_split_quality_metrics(
+    points: [[f64; 3]; 4],
+    i: usize,
+    j: usize,
+    k: usize,
+    l: usize,
+) -> Option<([f64; 3], f64, f64, f64)> {
+    let alphas = [0.50_f64];
+    let mut best: Option<([f64; 3], f64, f64, f64)> = None;
+
+    for alpha in alphas {
+        let p = [
+            points[i][0] * (1.0 - alpha) + points[j][0] * alpha,
+            points[i][1] * (1.0 - alpha) + points[j][1] * alpha,
+            points[i][2] * (1.0 - alpha) + points[j][2] * alpha,
+        ];
+
+        let tets = [
+            [points[i], p, points[k], points[l]],
+            [p, points[j], points[k], points[l]],
+        ];
+        let mut min_d = f64::MAX;
+        let mut max_r = 0.0_f64;
+        let mut sliver_like = 0usize;
+        let mut valid = true;
+        for t in tets {
+            let v = tetra_volume(t[0], t[1], t[2], t[3]);
+            if v <= 1e-15 {
+                valid = false;
+                break;
+            }
+            let d = min_dihedral_points(t[0], t[1], t[2], t[3]);
+            let r = radius_edge_ratio_points(t[0], t[1], t[2], t[3]);
+            if !d.is_finite() || !r.is_finite() {
+                valid = false;
+                break;
+            }
+            min_d = min_d.min(d);
+            max_r = max_r.max(r);
+            if d < 6.0 && r > 1.8 {
+                sliver_like += 1;
+            }
+        }
+        if !valid {
+            continue;
+        }
+        let sliver_frac = sliver_like as f64 / 2.0;
+        match best {
+            Some((_, bd, bs, br))
+                if (min_d < bd)
+                    || ((min_d - bd).abs() < 1e-9
+                        && ((sliver_frac > bs)
+                            || ((sliver_frac - bs).abs() < 1e-9 && max_r >= br))) => {}
+            _ => best = Some((p, min_d, sliver_frac, max_r)),
+        }
+    }
+
+    best
+}
+
+fn longest_edge_biased_point(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    d: [f64; 3],
+) -> Option<[f64; 3]> {
+    let verts = [a, b, c, d];
+    let edges = [(0usize, 1usize), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)];
+    let mut best = None::<((usize, usize), f64)>;
+    for (i, j) in edges {
+        let dx = verts[i][0] - verts[j][0];
+        let dy = verts[i][1] - verts[j][1];
+        let dz = verts[i][2] - verts[j][2];
+        let l2 = dx * dx + dy * dy + dz * dz;
+        match best {
+            Some((_, b2)) if l2 <= b2 => {}
+            _ => best = Some(((i, j), l2)),
+        }
+    }
+    let ((i, j), _) = best?;
+    let mut others = Vec::<usize>::with_capacity(2);
+    for k in 0..4 {
+        if k != i && k != j {
+            others.push(k);
+        }
+    }
+
+    let u = verts[i];
+    let v = verts[j];
+    let w = verts[others[0]];
+    let x = verts[others[1]];
+    Some([
+        0.40 * u[0] + 0.40 * v[0] + 0.10 * w[0] + 0.10 * x[0],
+        0.40 * u[1] + 0.40 * v[1] + 0.10 * w[1] + 0.10 * x[1],
+        0.40 * u[2] + 0.40 * v[2] + 0.10 * w[2] + 0.10 * x[2],
+    ])
+}
+
+fn select_fallback_refinement_point(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    d: [f64; 3],
+) -> Option<[f64; 3]> {
+    let centroid = [
+        (a[0] + b[0] + c[0] + d[0]) * 0.25,
+        (a[1] + b[1] + c[1] + d[1]) * 0.25,
+        (a[2] + b[2] + c[2] + d[2]) * 0.25,
+    ];
+
+    let mut candidates = vec![centroid];
+    if let Some(ic) = tetra_incenter(a, b, c, d) {
+        candidates.push(ic);
+        // Blend toward centroid to avoid hugging near-degenerate face geometry.
+        candidates.push([
+            0.7 * ic[0] + 0.3 * centroid[0],
+            0.7 * ic[1] + 0.3 * centroid[1],
+            0.7 * ic[2] + 0.3 * centroid[2],
+        ]);
+    }
+    if let Some(lp) = longest_edge_biased_point(a, b, c, d) {
+        candidates.push(lp);
+    }
+
+    // Vertex-to-opposite-face-centroid interior candidates.
+    for (v, f1, f2, f3) in [(a, b, c, d), (b, a, c, d), (c, a, b, d), (d, a, b, c)] {
+        let fc = [
+            (f1[0] + f2[0] + f3[0]) / 3.0,
+            (f1[1] + f2[1] + f3[1]) / 3.0,
+            (f1[2] + f2[2] + f3[2]) / 3.0,
+        ];
+        candidates.push([
+            0.25 * v[0] + 0.75 * fc[0],
+            0.25 * v[1] + 0.75 * fc[1],
+            0.25 * v[2] + 0.75 * fc[2],
+        ]);
+    }
+
+    let mut best: Option<([f64; 3], f64, f64, f64)> = None;
+    let mut best_strict: Option<([f64; 3], f64, f64, f64)> = None;
+    for p in candidates {
+        if !point_in_tetrahedron(a, b, c, d, p, 1e-14) {
+            continue;
+        }
+        let Some((_score, min_d, max_r, sliver_frac)) = split_quality_metrics(a, b, c, d, p)
+        else {
+            continue;
+        };
+
+        // Prefer non-sliver candidates first if available.
+        if min_d >= 0.5 {
+            match best_strict {
+                Some((_, bd, bs, br))
+                    if (min_d < bd)
+                        || ((min_d - bd).abs() < 1e-9
+                            && ((sliver_frac > bs)
+                                || ((sliver_frac - bs).abs() < 1e-9 && max_r >= br))) =>
+                {
+                }
+                _ => best_strict = Some((p, min_d, sliver_frac, max_r)),
+            }
+        }
+
+        match best {
+            Some((_, bd, bs, br))
+                if (min_d < bd)
+                    || ((min_d - bd).abs() < 1e-9
+                        && ((sliver_frac > bs)
+                            || ((sliver_frac - bs).abs() < 1e-9 && max_r >= br))) => {}
+            _ => best = Some((p, min_d, sliver_frac, max_r)),
+        }
+    }
+    best_strict
+        .or(best)
+        .map(|(p, _, _, _)| p)
+}
+
+pub(crate) fn tetra_volume(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+    let ad = [a[0] - d[0], a[1] - d[1], a[2] - d[2]];
+    let bd = [b[0] - d[0], b[1] - d[1], b[2] - d[2]];
+    let cd = [c[0] - d[0], c[1] - d[1], c[2] - d[2]];
+    let cross = [
+        bd[1] * cd[2] - bd[2] * cd[1],
+        bd[2] * cd[0] - bd[0] * cd[2],
+        bd[0] * cd[1] - bd[1] * cd[0],
+    ];
+    (ad[0] * cross[0] + ad[1] * cross[1] + ad[2] * cross[2]).abs() / 6.0
+}
+
+fn dihedral(p: [f64; 3], q: [f64; 3], r: [f64; 3], s: [f64; 3]) -> f64 {
+    let pq = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+    let pr = [r[0] - p[0], r[1] - p[1], r[2] - p[2]];
+    let ps = [s[0] - p[0], s[1] - p[1], s[2] - p[2]];
+    let n1 = [
+        pq[1] * pr[2] - pq[2] * pr[1],
+        pq[2] * pr[0] - pq[0] * pr[2],
+        pq[0] * pr[1] - pq[1] * pr[0],
+    ];
+    let n2 = [
+        pq[1] * ps[2] - pq[2] * ps[1],
+        pq[2] * ps[0] - pq[0] * ps[2],
+        pq[0] * ps[1] - pq[1] * ps[0],
+    ];
+    let dot = n1[0] * n2[0] + n1[1] * n2[1] + n1[2] * n2[2];
+    let l1 = (n1[0] * n1[0] + n1[1] * n1[1] + n1[2] * n1[2]).sqrt();
+    let l2 = (n2[0] * n2[0] + n2[1] * n2[1] + n2[2] * n2[2]).sqrt();
+    if l1 < 1e-12 || l2 < 1e-12 {
+        return 0.0;
+    }
+    (dot / (l1 * l2)).clamp(-1.0, 1.0).acos().to_degrees()
 }
 
 fn tetra_radius_edge_ratio_from_mesh(mesh: &Mesh, tet: &[u64]) -> Result<f64, MeshAlgoError> {
@@ -305,6 +1336,19 @@ fn tetra_max_edge_length_from_mesh(mesh: &Mesh, tet: &[u64]) -> Result<f64, Mesh
         lmax = lmax.max(l);
     }
     Ok(lmax)
+}
+
+fn tetra_min_dihedral_from_mesh(mesh: &Mesh, tet: &[u64]) -> Result<f64, MeshAlgoError> {
+    if tet.len() != 4 {
+        return Err(MeshAlgoError::Generation(
+            "tetrahedron must have 4 nodes".to_string(),
+        ));
+    }
+    let a = node_xyz_from_mesh(mesh, tet[0])?;
+    let b = node_xyz_from_mesh(mesh, tet[1])?;
+    let c = node_xyz_from_mesh(mesh, tet[2])?;
+    let d = node_xyz_from_mesh(mesh, tet[3])?;
+    Ok(min_dihedral_points(a, b, c, d))
 }
 
 fn validate_params(algo: &Delaunay3D, params: &MeshParams) -> Result<(), MeshAlgoError> {
@@ -743,6 +1787,36 @@ mod tests {
         let nodes = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
         let ratio = radius_edge_ratio(&nodes, [0, 1, 2, 3]);
         assert!(!ratio.is_finite());
+    }
+
+    #[test]
+    fn local_flip_pass_activates_on_edge_fan() {
+        // Build three tetrahedra sharing edge (1,2):
+        // [1,2,3,4], [1,2,4,5], [1,2,3,5]
+        // which can be replaced by two tetrahedra [3,4,5,1], [3,4,5,2].
+        let mut mesh = Mesh::new();
+        mesh.add_node(Node::new(1, 0.0, 0.0, 0.0));
+        mesh.add_node(Node::new(2, 1.0, 0.0, 0.0));
+        mesh.add_node(Node::new(3, 0.5, 0.001, 0.0));
+        mesh.add_node(Node::new(4, 0.5, 0.0, 0.001));
+        mesh.add_node(Node::new(5, 0.5, 0.8, 0.8));
+
+        mesh.add_element(Element::new(1, ElementType::Tetrahedron4, vec![1, 2, 3, 4]));
+        mesh.add_element(Element::new(2, ElementType::Tetrahedron4, vec![1, 2, 4, 5]));
+        mesh.add_element(Element::new(3, ElementType::Tetrahedron4, vec![1, 2, 3, 5]));
+
+        let before_tets = mesh.elements_by_dimension(3).len();
+        let mut next_elem_id = 10_u64;
+        let (face_flips, edge_flips, _edge_sliver_flips) =
+            optimize_local_face_flips(&mut mesh, &mut next_elem_id, 2).expect("flip pass");
+        let after_tets = mesh.elements_by_dimension(3).len();
+
+        assert!(
+            face_flips + edge_flips > 0,
+            "expected at least one local flip to activate"
+        );
+        assert_eq!(before_tets, 3);
+        assert_ne!(after_tets, before_tets);
     }
 
     #[test]

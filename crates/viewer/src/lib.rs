@@ -10,10 +10,19 @@ use rmsh_model::Mesh;
 
 pub use app::RmshApp;
 
+#[derive(Debug, Clone, Default)]
+pub struct ViewerConfig {
+    pub show_nodes: Option<bool>,
+    pub show_edges: Option<bool>,
+    pub show_faces: Option<bool>,
+    pub show_volumes: Option<bool>,
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_native_viewer(
     startup_path: Option<PathBuf>,
     initial_mesh: Option<(Mesh, String)>,
+    initial_config: Option<ViewerConfig>,
 ) -> eframe::Result {
     let _ = env_logger::try_init();
 
@@ -33,6 +42,7 @@ pub fn run_native_viewer(
                 cc,
                 startup_path.clone(),
                 initial_mesh.clone(),
+                initial_config.clone(),
             )))
         }),
     )

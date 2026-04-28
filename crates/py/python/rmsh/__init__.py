@@ -144,6 +144,12 @@ def _model_getEntities(*args, **kwargs):
 
 model.getEntities = _model_getEntities
 
+def _model_getEntitiesInBoundingBox(*args, **kwargs):
+    """getEntitiesInBoundingBox(xmin, ymin, zmin, xmax, ymax, zmax, dim=-1) -> dimTags"""
+    return _invoke("model_get_entities_in_bounding_box", *args, **kwargs)
+
+model.getEntitiesInBoundingBox = _model_getEntitiesInBoundingBox
+
 def _model_getEntityName(*args, **kwargs):
     """rmshModelGetEntityName(dim, tag, name, ierr)"""
     return _invoke("model_get_entity_name", *args, **kwargs)
@@ -276,6 +282,60 @@ def _model_occ_addBox(*args, **kwargs):
 
 model_occ.addBox = _model_occ_addBox
 
+def _model_occ_addPoint(*args, **kwargs):
+    """addPoint(x, y, z, meshSize=0, tag=-1) -> tag"""
+    return _invoke("model_occ_add_point", *args, **kwargs)
+
+model_occ.addPoint = _model_occ_addPoint
+
+def _model_occ_addLine(*args, **kwargs):
+    """addLine(startTag, endTag, tag=-1) -> tag"""
+    return _invoke("model_occ_add_line", *args, **kwargs)
+
+model_occ.addLine = _model_occ_addLine
+
+def _model_occ_addCircleArc(*args, **kwargs):
+    """addCircleArc(startTag, centerTag, endTag, tag=-1) -> tag"""
+    return _invoke("model_occ_add_circle_arc", *args, **kwargs)
+
+model_occ.addCircleArc = _model_occ_addCircleArc
+
+def _model_occ_addSpline(*args, **kwargs):
+    """addSpline(pointTags, tag=-1) -> tag"""
+    return _invoke("model_occ_add_spline", *args, **kwargs)
+
+model_occ.addSpline = _model_occ_addSpline
+
+def _model_occ_addCurveLoop(*args, **kwargs):
+    """addCurveLoop(curveTags, tag=-1) -> tag"""
+    return _invoke("model_occ_add_curve_loop", *args, **kwargs)
+
+model_occ.addCurveLoop = _model_occ_addCurveLoop
+
+def _model_occ_addPlaneSurface(*args, **kwargs):
+    """addPlaneSurface(wireTags, tag=-1) -> tag"""
+    return _invoke("model_occ_add_plane_surface", *args, **kwargs)
+
+model_occ.addPlaneSurface = _model_occ_addPlaneSurface
+
+def _model_occ_addSurfaceLoop(*args, **kwargs):
+    """addSurfaceLoop(surfaceTags, tag=-1) -> tag"""
+    return _invoke("model_occ_add_surface_loop", *args, **kwargs)
+
+model_occ.addSurfaceLoop = _model_occ_addSurfaceLoop
+
+def _model_occ_addVolume(*args, **kwargs):
+    """addVolume(shellTags, tag=-1) -> tag"""
+    return _invoke("model_occ_add_volume", *args, **kwargs)
+
+model_occ.addVolume = _model_occ_addVolume
+
+def _model_occ_addDisk(*args, **kwargs):
+    """addDisk(xc, yc, zc, rx, ry, tag=-1) -> tag"""
+    return _invoke("model_occ_add_disk", *args, **kwargs)
+
+model_occ.addDisk = _model_occ_addDisk
+
 def _model_occ_addRectangle(*args, **kwargs):
     """addRectangle(x, y, z, dx, dy, tag=-1) -> tag
     Create a planar rectangle surface in the XY plane (z offset by z).
@@ -298,22 +358,70 @@ def _model_occ_addSphere(*args, **kwargs):
 model_occ.addSphere = _model_occ_addSphere
 
 def _model_occ_cut(*args, **kwargs):
-    """rmshModelOccCut(objectDimTags, objectDimTags_n, toolDimTags, toolDimTags_n, ierr)"""
+    """cut(objectDimTags, toolDimTags, tag=-1, removeObject=True, removeTool=True) -> (outDimTags, outDimTagsMap)"""
     return _invoke("model_occ_cut", *args, **kwargs)
 
 model_occ.cut = _model_occ_cut
 
 def _model_occ_fragment(*args, **kwargs):
-    """rmshModelOccFragment(objectDimTags, objectDimTags_n, toolDimTags, toolDimTags_n, ierr)"""
+    """fragment(objectDimTags, toolDimTags, tag=-1, removeObject=True, removeTool=True) -> (outDimTags, outDimTagsMap)"""
     return _invoke("model_occ_fragment", *args, **kwargs)
 
 model_occ.fragment = _model_occ_fragment
 
+def _model_occ_intersect(*args, **kwargs):
+    """intersect(objectDimTags, toolDimTags, tag=-1, removeObject=True, removeTool=True) -> (outDimTags, outDimTagsMap)"""
+    return _invoke("model_occ_intersect", *args, **kwargs)
+
+model_occ.intersect = _model_occ_intersect
+
 def _model_occ_fuse(*args, **kwargs):
-    """rmshModelOccFuse(objectDimTags, objectDimTags_n, toolDimTags, toolDimTags_n, ierr)"""
+    """fuse(objectDimTags, toolDimTags, tag=-1, removeObject=True, removeTool=True) -> (outDimTags, outDimTagsMap)"""
     return _invoke("model_occ_fuse", *args, **kwargs)
 
 model_occ.fuse = _model_occ_fuse
+
+def _model_occ_copy(*args, **kwargs):
+    """copy(dimTags) -> outDimTags"""
+    return _invoke("model_occ_copy", *args, **kwargs)
+
+model_occ.copy = _model_occ_copy
+
+def _model_occ_remove(*args, **kwargs):
+    """remove(dimTags, recursive=False)"""
+    return _invoke("model_occ_remove", *args, **kwargs)
+
+model_occ.remove = _model_occ_remove
+
+def _model_occ_translate(*args, **kwargs):
+    """translate(dimTags, dx, dy, dz)"""
+    return _invoke("model_occ_translate", *args, **kwargs)
+
+model_occ.translate = _model_occ_translate
+
+def _model_occ_rotate(*args, **kwargs):
+    """rotate(dimTags, x, y, z, ax, ay, az, angle)"""
+    return _invoke("model_occ_rotate", *args, **kwargs)
+
+model_occ.rotate = _model_occ_rotate
+
+def _model_occ_dilate(*args, **kwargs):
+    """dilate(dimTags, x, y, z, a, b, c)"""
+    return _invoke("model_occ_dilate", *args, **kwargs)
+
+model_occ.dilate = _model_occ_dilate
+
+def _model_occ_mirror(*args, **kwargs):
+    """mirror(dimTags, a, b, c, d)"""
+    return _invoke("model_occ_mirror", *args, **kwargs)
+
+model_occ.mirror = _model_occ_mirror
+
+def _model_occ_importShapes(*args, **kwargs):
+    """importShapes(fileName, highestDimOnly=True, format='') -> outDimTags"""
+    return _invoke("model_occ_import_shapes", *args, **kwargs)
+
+model_occ.importShapes = _model_occ_importShapes
 
 def _model_occ_synchronize(*args, **kwargs):
     """rmshModelOccSynchronize(ierr)"""
@@ -322,13 +430,15 @@ def _model_occ_synchronize(*args, **kwargs):
 model_occ.synchronize = _model_occ_synchronize
 
 def _model_occ_addCone(*args, **kwargs):
-    """addCone(x, y, z, dx, dy, dz, r, tag=-1) -> tag"""
+    """addCone(x, y, z, dx, dy, dz, r1, r2, tag=-1, angle=2*pi) -> tag"""
     return _invoke("model_occ_add_cone", *args, **kwargs)
 
 model_occ.addCone = _model_occ_addCone
 
 def _model_occ_addTorus(*args, **kwargs):
-    """addTorus(x, y, z, dx, dy, dz, r1, r2, tag=-1) -> tag"""
+    """addTorus(x, y, z, r1, r2, tag=-1, angle=2*pi, zAxis=[]) -> tag
+    Also supports legacy rmsh signature:
+    addTorus(x, y, z, dx, dy, dz, r1, r2, tag=-1)."""
     return _invoke("model_occ_add_torus", *args, **kwargs)
 
 model_occ.addTorus = _model_occ_addTorus

@@ -6,6 +6,7 @@ pub use msh::{
     save_msh_v4_to_path, write_msh_v2, write_msh_v4,
 };
 pub use step::{
-    StepError, load_step_from_bytes, load_step_from_path, parse_step, save_brep_step_to_path,
-    save_step_to_path, write_brep_step, write_step,
+    BrepStepWriteOptions, StepError, load_step_from_bytes, load_step_from_path, parse_step,
+    save_brep_step_to_path, save_brep_step_to_path_with_options, save_step_to_path,
+    write_brep_step, write_brep_step_with_options, write_step,
 };

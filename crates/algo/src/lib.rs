@@ -45,6 +45,9 @@ pub use quad_paving_2d::{QuadPaving2D, QuadStrategy};
 pub mod delaunay_3d;
 pub use delaunay_3d::Delaunay3D;
 
+/// Compact tetrahedral mesh with neighbor tables (used internally by Delaunay3D).
+pub mod tet_mesh;
+
 /// Frontal-Delaunay 3-D: advancing-front tetrahedralization (Gmsh algo 4).
 pub mod frontal_3d;
 pub use frontal_3d::Frontal3D;

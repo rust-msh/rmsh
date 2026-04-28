@@ -12,6 +12,7 @@ use rmsh_geo::extract::{PointData, SurfaceData, WireframeData};
 use rmsh_model::{GSelection, Mesh, Point3, Topology, Vector3};
 use rmsh_renderer::{CameraExt, RenderConfig, Scene};
 use rcad_render::Camera as RcadCamera;
+use crate::ViewerConfig;
 
 use crate::io::{
     IoEvent, IoQueue, MshSaveFormat, default_save_name, drain_io_events, enqueue_event,
@@ -401,20 +402,21 @@ impl Default for Mmg3DSettings {
 impl RmshApp {
     #[allow(dead_code)]
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        Self::new_with_inputs(cc, None, None)
+        Self::new_with_inputs(cc, None, None, None)
     }
 
     pub fn new_with_startup_path(
         cc: &eframe::CreationContext<'_>,
         startup_open_path: Option<PathBuf>,
     ) -> Self {
-        Self::new_with_inputs(cc, startup_open_path, None)
+        Self::new_with_inputs(cc, startup_open_path, None, None)
     }
 
     pub fn new_with_inputs(
         cc: &eframe::CreationContext<'_>,
         startup_open_path: Option<PathBuf>,
         initial_mesh: Option<(Mesh, String)>,
+        initial_config: Option<ViewerConfig>,
     ) -> Self {
         // Initialize the Scene in the wgpu render state callback resources
         if let Some(render_state) = cc.wgpu_render_state.as_ref() {
@@ -442,10 +444,26 @@ impl RmshApp {
             })
             .unwrap_or_default();
 
+        let mut config = RenderConfig::default();
+        if let Some(cfg) = initial_config {
+            if let Some(v) = cfg.show_nodes {
+                config.show_nodes = v;
+            }
+            if let Some(v) = cfg.show_edges {
+                config.show_edges = v;
+            }
+            if let Some(v) = cfg.show_faces {
+                config.show_faces = v;
+            }
+            if let Some(v) = cfg.show_volumes {
+                config.show_volumes = v;
+            }
+        }
+
         let mut app = Self {
             mesh: None,
             mesh_name: None,
-            config: RenderConfig::default(),
+            config,
             show_axis_gizmo: true,
             scene_axes_scale: 0.3,
             mesh_info: String::new(),

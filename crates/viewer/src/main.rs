@@ -4,7 +4,7 @@ use std::path::PathBuf;
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     let startup_path = std::env::args().nth(1).map(PathBuf::from);
-    rmsh_viewer::run_native_viewer(startup_path, None)
+    rmsh_viewer::run_native_viewer(startup_path, None, None)
 }
 
 // When compiling to web using trunk:

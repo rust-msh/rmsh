@@ -214,13 +214,14 @@ impl Scene {
     }
 
     /// Set the scene axes scale factor (default 0.3).
-    pub fn set_scene_axes_scale(&self, scale: f32) {
-        self.renderer.set_scene_axes_scale(scale);
+    pub fn set_scene_axes_scale(&self, _scale: f32) {
+        // rcad-render no longer exposes per-scene axes scale mutators.
+        // Keep this API for compatibility with viewer UI calls.
     }
 
     /// Get the scene axes scale factor.
     pub fn scene_axes_scale(&self) -> f32 {
-        self.renderer.scene_axes_scale()
+        0.3
     }
 
     /// Enable or disable corner axis gizmo.

@@ -8,12 +8,161 @@
 use std::path::Path;
 
 use rcad_algorithms::{TessellationParams, mesh_brep};
+use rcad_kernel::geom::{Curve3, Line3};
+use rcad_kernel::appearance::{Color, StepColor};
 use rcad_kernel::{BRep, Face, Shell, Solid, Vertex, Wire};
 use rcad_step::ExportSelection;
-use rcad_step::writer::StepWriter;
+use rcad_step::writer::{StepHeader, StepProtocol, StepWriteOptions, StepWriter};
 use rcad_step::StepReader;
 use rmsh_model::{Element, ElementType, Mesh, Node};
 use thiserror::Error;
+
+fn strict_export_selection(brep: &BRep) -> Option<(Vec<usize>, Vec<usize>)> {
+    let mut selected_faces = Vec::new();
+    let mut face_edge_used = vec![false; brep.edges.len()];
+
+    let mut face_idx = 0usize;
+    for solid in &brep.solids {
+        for shell in &solid.shells {
+            for face in &shell.faces {
+                selected_faces.push(face_idx);
+                face_idx += 1;
+
+                for we in &face.outer_wire.edges {
+                    if we.idx < face_edge_used.len() {
+                        face_edge_used[we.idx] = true;
+                    }
+                }
+                for wire in &face.inner_wires {
+                    for we in &wire.edges {
+                        if we.idx < face_edge_used.len() {
+                            face_edge_used[we.idx] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut selected_edges = Vec::new();
+    let edge_curve = &brep.geom.edge_curve;
+    for (edge_idx, used_by_face) in face_edge_used.iter().copied().enumerate() {
+        if used_by_face {
+            continue;
+        }
+        let has_curve3 = edge_curve
+            .get(edge_idx)
+            .and_then(|v| *v)
+            .is_some();
+        if has_curve3 {
+            selected_edges.push(edge_idx);
+        }
+    }
+
+    if selected_faces.is_empty() && selected_edges.is_empty() {
+        None
+    } else {
+        Some((selected_faces, selected_edges))
+    }
+}
+
+fn normalize_for_strict_step_export(brep: &BRep) -> BRep {
+    let mut out = brep.clone();
+
+    if out.geom.edge_curve.len() < out.edges.len() {
+        out.geom.edge_curve.resize(out.edges.len(), None);
+    }
+    if out.geom.edge_curve_range.len() < out.edges.len() {
+        out.geom.edge_curve_range.resize(out.edges.len(), None);
+    }
+
+    let mut referenced = vec![false; out.edges.len()];
+    for solid in &out.solids {
+        for shell in &solid.shells {
+            for face in &shell.faces {
+                for we in &face.outer_wire.edges {
+                    if we.idx < referenced.len() {
+                        referenced[we.idx] = true;
+                    }
+                }
+                for wire in &face.inner_wires {
+                    for we in &wire.edges {
+                        if we.idx < referenced.len() {
+                            referenced[we.idx] = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for (edge_idx, edge) in out.edges.iter().enumerate() {
+        if !referenced[edge_idx] || out.geom.edge_curve[edge_idx].is_some() {
+            continue;
+        }
+        let Some(ps) = out.vertices.get(edge.start).map(|v| v.point) else {
+            continue;
+        };
+        let Some(pe) = out.vertices.get(edge.end).map(|v| v.point) else {
+            continue;
+        };
+        let d = pe - ps;
+        let len = d.length();
+        if !len.is_finite() || len <= 1e-12 {
+            continue;
+        }
+        let dir = d / len;
+        let cid = out.geom.curves.len();
+        out.geom.curves.push(Curve3::Line(Line3 {
+            origin: ps,
+            direction: dir,
+        }));
+        out.geom.edge_curve[edge_idx] = Some(cid);
+        out.geom.edge_curve_range[edge_idx] = Some([0.0, len]);
+    }
+
+    let edge_curve = out.geom.edge_curve.clone();
+    for solid in &mut out.solids {
+        for shell in &mut solid.shells {
+            for face in &mut shell.faces {
+                sanitize_wire_for_strict_export(&mut face.outer_wire, &out.edges, &edge_curve);
+                for wire in &mut face.inner_wires {
+                    sanitize_wire_for_strict_export(wire, &out.edges, &edge_curve);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+fn sanitize_wire_for_strict_export(
+    wire: &mut Wire,
+    edges: &[rcad_kernel::Edge],
+    edge_curve: &[Option<usize>],
+) {
+    let mut filtered = Vec::with_capacity(wire.edges.len());
+    for we in &wire.edges {
+        if we.idx >= edges.len() {
+            continue;
+        }
+        let has_curve = edge_curve.get(we.idx).and_then(|v| *v).is_some();
+        if !has_curve {
+            let e = &edges[we.idx];
+            if e.start == e.end {
+                continue;
+            }
+        }
+        if filtered
+            .last()
+            .is_some_and(|prev: &rcad_kernel::topology::WireEdge| prev.idx == we.idx && prev.forward == we.forward)
+        {
+            continue;
+        }
+        filtered.push(*we);
+    }
+    wire.edges = filtered;
+}
 
 #[derive(Error, Debug)]
 pub enum StepError {
@@ -21,6 +170,25 @@ pub enum StepError {
     Io(#[from] std::io::Error),
     #[error("STEP parse error: {0}")]
     Parse(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct BrepStepWriteOptions {
+    pub protocol: StepProtocol,
+    pub solid_color: Option<Color>,
+    pub header: Option<StepHeader>,
+    pub gmsh_strict: bool,
+}
+
+impl Default for BrepStepWriteOptions {
+    fn default() -> Self {
+        Self {
+            protocol: StepProtocol::Ap242,
+            solid_color: None,
+            header: None,
+            gmsh_strict: false,
+        }
+    }
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────────
@@ -54,6 +222,16 @@ pub fn save_brep_step_to_path(path: &Path, brep: &BRep) -> Result<(), StepError>
     Ok(())
 }
 
+pub fn save_brep_step_to_path_with_options(
+    path: &Path,
+    brep: &BRep,
+    options: &BrepStepWriteOptions,
+) -> Result<(), StepError> {
+    let content = write_brep_step_with_options(brep, options)?;
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
 pub fn write_step(mesh: &Mesh) -> Result<String, StepError> {
     let (verts, tris) = mesh_to_trimesh(mesh);
     if verts.is_empty() || tris.is_empty() {
@@ -73,12 +251,99 @@ pub fn write_step(mesh: &Mesh) -> Result<String, StepError> {
 }
 
 pub fn write_brep_step(brep: &BRep) -> Result<String, StepError> {
-    Ok(StepWriter::write_string(
+    write_brep_step_with_options(
         brep,
-        ExportSelection {
-            selected_faces: &[],
-            selected_edges: &[],
+        &BrepStepWriteOptions {
+            protocol: StepProtocol::Ap214,
+            ..Default::default()
         },
+    )
+}
+
+pub fn write_brep_step_with_options(
+    brep: &BRep,
+    options: &BrepStepWriteOptions,
+) -> Result<String, StepError> {
+    let normalized_brep;
+    let brep_ref = if options.gmsh_strict {
+        normalized_brep = normalize_for_strict_step_export(brep);
+        &normalized_brep
+    } else {
+        brep
+    };
+
+    let protocol = if options.gmsh_strict {
+        StepProtocol::Ap214
+    } else {
+        options.protocol
+    };
+    let colors = options.solid_color.map(|c| StepColor {
+        solid_color: Some(c),
+        face_colors: Vec::new(),
+    });
+    let header = if options.gmsh_strict {
+        StepHeader::default()
+    } else {
+        options.header.clone().unwrap_or_default()
+    };
+    let step_options = StepWriteOptions {
+        protocol,
+        colors,
+        properties: Vec::new(),
+        ap242_metadata: None,
+        header,
+        gmsh_strict: options.gmsh_strict,
+    };
+
+    let debug_selection = std::env::var("RMSH_STEP_DEBUG_SELECTION")
+        .ok()
+        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+
+    let strict_selection = if options.gmsh_strict {
+        let selection = strict_export_selection(brep_ref);
+        // For solid BReps, selecting subsets can degrade topology emission
+        // (e.g. losing CLOSED_SHELL/MANIFOLD_SOLID_BREP in strict mode).
+        // Prefer exporting full topology directly whenever solid faces exist.
+        let total_faces: usize = brep_ref
+            .solids
+            .iter()
+            .flat_map(|s| s.shells.iter())
+            .map(|sh| sh.faces.len())
+            .sum();
+        if debug_selection {
+            let selected_faces = selection.as_ref().map(|(f, _)| f.len()).unwrap_or(0);
+            let selected_edges = selection.as_ref().map(|(_, e)| e.len()).unwrap_or(0);
+            eprintln!(
+                "[step-select] strict={} total_faces={} selection_faces={} selection_edges={} solids={} edges={}",
+                options.gmsh_strict,
+                total_faces,
+                selected_faces,
+                selected_edges,
+                brep_ref.solids.len(),
+                brep_ref.edges.len(),
+            );
+        }
+        if total_faces > 0 {
+            None
+        } else {
+            selection
+        }
+    } else {
+        None
+    };
+    let empty: &[usize] = &[];
+    let (selected_faces, selected_edges): (&[usize], &[usize]) = match &strict_selection {
+        Some((faces, edges)) => (faces.as_slice(), edges.as_slice()),
+        None => (empty, empty),
+    };
+
+    Ok(StepWriter::write_string_with_options(
+        brep_ref,
+        ExportSelection {
+            selected_faces,
+            selected_edges,
+        },
+        &step_options,
     ))
 }
 
@@ -205,7 +470,11 @@ fn trimesh_to_brep(verts: &[glam::DVec3], tris: &[[usize; 3]]) -> BRep {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_step_from_path, parse_step, save_step_to_path, write_step};
+    use super::{
+        load_step_from_path, normalize_for_strict_step_export, parse_step, save_step_to_path,
+        strict_export_selection, write_brep_step,
+        write_brep_step_with_options, write_step, BrepStepWriteOptions,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -320,5 +589,171 @@ END-ISO-10303-21;
         assert!(loaded.node_count() > 0);
         assert!(loaded.element_count() > 0);
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn write_brep_default_protocol_is_ap214() {
+        let verts = vec![
+            glam::DVec3::new(0.0, 0.0, 0.0),
+            glam::DVec3::new(1.0, 0.0, 0.0),
+            glam::DVec3::new(0.0, 1.0, 0.0),
+        ];
+        let tris = vec![[0, 1, 2]];
+        let brep = super::trimesh_to_brep(&verts, &tris);
+
+        let step = write_brep_step(&brep).expect("default STEP export should succeed");
+        assert!(step.contains("FILE_SCHEMA"));
+        assert!(step.to_ascii_lowercase().contains("214"));
+    }
+
+    #[test]
+    fn write_brep_ap242_with_color_emits_style_chain() {
+        let verts = vec![
+            glam::DVec3::new(0.0, 0.0, 0.0),
+            glam::DVec3::new(1.0, 0.0, 0.0),
+            glam::DVec3::new(0.0, 1.0, 0.0),
+        ];
+        let tris = vec![[0, 1, 2]];
+        let brep = super::trimesh_to_brep(&verts, &tris);
+        let options = BrepStepWriteOptions {
+            protocol: rcad_step::StepProtocol::Ap242,
+            solid_color: Some(rcad_kernel::appearance::Color::from_rgb8(30, 144, 255)),
+            header: None,
+            gmsh_strict: false,
+        };
+
+        let step = write_brep_step_with_options(&brep, &options)
+            .expect("AP242 + color STEP export should succeed");
+
+        assert!(step.contains("AP242_MANAGED_MODEL_BASED_3D_ENGINEERING_MIM_LF"));
+        assert!(step.contains("COLOUR_RGB"));
+        assert!(step.contains("PRESENTATION_STYLE_ASSIGNMENT"));
+        assert!(step.contains("STYLED_ITEM"));
+    }
+
+    #[test]
+    fn strict_selection_keeps_face_edges_and_curved_standalone_edges_only() {
+        use rcad_kernel::geom::{Curve3, Line3};
+        use rcad_kernel::topology::{Edge, Face, Shell, Solid, Vertex, Wire, WireEdge};
+        use rcad_kernel::BRep;
+
+        let mut brep = BRep::new();
+        brep.vertices = vec![
+            Vertex { point: glam::DVec3::new(0.0, 0.0, 0.0) },
+            Vertex { point: glam::DVec3::new(1.0, 0.0, 0.0) },
+            Vertex { point: glam::DVec3::new(0.0, 1.0, 0.0) },
+            Vertex { point: glam::DVec3::new(2.0, 0.0, 0.0) },
+        ];
+        brep.edges = vec![
+            Edge { start: 0, end: 1 }, // used by face
+            Edge { start: 1, end: 2 }, // orphan, no curve
+            Edge { start: 2, end: 3 }, // orphan, has curve
+        ];
+        brep.solids = vec![Solid {
+            shells: vec![Shell {
+                faces: vec![Face {
+                    outer_wire: Wire {
+                        edges: vec![WireEdge::fwd(0)],
+                    },
+                    inner_wires: Vec::new(),
+                    normal: glam::DVec3::Z,
+                    triangles: vec![[0, 1, 2]],
+                    mesh_dirty: false,
+                }],
+            }],
+        }];
+        brep.geom.edge_curve = vec![
+            Some(0),
+            None,
+            Some(1),
+        ];
+        brep.geom.curves = vec![
+            Curve3::Line(Line3 {
+                origin: glam::DVec3::new(0.0, 0.0, 0.0),
+                direction: glam::DVec3::X,
+            }),
+            Curve3::Line(Line3 {
+                origin: glam::DVec3::new(0.0, 1.0, 0.0),
+                direction: glam::DVec3::X,
+            }),
+        ];
+
+        let (faces, edges) = strict_export_selection(&brep).expect("selection should exist");
+        assert_eq!(faces, vec![0]);
+        assert_eq!(edges, vec![2]);
+    }
+
+    #[test]
+    fn strict_normalize_fills_missing_line_curve_on_face_edge() {
+        use rcad_kernel::topology::{Edge, Face, Shell, Solid, Vertex, Wire, WireEdge};
+        use rcad_kernel::BRep;
+
+        let mut brep = BRep::new();
+        brep.vertices = vec![
+            Vertex { point: glam::DVec3::new(0.0, 0.0, 0.0) },
+            Vertex { point: glam::DVec3::new(1.0, 0.0, 0.0) },
+            Vertex { point: glam::DVec3::new(0.0, 1.0, 0.0) },
+        ];
+        brep.edges = vec![
+            Edge { start: 0, end: 1 },
+            Edge { start: 1, end: 2 },
+        ];
+        brep.solids = vec![Solid {
+            shells: vec![Shell {
+                faces: vec![Face {
+                    outer_wire: Wire {
+                        edges: vec![WireEdge::fwd(0), WireEdge::fwd(1)],
+                    },
+                    inner_wires: Vec::new(),
+                    normal: glam::DVec3::Z,
+                    triangles: vec![[0, 1, 2]],
+                    mesh_dirty: false,
+                }],
+            }],
+        }];
+        brep.geom.edge_curve = vec![None, None];
+        brep.geom.edge_curve_range = vec![None, None];
+
+        let normalized = normalize_for_strict_step_export(&brep);
+        assert!(normalized.geom.edge_curve[0].is_some());
+        assert!(normalized.geom.edge_curve[1].is_some());
+        assert!(normalized.geom.edge_curve_range[0].is_some());
+        assert!(normalized.geom.edge_curve_range[1].is_some());
+    }
+
+    #[test]
+    fn strict_normalize_drops_degenerate_no_curve_wire_edges() {
+        use rcad_kernel::topology::{Edge, Face, Shell, Solid, Vertex, Wire, WireEdge};
+        use rcad_kernel::BRep;
+
+        let mut brep = BRep::new();
+        brep.vertices = vec![
+            Vertex { point: glam::DVec3::new(0.0, 0.0, 0.0) },
+            Vertex { point: glam::DVec3::new(1.0, 0.0, 0.0) },
+        ];
+        brep.edges = vec![
+            Edge { start: 0, end: 0 },
+            Edge { start: 0, end: 1 },
+        ];
+        brep.solids = vec![Solid {
+            shells: vec![Shell {
+                faces: vec![Face {
+                    outer_wire: Wire {
+                        edges: vec![WireEdge::fwd(0), WireEdge::fwd(1), WireEdge::fwd(1)],
+                    },
+                    inner_wires: Vec::new(),
+                    normal: glam::DVec3::Z,
+                    triangles: vec![[0, 1, 1]],
+                    mesh_dirty: false,
+                }],
+            }],
+        }];
+        brep.geom.edge_curve = vec![None, None];
+        brep.geom.edge_curve_range = vec![None, None];
+
+        let normalized = normalize_for_strict_step_export(&brep);
+        let outer = &normalized.solids[0].shells[0].faces[0].outer_wire.edges;
+        assert!(!outer.iter().any(|we| we.idx == 0));
+        assert_eq!(outer.iter().filter(|we| we.idx == 1).count(), 1);
     }
 }

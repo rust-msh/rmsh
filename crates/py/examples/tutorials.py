@@ -140,8 +140,9 @@ def tutorial_t4():
     box = rmsh.model.occ.addBox(0, 0, 0, 1.0, 1.0, 1.0)
     sphere = rmsh.model.occ.addSphere(0.5, 0.5, 0.5, 0.35)
 
-    result = rmsh.model.occ.cut([(3, box)], [(3, sphere)])
-    print(f"  box - sphere: result tags = {result}")
+    out_dim_tags, out_dim_tags_map = rmsh.model.occ.cut([(3, box)], [(3, sphere)])
+    print(f"  box - sphere: result tags = {out_dim_tags}")
+    print(f"  box - sphere: result map  = {out_dim_tags_map}")
 
     rmsh.model.occ.synchronize()
 
@@ -237,14 +238,15 @@ def tutorial_t10():
     # Fuse two overlapping boxes
     b1 = rmsh.model.occ.addBox(0,    0, 0,  1.0, 1.0, 1.0)
     b2 = rmsh.model.occ.addBox(0.5,  0, 0,  1.0, 1.0, 1.0)
-    fused = rmsh.model.occ.fuse([(3, b1)], [(3, b2)])
+    fused, _fused_map = rmsh.model.occ.fuse([(3, b1)], [(3, b2)])
     fused_tag = fused[0][1]
     print(f"  fuse -> tag {fused_tag}")
 
     # Cut a vertical cylinder through the fused body
     cyl = rmsh.model.occ.addCylinder(0.75, -0.1, 0.5,  0, 1.2, 0,  0.25)
-    result = rmsh.model.occ.cut([(3, fused_tag)], [(3, cyl)])
+    result, result_map = rmsh.model.occ.cut([(3, fused_tag)], [(3, cyl)])
     print(f"  cut -> {result}")
+    print(f"  cut map -> {result_map}")
 
     rmsh.model.occ.synchronize()
 

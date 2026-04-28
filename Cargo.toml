@@ -33,13 +33,13 @@ rmsh-io = { path = "crates/io" }
 rmsh-algo = { path = "crates/algo" }
 rmsh-renderer = { path = "crates/renderer" }
 
-# RCAD (rcad2 - open source)
-rcad-kernel = { path = "../rcad2/libs/rcad-kernel" }
-rcad-modeling = { path = "../rcad2/libs/rcad-modeling" }
-rcad-algorithms = { path = "../rcad2/libs/rcad-algorithms" }
-rcad-step = { path = "../rcad2/libs/rcad-step" }
-rcad-render = { path = "../rcad2/libs/rcad-render" }
-rcad-scene = { path = "../rcad2/libs/rcad-scene" }
+# RCAD (vendored in workspace)
+rcad-kernel = { path = "vendor/rcad/libs/rcad-kernel" }
+rcad-modeling = { path = "vendor/rcad/libs/rcad-modeling" }
+rcad-algorithms = { path = "vendor/rcad/libs/rcad-algorithms" }
+rcad-step = { path = "vendor/rcad/libs/rcad-step" }
+rcad-render = { path = "vendor/rcad/libs/rcad-render" }
+rcad-scene = { path = "vendor/rcad/libs/rcad-scene" }
 
 # Math
 nalgebra = { version = "0.33", features = ["serde-serialize"] }

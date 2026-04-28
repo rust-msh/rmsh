@@ -20,10 +20,43 @@
       "Bash(.venv/Scripts/python.exe -c \"import rmsh; print\\('rmsh imported successfully'\\)\")",
       "Bash(.venv/Scripts/python.exe examples/tutorials.py)",
       "Bash(taskkill /F /IM rmsh.exe)",
-      "Bash(taskkill //F //IM rmsh.exe)"
+      "Bash(taskkill //F //IM rmsh.exe)",
+      "Bash(git commit -m ' *)",
+      "Bash(git commit -m 'chore: add .worktrees to gitignore *)",
+      "Bash(git worktree *)",
+      "Read(//c/Users/lilu/works/**)",
+      "Bash(git -C c:/Users/lilu/works/rmsh show main:Cargo.toml)",
+      "Read(//c/Users/lilu/.claude/projects/c--Users-lilu-works-rmsh/2bd7085d-cc2d-4490-8f26-44539ea4019b/tool-results/**)",
+      "Bash(grep -E \"crates\\\\\\\\\\\\\\\\algo\")",
+      "Bash(grep -E \"warning.*rmsh.algo|warning.*crates\\\\\\\\\\\\\\\\algo\")",
+      "WebFetch(domain:gitlab.onelab.info)",
+      "WebFetch(domain:api.github.com)",
+      "Bash(curl -sL \"https://gmsh.info/src/gmsh-git-source.tgz\")",
+      "Bash(tar tz *)",
+      "Bash(curl -sI \"https://gmsh.info/src/gmsh-git-source.tgz\")",
+      "Bash(grep -iE \"\\\\.\\(geo|step|stp|brep|msh|iges|igs\\)$\")",
+      "Bash(grep -iE \"\\\\.\\(msh|brep|iges|igs\\)$\")",
+      "Bash(grep -iE \"\\\\.\\(sh|yml|yaml|json|toml|cfg|ini\\)$\")",
+      "Bash(grep -o \"\\\\.[a-zA-Z0-9]*$\")",
+      "Bash(grep -v \"\\\\.stl$\\\\|\\\\.stp$\\\\|\\\\.pos$\")",
+      "Bash(grep -o \"\\\\.[a-z]*$\")",
+      "Bash(cp c:/Users/lilu/works/gmsh/benchmarks/step/cube_filet.stp c:/Users/lilu/works/rmsh/.worktrees/delaunay3d-upgrade/crates/algo/tests/data/)",
+      "Bash(cp c:/Users/lilu/works/gmsh/benchmarks/step/part.step c:/Users/lilu/works/rmsh/.worktrees/delaunay3d-upgrade/crates/algo/tests/data/)",
+      "Bash(cp c:/Users/lilu/works/gmsh/benchmarks/step/Solid_56.step c:/Users/lilu/works/rmsh/.worktrees/delaunay3d-upgrade/crates/algo/tests/data/)",
+      "Bash(cp c:/Users/lilu/works/gmsh/benchmarks/step/Block.stp c:/Users/lilu/works/rmsh/.worktrees/delaunay3d-upgrade/crates/algo/tests/data/)",
+      "Bash(grep -v \"^$\")",
+      "Bash(grep -E \"^\\\\\\\\[|^test |^ok|FAILED|min_dih|thread.*panicked|test result\")",
+      "Read(//c/Users/lilu/.claude/projects/c--Users-lilu-works-rmsh/2bd7085d-ccd2-4490-8f26-44539ea4019b/tool-results/**)",
+      "Bash(xargs grep *)",
+      "Bash(gmsh --version)",
+      "PowerShell(Stop-Process -Force -ErrorAction SilentlyContinue)",
+      "Bash(ps -W)",
+      "Bash(taskkill /f /fi \"IMAGENAME eq gmsh_parity*\")"
     ],
     "additionalDirectories": [
-      "c:\\Users\\lilu\\works\\rmsh\\vendor\\rcad2"
+      "c:\\Users\\lilu\\works\\rmsh\\vendor\\rcad2",
+      "C:\\Users\\lilu\\works\\rmsh\\docs\\superpowers",
+      "c:\\Users\\lilu\\.claude\\plans"
     ]
   }
 }

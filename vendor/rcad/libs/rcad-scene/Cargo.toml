@@ -1,0 +1,16 @@
+[package]
+name = "rcad-scene"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/cad-rs/rcad"
+
+[dependencies]
+glam.workspace = true
+serde.workspace = true
+rcad-kernel = { path = "../rcad-kernel" }
+rcad-modeling = { path = "../rcad-modeling" }
+rcad-render = { path = "../rcad-render" }
+
+[dev-dependencies]
+serde_json = "1.0"

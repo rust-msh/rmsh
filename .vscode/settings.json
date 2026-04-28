@@ -14,6 +14,12 @@
         "/^powershell -ExecutionPolicy Bypass -File \"\\.\\\\scripts\\\\refresh-rmsh-py\\.ps1\"$/": {
             "approve": true,
             "matchCommandLine": true
-        }
+        },
+        ".venv\\Scripts\\python.exe": true,
+        "..\\..\\..\\.venv\\Scripts\\python.exe": true,
+        "..\\..\\.venv\\Scripts\\python.exe": true,
+        "Get-Item": true,
+        ".\\.venv\\Scripts\\maturin.exe": true,
+        "Set-ExecutionPolicy": true
     }
 }

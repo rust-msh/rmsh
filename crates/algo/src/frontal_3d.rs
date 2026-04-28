@@ -45,7 +45,7 @@
 //!
 //! **Not yet implemented** — this module provides the public API skeleton only.
 
-use rmsh_model::Mesh;
+use rmsh_model::{Element, ElementType, Mesh, Node};
 
 use crate::delaunay_3d::Delaunay3D;
 use crate::traits::{MeshAlgoError, MeshParams, Mesher3D};
@@ -102,7 +102,12 @@ impl Mesher3D for Frontal3D {
         let mut tuned = Delaunay3D::default();
         tuned.max_radius_edge_ratio = 2.2;
         tuned.min_dihedral_angle_deg = self.min_dihedral_angle_deg.max(0.0);
-        tuned.mesh_3d(surface, params)
+        let mesh = tuned.mesh_3d(surface, params)?;
+        improve_front_quality(
+            mesh,
+            self.min_dihedral_angle_deg.max(0.5),
+            self.max_backtrack as usize,
+        )
     }
 }
 
@@ -226,6 +231,286 @@ fn dihedral(p: [f64; 3], q: [f64; 3], r: [f64; 3], s: [f64; 3]) -> f64 {
         return 0.0;
     }
     (dot / (l1 * l2)).clamp(-1.0, 1.0).acos().to_degrees()
+}
+
+fn improve_front_quality(
+    mut mesh: Mesh,
+    min_target_dihedral_deg: f64,
+    max_iters: usize,
+) -> Result<Mesh, MeshAlgoError> {
+    if max_iters == 0 {
+        return Ok(mesh);
+    }
+
+    let mut next_node_id = mesh.nodes.keys().copied().max().unwrap_or(0).saturating_add(1);
+    let mut next_elem_id = mesh
+        .elements
+        .iter()
+        .map(|e| e.id)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+
+    for _ in 0..max_iters {
+        let Some((worst_idx, worst_dihedral)) = find_worst_dihedral_tet(&mesh, min_target_dihedral_deg)
+        else {
+            break;
+        };
+
+        let tet = match mesh.elements.get(worst_idx) {
+            Some(e) if e.etype == ElementType::Tetrahedron4 && e.node_ids.len() == 4 => {
+                [e.node_ids[0], e.node_ids[1], e.node_ids[2], e.node_ids[3]]
+            }
+            _ => break,
+        };
+        let a = node_xyz(&mesh, tet[0])?;
+        let b = node_xyz(&mesh, tet[1])?;
+        let c = node_xyz(&mesh, tet[2])?;
+        let d = node_xyz(&mesh, tet[3])?;
+
+        let centroid = [
+            (a[0] + b[0] + c[0] + d[0]) * 0.25,
+            (a[1] + b[1] + c[1] + d[1]) * 0.25,
+            (a[2] + b[2] + c[2] + d[2]) * 0.25,
+        ];
+
+        let mut candidates = Vec::with_capacity(6);
+        candidates.push(centroid);
+        for v in [a, b, c, d] {
+            candidates.push([
+                centroid[0] * 0.8 + v[0] * 0.2,
+                centroid[1] * 0.8 + v[1] * 0.2,
+                centroid[2] * 0.8 + v[2] * 0.2,
+            ]);
+        }
+        if let Some(cc) = tetra_circumcenter(a, b, c, d) {
+            candidates.push([
+                centroid[0] * 0.65 + cc[0] * 0.35,
+                centroid[1] * 0.65 + cc[1] * 0.35,
+                centroid[2] * 0.65 + cc[2] * 0.35,
+            ]);
+        }
+
+        let mut best: Option<([f64; 3], f64)> = None;
+        for p in candidates {
+            if !is_valid_split_point(a, b, c, d, p) {
+                continue;
+            }
+            let score = split_min_dihedral(a, b, c, d, p);
+            match best {
+                Some((_, s)) if score <= s => {}
+                _ => best = Some((p, score)),
+            }
+        }
+
+        let Some((best_p, best_score)) = best else {
+            break;
+        };
+        if best_score <= worst_dihedral + 0.2 {
+            break;
+        }
+
+        let new_node_id = next_node_id;
+        next_node_id = next_node_id.saturating_add(1);
+        mesh.add_node(Node::new(new_node_id, best_p[0], best_p[1], best_p[2]));
+
+        let [n0, n1, n2, n3] = tet;
+        mesh.elements.swap_remove(worst_idx);
+        mesh.add_element(Element::new(
+            next_elem_id,
+            ElementType::Tetrahedron4,
+            vec![n0, n1, n2, new_node_id],
+        ));
+        next_elem_id = next_elem_id.saturating_add(1);
+        mesh.add_element(Element::new(
+            next_elem_id,
+            ElementType::Tetrahedron4,
+            vec![n0, n1, n3, new_node_id],
+        ));
+        next_elem_id = next_elem_id.saturating_add(1);
+        mesh.add_element(Element::new(
+            next_elem_id,
+            ElementType::Tetrahedron4,
+            vec![n0, n2, n3, new_node_id],
+        ));
+        next_elem_id = next_elem_id.saturating_add(1);
+        mesh.add_element(Element::new(
+            next_elem_id,
+            ElementType::Tetrahedron4,
+            vec![n1, n2, n3, new_node_id],
+        ));
+        next_elem_id = next_elem_id.saturating_add(1);
+    }
+
+    Ok(mesh)
+}
+
+fn find_worst_dihedral_tet(mesh: &Mesh, threshold: f64) -> Option<(usize, f64)> {
+    let mut worst: Option<(usize, f64)> = None;
+    for (idx, e) in mesh.elements.iter().enumerate() {
+        if e.etype != ElementType::Tetrahedron4 || e.node_ids.len() != 4 {
+            continue;
+        }
+        let Ok(a) = node_xyz(mesh, e.node_ids[0]) else {
+            continue;
+        };
+        let Ok(b) = node_xyz(mesh, e.node_ids[1]) else {
+            continue;
+        };
+        let Ok(c) = node_xyz(mesh, e.node_ids[2]) else {
+            continue;
+        };
+        let Ok(d) = node_xyz(mesh, e.node_ids[3]) else {
+            continue;
+        };
+        let q = min_dihedral_points(a, b, c, d);
+        if q >= threshold {
+            continue;
+        }
+        match worst {
+            Some((_, wq)) if q >= wq => {}
+            _ => worst = Some((idx, q)),
+        }
+    }
+    worst
+}
+
+fn node_xyz(mesh: &Mesh, node_id: u64) -> Result<[f64; 3], MeshAlgoError> {
+    let p = mesh
+        .nodes
+        .get(&node_id)
+        .ok_or_else(|| MeshAlgoError::Generation(format!("missing node id {node_id}")))?
+        .position;
+    Ok([p.x, p.y, p.z])
+}
+
+fn split_min_dihedral(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3], p: [f64; 3]) -> f64 {
+    [
+        min_dihedral_points(a, b, c, p),
+        min_dihedral_points(a, b, d, p),
+        min_dihedral_points(a, c, d, p),
+        min_dihedral_points(b, c, d, p),
+    ]
+    .into_iter()
+    .fold(f64::MAX, f64::min)
+}
+
+fn is_valid_split_point(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3], p: [f64; 3]) -> bool {
+    if !point_in_tetrahedron(a, b, c, d, p, 1e-12) {
+        return false;
+    }
+    let vmin = [
+        tetra_volume(a, b, c, p),
+        tetra_volume(a, b, d, p),
+        tetra_volume(a, c, d, p),
+        tetra_volume(b, c, d, p),
+    ]
+    .into_iter()
+    .fold(f64::MAX, f64::min);
+    vmin > 1e-15
+}
+
+fn point_in_tetrahedron(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    d: [f64; 3],
+    p: [f64; 3],
+    eps: f64,
+) -> bool {
+    let v = tetra_volume(a, b, c, d);
+    if v <= eps {
+        return false;
+    }
+    let v0 = tetra_volume(p, b, c, d);
+    let v1 = tetra_volume(a, p, c, d);
+    let v2 = tetra_volume(a, b, p, d);
+    let v3 = tetra_volume(a, b, c, p);
+    let sum = v0 + v1 + v2 + v3;
+
+    if (sum - v).abs() > eps * 16.0 {
+        return false;
+    }
+
+    // Strict interior check to avoid near-face splits that create slivers.
+    let min_part = v0.min(v1).min(v2).min(v3);
+    min_part > eps
+}
+
+fn min_dihedral_points(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+    [
+        dihedral(a, b, c, d),
+        dihedral(a, c, b, d),
+        dihedral(a, d, b, c),
+        dihedral(b, c, a, d),
+        dihedral(b, d, a, c),
+        dihedral(c, d, a, b),
+    ]
+    .into_iter()
+    .fold(f64::MAX, f64::min)
+}
+
+fn tetra_volume(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+    let ad = [a[0] - d[0], a[1] - d[1], a[2] - d[2]];
+    let bd = [b[0] - d[0], b[1] - d[1], b[2] - d[2]];
+    let cd = [c[0] - d[0], c[1] - d[1], c[2] - d[2]];
+    let cross = [
+        bd[1] * cd[2] - bd[2] * cd[1],
+        bd[2] * cd[0] - bd[0] * cd[2],
+        bd[0] * cd[1] - bd[1] * cd[0],
+    ];
+    (ad[0] * cross[0] + ad[1] * cross[1] + ad[2] * cross[2]).abs() / 6.0
+}
+
+fn tetra_circumcenter(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> Option<[f64; 3]> {
+    let ba = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ca = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let da = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+    let rhs = [
+        0.5 * ((b[0] * b[0] + b[1] * b[1] + b[2] * b[2]) - (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])),
+        0.5 * ((c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) - (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])),
+        0.5 * ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) - (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])),
+    ];
+    solve_3x3([(ba, rhs[0]), (ca, rhs[1]), (da, rhs[2])])
+}
+
+fn solve_3x3(rows: [([f64; 3], f64); 3]) -> Option<[f64; 3]> {
+    let mut a = [[0.0; 4]; 3];
+    for i in 0..3 {
+        a[i][0] = rows[i].0[0];
+        a[i][1] = rows[i].0[1];
+        a[i][2] = rows[i].0[2];
+        a[i][3] = rows[i].1;
+    }
+
+    for col in 0..3 {
+        let mut pivot = col;
+        for r in (col + 1)..3 {
+            if a[r][col].abs() > a[pivot][col].abs() {
+                pivot = r;
+            }
+        }
+        if a[pivot][col].abs() < 1e-15 {
+            return None;
+        }
+        if pivot != col {
+            a.swap(pivot, col);
+        }
+        let inv = 1.0 / a[col][col];
+        for j in col..4 {
+            a[col][j] *= inv;
+        }
+        for r in 0..3 {
+            if r == col {
+                continue;
+            }
+            let f = a[r][col];
+            for j in col..4 {
+                a[r][j] -= f * a[col][j];
+            }
+        }
+    }
+    Some([a[0][3], a[1][3], a[2][3]])
 }
 
 #[cfg(test)]

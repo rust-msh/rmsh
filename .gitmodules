@@ -1,3 +1,0 @@
-[submodule "vendor/rcad"]
-	path = vendor/rcad
-	url = https://github.com/cad-rs/rcad.git
