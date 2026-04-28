@@ -7,12 +7,6 @@ members = [
     "crates/renderer",
     "crates/viewer",
     "crates/py",
-    "vendor/rcad/libs/rcad-kernel",
-    "vendor/rcad/libs/rcad-modeling",
-    "vendor/rcad/libs/rcad-algorithms",
-    "vendor/rcad/libs/rcad-step",
-    "vendor/rcad/libs/rcad-render",
-    "vendor/rcad/libs/rcad-scene",
 ]
 default-members = [
     "crates/model",
@@ -39,13 +33,13 @@ rmsh-io = { path = "crates/io" }
 rmsh-algo = { path = "crates/algo" }
 rmsh-renderer = { path = "crates/renderer" }
 
-# RCAD (vendored in workspace)
-rcad-kernel = { path = "vendor/rcad/libs/rcad-kernel" }
-rcad-modeling = { path = "vendor/rcad/libs/rcad-modeling" }
-rcad-algorithms = { path = "vendor/rcad/libs/rcad-algorithms" }
-rcad-step = { path = "vendor/rcad/libs/rcad-step" }
-rcad-render = { path = "vendor/rcad/libs/rcad-render" }
-rcad-scene = { path = "vendor/rcad/libs/rcad-scene" }
+# RCAD (git crate)
+rcad-kernel = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
+rcad-modeling = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
+rcad-algorithms = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
+rcad-step = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
+rcad-render = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
+rcad-scene = { git = "https://github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
 
 # Math
 nalgebra = { version = "0.33", features = ["serde-serialize"] }

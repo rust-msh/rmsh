@@ -243,6 +243,7 @@ impl Scene {
             render_pass,
             viewport_origin_px,
             viewport_size_px,
+            false,
         );
     }
 

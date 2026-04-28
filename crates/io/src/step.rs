@@ -293,6 +293,7 @@ pub fn write_brep_step_with_options(
         ap242_metadata: None,
         header,
         gmsh_strict: options.gmsh_strict,
+        export_standalone_wire_overlay: true,
     };
 
     let debug_selection = std::env::var("RMSH_STEP_DEBUG_SELECTION")
