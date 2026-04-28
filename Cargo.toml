@@ -7,6 +7,12 @@ members = [
     "crates/renderer",
     "crates/viewer",
     "crates/py",
+    "vendor/rcad/libs/rcad-kernel",
+    "vendor/rcad/libs/rcad-modeling",
+    "vendor/rcad/libs/rcad-algorithms",
+    "vendor/rcad/libs/rcad-step",
+    "vendor/rcad/libs/rcad-render",
+    "vendor/rcad/libs/rcad-scene",
 ]
 default-members = [
     "crates/model",
