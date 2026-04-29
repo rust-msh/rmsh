@@ -190,7 +190,7 @@ impl Mesher2D for QuadPaving2D {
 /// `θ`, `θ + 90°`, `θ + 180°`, `θ + 270°`.  Note: because a cross has 4-fold
 /// symmetry, only θ mod 90° matters, but we store θ mod 180° for simplicity.
 #[derive(Debug, Clone)]
-struct CrossField {
+pub(crate) struct CrossField {
     /// Per-node angles (radians) representing the primary cross direction.
     angles: Vec<f64>,
     /// Whether each node is on the boundary (fixed Dirichlet condition).
@@ -199,7 +199,7 @@ struct CrossField {
 
 impl CrossField {
     /// Compute a smooth cross field by Laplacian smoothing with boundary alignment.
-    fn compute(
+    pub(crate) fn compute(
         nodes: &[[f64; 2]],
         tris: &[[usize; 3]],
         boundary_edges: &[[usize; 2]],
@@ -259,7 +259,7 @@ impl CrossField {
 
     /// Evaluate the cross direction at an arbitrary point by barycentric
     /// interpolation within the triangle containing it.
-    fn evaluate_at(&self, point: [f64; 2], tri: [usize; 3], nodes: &[[f64; 2]]) -> [f64; 2] {
+    pub(crate) fn evaluate_at(&self, point: [f64; 2], tri: [usize; 3], nodes: &[[f64; 2]]) -> [f64; 2] {
         let a = nodes[tri[0]];
         let b_ = nodes[tri[1]];
         let c_ = nodes[tri[2]];
@@ -417,7 +417,7 @@ fn find_containing_triangle(
 // ─── Triangle recombination ──────────────────────────────────────────────────
 
 /// Recombine adjacent triangles into quads using cross-field guidance.
-fn recombine_triangles(
+pub(crate) fn recombine_triangles(
     nodes: &[[f64; 2]],
     tris: &[[usize; 3]],
     cross_field: &CrossField,
@@ -543,7 +543,7 @@ fn recombine_triangle_pair(
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-fn extract_tri_mesh_data(
+pub(crate) fn extract_tri_mesh_data(
     mesh: &Mesh,
 ) -> Result<(Vec<[f64; 2]>, Vec<u64>, Vec<[usize; 3]>), MeshAlgoError> {
     let mut nodes: Vec<[f64; 2]> = Vec::new();
@@ -572,7 +572,7 @@ fn extract_tri_mesh_data(
     Ok((nodes, node_ids, tris))
 }
 
-fn extract_boundary_edges(tris: &[[usize; 3]]) -> Vec<[usize; 2]> {
+pub(crate) fn extract_boundary_edges(tris: &[[usize; 3]]) -> Vec<[usize; 2]> {
     let mut edge_count: HashMap<(usize, usize), usize> = HashMap::new();
     for tri in tris {
         for &(u, v) in &[(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])] {

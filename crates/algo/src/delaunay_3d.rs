@@ -1471,7 +1471,7 @@ fn bistellar_flip(
     match flip_type {
         BistellarFlipType::TwoToThree => bistellar_flip_2_to_3(tets, nodes, indices),
         BistellarFlipType::ThreeToTwo => bistellar_flip_3_to_2(tets, nodes, indices),
-        BistellarFlipType::FourToFour => Err(MeshAlgoError::NotImplemented),
+        BistellarFlipType::FourToFour => bistellar_flip_4_to_4(tets, nodes, indices),
     }
 }
 
@@ -1641,6 +1641,155 @@ fn bistellar_flip_3_to_2(
 
     tets.push(new_tet1);
     tets.push(new_tet2);
+
+    Ok(())
+}
+
+/// 4-to-4 flip: replace four tetrahedra sharing edge `(u,v)` with four
+/// tetrahedra sharing the opposite edge.
+///
+/// The four opposite vertices form a cycle `c0, c1, c2, c3` around edge
+/// `(u,v)`.  The flip replaces the original edge with either `(c0, c2)` or
+/// `(c1, c3)`, choosing the shorter diagonal to improve quality.
+///
+/// `indices` must be `[i0, i1, i2, i3]` pointing to the four tets.
+fn bistellar_flip_4_to_4(
+    tets: &mut Vec<[usize; 4]>,
+    nodes: &[[f64; 3]],
+    indices: &[usize],
+) -> Result<(), MeshAlgoError> {
+    if indices.len() != 4 {
+        return Err(MeshAlgoError::Generation(
+            "4-to-4 flip requires exactly 4 tets".into(),
+        ));
+    }
+
+    // Collect all four tets and identify the shared edge (u, v)
+    let mut tet_copies = [[0usize; 4]; 4];
+    for (k, &idx) in indices.iter().enumerate() {
+        if idx >= tets.len() {
+            return Ok(());
+        }
+        tet_copies[k] = tets[idx];
+    }
+
+    // Find the two vertices shared by all four tets (the common edge)
+    let mut counts = std::collections::HashMap::new();
+    for tet in &tet_copies {
+        for &v in tet.iter() {
+            *counts.entry(v).or_insert(0) += 1;
+        }
+    }
+
+    let shared: Vec<usize> = counts
+        .iter()
+        .filter_map(|(&v, &c)| if c == 4 { Some(v) } else { None })
+        .collect();
+    if shared.len() != 2 {
+        return Ok(());
+    }
+    let (u, v) = (shared[0], shared[1]);
+
+    // Extract the four opposite vertices (the ones not u or v) in cyclic order
+    let mut opposite: Vec<usize> = Vec::new();
+    for tet in &tet_copies {
+        for &w in tet.iter() {
+            if w != u && w != v && !opposite.contains(&w) {
+                opposite.push(w);
+            }
+        }
+    }
+    if opposite.len() != 4 {
+        return Ok(());
+    }
+
+    // Build adjacency among opposite vertices via the original tets
+    // Each tet [u, v, ci, cj] indicates ci and cj are adjacent in the cycle
+    let mut adj: HashMap<usize, Vec<usize>> = HashMap::new();
+    for tet in &tet_copies {
+        let others: Vec<usize> = tet.iter().filter(|&&x| x != u && x != v).copied().collect();
+        if others.len() == 2 {
+            adj.entry(others[0]).or_default().push(others[1]);
+            adj.entry(others[1]).or_default().push(others[0]);
+        }
+    }
+
+    // Order the opposite vertices into a cycle
+    let mut cycle = vec![opposite[0]];
+    for _i in 0..3 {
+        let last = *cycle.last().unwrap();
+        let next = adj[&last]
+            .iter()
+            .find(|&&n| n != *cycle.get(cycle.len().wrapping_sub(2)).unwrap_or(&usize::MAX))
+            .copied();
+        if let Some(n) = next {
+            cycle.push(n);
+        } else {
+            return Ok(());
+        }
+    }
+
+    let [c0, c1, c2, c3] = [cycle[0], cycle[1], cycle[2], cycle[3]];
+
+    // Choose new diagonal: shorter Euclidean distance
+    let dist02 = {
+        let dx = nodes[c0][0] - nodes[c2][0];
+        let dy = nodes[c0][1] - nodes[c2][1];
+        let dz = nodes[c0][2] - nodes[c2][2];
+        dx * dx + dy * dy + dz * dz
+    };
+    let dist13 = {
+        let dx = nodes[c1][0] - nodes[c3][0];
+        let dy = nodes[c1][1] - nodes[c3][1];
+        let dz = nodes[c1][2] - nodes[c3][2];
+        dx * dx + dy * dy + dz * dz
+    };
+
+    // The four opposite vertices form a cycle c0-c1-c2-c3 around (u,v).
+    // The 4-to-4 flip replaces edge (u,v) with the shorter diagonal.
+    // r1, r2 are the remaining opposite vertices not in the new edge
+    let (p, q, r1, r2) = if dist02 <= dist13 {
+        (c0, c2, c1, c3)
+    } else {
+        (c1, c3, c0, c2)
+    };
+
+    // Four new tets sharing edge (p,q). The 4 possible combinations of
+    // the two remaining opposite vertices {r1, r2} and the two old edge
+    // endpoints {u, v} tile the same volume as the original 4 tets.
+    let mut new_tets = [
+        [p, q, u, r1],
+        [p, q, v, r1],
+        [p, q, v, r2],
+        [p, q, u, r2],
+    ];
+
+    // Fix orientation: each tet must have positive volume
+    for tet in &mut new_tets {
+        let vol = tetra_volume_3d(nodes[tet[0]], nodes[tet[1]], nodes[tet[2]], nodes[tet[3]]);
+        if vol <= -1e-15 {
+            // Odd permutation fixes sign: swap last two vertices
+            tet.swap(2, 3);
+            let vol2 = tetra_volume_3d(nodes[tet[0]], nodes[tet[1]], nodes[tet[2]], nodes[tet[3]]);
+            if vol2 < 1e-15 {
+                return Ok(());
+            }
+        } else if vol < 1e-15 {
+            return Ok(());
+        }
+    }
+
+    // Remove old tets (highest index first) and add new ones
+    let mut sorted_indices = [indices[0], indices[1], indices[2], indices[3]];
+    sorted_indices.sort_unstable_by(|a, b| b.cmp(a));
+    for &idx in &sorted_indices {
+        if idx < tets.len() {
+            tets.swap_remove(idx);
+        }
+    }
+    for &tet in &new_tets {
+        tets.push(tet);
+    }
 
     Ok(())
 }
@@ -2168,5 +2317,61 @@ mod tests {
         let result = bistellar_flip(&mut tets, &nodes, BistellarFlipType::TwoToThree, &[0, 1]);
         // Should return Ok but not modify (common.len() != 3)
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn bistellar_flip_4_to_4_works() {
+        // Four tets sharing edge (0,1), with opposite vertices 2,3,4,5 in cycle
+        let nodes = [
+            [0.0, 0.0, 0.0], // 0 — u
+            [1.0, 0.0, 0.0], // 1 — v
+            [0.2, 0.5, 0.0], // 2 — c0
+            [0.2, 0.5, 0.3], // 3 — c1
+            [0.8, 0.5, 0.3], // 4 — c2
+            [0.8, 0.5, 0.0], // 5 — c3
+        ];
+        let mut tets = vec![
+            [0, 1, 2, 3], // c0,c1
+            [0, 1, 3, 4], // c1,c2
+            [0, 1, 4, 5], // c2,c3
+            [0, 1, 5, 2], // c3,c0
+        ];
+        let original = tets.clone();
+        let result = bistellar_flip(
+            &mut tets,
+            &nodes,
+            BistellarFlipType::FourToFour,
+            &[0, 1, 2, 3],
+        );
+        assert!(result.is_ok(), "4-to-4 flip should succeed");
+        assert_eq!(tets.len(), 4, "should still have 4 tets after 4-to-4 flip");
+        // All resulting tets must have positive volume
+        for &tet in &tets {
+            let vol = tetra_volume_3d(
+                nodes[tet[0]], nodes[tet[1]], nodes[tet[2]], nodes[tet[3]],
+            );
+            assert!(vol > 0.0, "tet should have positive volume, got {vol}");
+        }
+        // The tets should have changed — old set differs from new
+        assert_ne!(tets, original, "tets should be different after flip");
+    }
+
+    #[test]
+    fn bistellar_flip_4_to_4_rejects_wrong_count() {
+        let nodes = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.5, 0.5, 0.5],
+        ];
+        let mut tets = vec![[0, 1, 2, 3]];
+        let result = bistellar_flip(
+            &mut tets,
+            &nodes,
+            BistellarFlipType::FourToFour,
+            &[0],
+        );
+        assert!(result.is_err());
     }
 }

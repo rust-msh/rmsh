@@ -112,7 +112,7 @@ impl Mesher2D for MeshAdapt2D {
                 }
             }
             for (a, b) in splits {
-                let new_id = split_edge(&mut nodes, &mut triangles, a, b);
+                let new_id = split_edge(&mut nodes, &mut triangles, a, b, None);
                 next_node_id = next_node_id.max(new_id as u64 + 1);
             }
 
@@ -133,7 +133,7 @@ impl Mesher2D for MeshAdapt2D {
                 }
             }
             for (a, b) in collapses {
-                let _ = collapse_edge(&mut nodes, &mut triangles, a, b);
+                let _ = collapse_edge(&mut nodes, &mut triangles, a, b, None);
             }
 
             // Phase 3: edge swaps for quality
@@ -202,13 +202,13 @@ fn target_size(_x: f64, _y: f64, params: &MeshParams) -> f64 {
     params.element_size
 }
 
-fn edge_length(a: [f64; 2], b: [f64; 2]) -> f64 {
+pub(crate) fn edge_length(a: [f64; 2], b: [f64; 2]) -> f64 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
     (dx * dx + dy * dy).sqrt()
 }
 
-fn extract_edges(triangles: &[[usize; 3]]) -> Vec<[usize; 2]> {
+pub(crate) fn extract_edges(triangles: &[[usize; 3]]) -> Vec<[usize; 2]> {
     let mut seen = HashMap::new();
     for tri in triangles {
         let edges = [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])];
@@ -247,15 +247,16 @@ fn find_bad_edges(
 ///
 /// Finds all triangles sharing edge `(a, b)`, replaces each with two new
 /// triangles formed by the midpoint. Returns the index of the new node.
-fn split_edge(
+pub(crate) fn split_edge(
     nodes: &mut Vec<[f64; 2]>,
     triangles: &mut Vec<[usize; 3]>,
     a: usize,
     b: usize,
+    midpoint: Option<[f64; 2]>,
 ) -> usize {
     let pa = nodes[a];
     let pb = nodes[b];
-    let midpoint = [(pa[0] + pb[0]) * 0.5, (pa[1] + pb[1]) * 0.5];
+    let midpoint = midpoint.unwrap_or([(pa[0] + pb[0]) * 0.5, (pa[1] + pb[1]) * 0.5]);
 
     let m = nodes.len();
     nodes.push(midpoint);
@@ -298,21 +299,21 @@ fn split_edge(
 ///
 /// The position of `a` is moved to the midpoint. All references to `b` in
 /// triangles are replaced with `a`, and degenerate triangles are removed.
-fn collapse_edge(
+pub(crate) fn collapse_edge(
     nodes: &mut Vec<[f64; 2]>,
     triangles: &mut Vec<[usize; 3]>,
     a: usize,
     b: usize,
+    midpoint: Option<[f64; 2]>,
 ) -> Result<(), MeshAlgoError> {
     if a == b {
         return Ok(());
     }
 
-    // Move a to the midpoint
-    nodes[a] = [
+    nodes[a] = midpoint.unwrap_or([
         (nodes[a][0] + nodes[b][0]) * 0.5,
         (nodes[a][1] + nodes[b][1]) * 0.5,
-    ];
+    ]);
 
     // Replace all occurrences of b with a
     for tri in triangles.iter_mut() {
@@ -422,7 +423,7 @@ fn swap_edge(
     Ok(())
 }
 
-fn signed_area_2d(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+pub(crate) fn signed_area_2d(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
@@ -464,7 +465,7 @@ mod tests {
     fn split_edge_creates_midpoint() {
         let mut nodes = vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
         let mut tris = vec![[0, 1, 2]];
-        let m = split_edge(&mut nodes, &mut tris, 0, 1);
+        let m = split_edge(&mut nodes, &mut tris, 0, 1, None);
         assert_eq!(m, 3);
         assert_eq!(nodes.len(), 4);
         // The original triangle was split: one old removed, two new added → tri count = 2
@@ -481,7 +482,7 @@ mod tests {
         // tri [1,3,2] becomes [0,3,2] → survives
         let mut nodes = vec![[0.0, 0.0], [0.1, 0.0], [0.5, 0.5], [0.3, 1.0]];
         let mut tris = vec![[0, 1, 2], [1, 3, 2]];
-        collapse_edge(&mut nodes, &mut tris, 0, 1).unwrap();
+        collapse_edge(&mut nodes, &mut tris, 0, 1, None).unwrap();
         // Node 0 moved to midpoint
         assert!((nodes[0][0] - 0.05).abs() < 1e-9);
         assert_eq!(tris.len(), 1);

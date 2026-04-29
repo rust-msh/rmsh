@@ -43,9 +43,12 @@
 //! **Fully implemented** — metric intersection, edge collapse, and metric-
 //! weighted node relocation are all functional.
 
-use rmsh_model::Mesh;
+use std::collections::{HashMap, HashSet};
+
+use rmsh_model::{Element, ElementType, Mesh, Node};
 
 use crate::delaunay_3d::Delaunay3D;
+use crate::tet_mesh::{TetMesh, optimize_tetmesh_flips};
 use crate::traits::{MeshAlgoError, MeshParams, Mesher3D};
 
 // ─── Metric field (3-D) ───────────────────────────────────────────────────────
@@ -399,19 +402,135 @@ impl Mesher3D for MmgRemesh {
     }
 
     fn mesh_3d(&self, surface: &Mesh, params: &MeshParams) -> Result<Mesh, MeshAlgoError> {
-        let effective_h = if let Some(field) = self.metric_field.as_deref() {
-            let center = surface.center();
-            let m = field.metric_at(center.x, center.y, center.z);
-            (1.0 / m.m11.max(m.m22).max(m.m33).max(1e-12)).sqrt()
-        } else {
-            params.element_size
+        // Build metric field (or default isotropic from params.element_size)
+        let field: Box<dyn MetricField3D> = match self.metric_field.as_deref() {
+            Some(f) => Box::new(UniformMetricField3D {
+                metric: f.metric_at(0.0, 0.0, 0.0),
+            }),
+            None => Box::new(UniformMetricField3D::new(params.element_size)),
         };
 
+        // Seed mesh: uniform isotropic Delaunay tetrahedralization
+        let seed_h = params
+            .element_size
+            .min(params.max_size)
+            .max(params.min_size);
         let mut adapted = params.clone();
-        adapted.element_size = effective_h.min(params.max_size).max(params.min_size);
-        adapted.max_size = adapted.element_size * self.l_max.max(1.0);
-        adapted.optimize_passes = params.optimize_passes.max(self.max_passes.min(4));
-        Delaunay3D::default().mesh_3d(surface, &adapted)
+        adapted.element_size = seed_h;
+        let seed_mesh = Delaunay3D::default().mesh_3d(surface, &adapted)?;
+
+        // Extract flat arrays
+        let (mut nodes, mut tets) = extract_flat_tet_data(&seed_mesh)?;
+        if tets.is_empty() {
+            return Ok(seed_mesh);
+        }
+
+        let l_min = self.l_min;
+        let l_max = self.l_max;
+
+        for _pass in 0..self.max_passes {
+            if tets.is_empty() || nodes.len() < 4 {
+                break;
+            }
+
+            let edges = extract_edges_3d(&tets);
+            let (too_long, too_short, _good) =
+                classify_edges(&nodes, &edges, field.as_ref(), l_min, l_max);
+
+            // Phase 1: split too-long edges
+            for &edge_idx in &too_long {
+                let [a, b] = edges[edge_idx];
+                let mid = [
+                    (nodes[a][0] + nodes[b][0]) * 0.5,
+                    (nodes[a][1] + nodes[b][1]) * 0.5,
+                    (nodes[a][2] + nodes[b][2]) * 0.5,
+                ];
+                split_edge_3d(&mut nodes, &mut tets, a, b, mid);
+            }
+
+            // Phase 2: collapse too-short interior edges (limited)
+            if !too_short.is_empty() {
+                let boundary_set = build_boundary_node_set_3d(&tets);
+                let mut short_edges: Vec<(usize, usize)> = Vec::new();
+                for &edge_idx in &too_short {
+                    let [a, b] = edges[edge_idx];
+                    if !boundary_set.contains(&a) && !boundary_set.contains(&b) {
+                        short_edges.push((a, b));
+                    }
+                }
+                // Limit collapses to 10% of edges per pass
+                let max_collapses = (edges.len() as f64 * 0.1).ceil() as usize;
+                for &(a, b) in short_edges.iter().take(max_collapses) {
+                    if a < nodes.len() && b < nodes.len() {
+                        let _ = collapse_edge_3d(
+                            &mut nodes, &mut tets, a, b, field.as_ref(),
+                        );
+                    }
+                }
+            }
+
+            // Phase 3: edge swaps via TetMesh bistellar flips
+            {
+                let mut tm = build_tetmesh_from_arrays(&nodes, &tets);
+                let _ = optimize_tetmesh_flips(&mut tm, 2);
+                let (new_nodes, new_tets) = extract_arrays_from_tetmesh(&tm);
+                nodes = new_nodes;
+                tets = new_tets;
+            }
+
+            // Phase 4: metric Laplacian relocation of interior nodes (every 2 passes)
+            if _pass % 2 == 1 {
+                let boundary_set = build_boundary_node_set_3d(&tets);
+                let neighbor_lists = build_neighbor_lists_3d(&nodes, &tets);
+                for i in 0..nodes.len() {
+                    if !boundary_set.contains(&i) {
+                        metric_laplacian_relocation(
+                            i,
+                            &mut nodes,
+                            &neighbor_lists[i],
+                            field.as_ref(),
+                        );
+                    }
+                }
+            }
+
+            // Convergence check
+            let edges = extract_edges_3d(&tets);
+            let (too_long, too_short, _) =
+                classify_edges(&nodes, &edges, field.as_ref(), l_min * 0.9, l_max * 1.1);
+            if too_long.is_empty() && too_short.is_empty() {
+                break;
+            }
+        }
+
+        // Build output Mesh
+        let mut mesh = Mesh::new();
+        for (i, &pos) in nodes.iter().enumerate() {
+            mesh.add_node(Node::new(i as u64 + 1, pos[0], pos[1], pos[2]));
+        }
+        for (elem_id, tet) in tets.iter().enumerate() {
+            let [a, b, c, d] = *tet;
+            if a == b || a == c || a == d || b == c || b == d || c == d {
+                continue;
+            }
+            if a >= nodes.len() || b >= nodes.len() || c >= nodes.len() || d >= nodes.len() {
+                continue;
+            }
+            let vol = tetra_volume_3d(nodes[a], nodes[b], nodes[c], nodes[d]);
+            if vol < 1e-15 {
+                continue;
+            }
+            mesh.add_element(Element::new(
+                (elem_id + 1) as u64,
+                ElementType::Tetrahedron4,
+                vec![a as u64 + 1, b as u64 + 1, c as u64 + 1, d as u64 + 1],
+            ));
+        }
+
+        if mesh.element_count() == 0 {
+            return Ok(seed_mesh);
+        }
+        Ok(mesh)
     }
 }
 
@@ -560,6 +679,188 @@ fn tetra_volume_3d(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
         bd[0] * cd[1] - bd[1] * cd[0],
     ];
     (ad[0] * cross[0] + ad[1] * cross[1] + ad[2] * cross[2]).abs() / 6.0
+}
+
+/// Extract flat node and tet arrays from a Mesh.
+fn extract_flat_tet_data(mesh: &Mesh) -> Result<(Vec<[f64; 3]>, Vec<[usize; 4]>), MeshAlgoError> {
+    let mut nodes: Vec<[f64; 3]> = Vec::new();
+    let mut id_to_idx = HashMap::new();
+
+    for n in mesh.nodes.values() {
+        let idx = nodes.len();
+        nodes.push([n.position.x, n.position.y, n.position.z]);
+        id_to_idx.insert(n.id, idx);
+    }
+
+    let tets: Vec<[usize; 4]> = mesh
+        .elements
+        .iter()
+        .filter(|e| e.etype == ElementType::Tetrahedron4 && e.node_ids.len() == 4)
+        .filter_map(|e| {
+            let a = *id_to_idx.get(&e.node_ids[0])?;
+            let b = *id_to_idx.get(&e.node_ids[1])?;
+            let c = *id_to_idx.get(&e.node_ids[2])?;
+            let d = *id_to_idx.get(&e.node_ids[3])?;
+            Some([a, b, c, d])
+        })
+        .collect();
+
+    Ok((nodes, tets))
+}
+
+/// Extract unique edges from tetrahedra.
+fn extract_edges_3d(tets: &[[usize; 4]]) -> Vec<[usize; 2]> {
+    let mut seen = HashSet::new();
+    let mut edges = Vec::new();
+    for tet in tets {
+        for (i, j) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)] {
+            let a = tet[i];
+            let b = tet[j];
+            let key = if a < b { (a, b) } else { (b, a) };
+            if seen.insert(key) {
+                edges.push([a, b]);
+            }
+        }
+    }
+    edges
+}
+
+/// Split a tetrahedral edge by inserting a midpoint node.
+///
+/// Finds all tets sharing edge `(a, b)`, replaces each with two new tets
+/// formed by splitting at the midpoint.
+fn split_edge_3d(
+    nodes: &mut Vec<[f64; 3]>,
+    tets: &mut Vec<[usize; 4]>,
+    a: usize,
+    b: usize,
+    midpoint: [f64; 3],
+) -> usize {
+    let m = nodes.len();
+    nodes.push(midpoint);
+
+    // Find tets sharing edge (a, b)
+    let mut affected: Vec<(usize, [usize; 2])> = Vec::new(); // (tet_idx, other_two_verts)
+    for (idx, tet) in tets.iter().enumerate() {
+        let has_a = tet[0] == a || tet[1] == a || tet[2] == a || tet[3] == a;
+        let has_b = tet[0] == b || tet[1] == b || tet[2] == b || tet[3] == b;
+        if has_a && has_b {
+            let others: Vec<usize> = tet.iter().filter(|&&v| v != a && v != b).copied().collect();
+            if others.len() == 2 {
+                affected.push((idx, [others[0], others[1]]));
+            }
+        }
+    }
+
+    // Remove affected tets (highest index first) and replace with split pairs
+    affected.sort_by(|x, y| y.0.cmp(&x.0));
+    for (tri_idx, [c, d]) in affected {
+        // Remove at tri_idx, but since we sorted descending, indices remain valid
+        if tri_idx < tets.len() {
+            tets.swap_remove(tri_idx);
+        }
+
+        // Compute signed volume of original to determine orientation
+        let vol_orig = {
+            let ad = [nodes[a][0] - nodes[d][0], nodes[a][1] - nodes[d][1], nodes[a][2] - nodes[d][2]];
+            let bd = [nodes[b][0] - nodes[d][0], nodes[b][1] - nodes[d][1], nodes[b][2] - nodes[d][2]];
+            let cd = [nodes[c][0] - nodes[d][0], nodes[c][1] - nodes[d][1], nodes[c][2] - nodes[d][2]];
+            let cross = [
+                bd[1] * cd[2] - bd[2] * cd[1],
+                bd[2] * cd[0] - bd[0] * cd[2],
+                bd[0] * cd[1] - bd[1] * cd[0],
+            ];
+            ad[0] * cross[0] + ad[1] * cross[1] + ad[2] * cross[2]
+        };
+
+        // Two new tets: [a, c, d, m] and [b, c, d, m], preserving orientation
+        if vol_orig > 0.0 {
+            tets.push([a, c, d, m]);
+            tets.push([b, c, d, m]);
+        } else {
+            tets.push([a, d, c, m]);
+            tets.push([b, d, c, m]);
+        }
+    }
+
+    m
+}
+
+/// Build a TetMesh from flat node/tet arrays for swap optimization.
+fn build_tetmesh_from_arrays(nodes: &[[f64; 3]], tets: &[[usize; 4]]) -> TetMesh {
+    let mut tm = TetMesh {
+        nodes: nodes.to_vec(),
+        node_ids: (1..=nodes.len() as u64).collect(),
+        tets: tets
+            .iter()
+            .map(|t| crate::tet_mesh::Tet {
+                nodes: [t[0] as u32, t[1] as u32, t[2] as u32, t[3] as u32],
+                neighbors: [u32::MAX; 4],
+            })
+            .collect(),
+    };
+    tm.build_neighbors();
+    tm
+}
+
+/// Extract flat arrays from a TetMesh.
+fn extract_arrays_from_tetmesh(tm: &TetMesh) -> (Vec<[f64; 3]>, Vec<[usize; 4]>) {
+    let nodes = tm.nodes.clone();
+    let tets: Vec<[usize; 4]> = tm
+        .tets
+        .iter()
+        .map(|t| {
+            [
+                t.nodes[0] as usize,
+                t.nodes[1] as usize,
+                t.nodes[2] as usize,
+                t.nodes[3] as usize,
+            ]
+        })
+        .collect();
+    (nodes, tets)
+}
+
+/// Identify boundary nodes: nodes on faces belonging to only one tet.
+fn build_boundary_node_set_3d(tets: &[[usize; 4]]) -> HashSet<usize> {
+    let mut face_count: HashMap<[usize; 3], usize> = HashMap::new();
+    for tet in tets {
+        for (fi0, fi1, fi2) in [(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)] {
+            let mut face = [tet[fi0], tet[fi1], tet[fi2]];
+            face.sort_unstable();
+            *face_count.entry(face).or_insert(0) += 1;
+        }
+    }
+    let mut boundary = HashSet::new();
+    for (face, count) in face_count {
+        if count == 1 {
+            boundary.extend(face.iter().copied());
+        }
+    }
+    boundary
+}
+
+/// Build per-node neighbor lists for smoothing.
+fn build_neighbor_lists_3d(
+    nodes: &[[f64; 3]],
+    tets: &[[usize; 4]],
+) -> Vec<Vec<usize>> {
+    let mut neighbors: Vec<HashSet<usize>> = vec![HashSet::new(); nodes.len()];
+    for tet in tets {
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                let a = tet[i];
+                let b = tet[j];
+                if a < neighbors.len() {
+                    neighbors[a].insert(b);
+                }
+                if b < neighbors.len() {
+                    neighbors[b].insert(a);
+                }
+            }
+        }
+    }
+    neighbors.into_iter().map(|s| s.into_iter().collect()).collect()
 }
 
 #[cfg(test)]

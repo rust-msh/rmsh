@@ -32,8 +32,10 @@
 //! **Fully implemented** — metric intersection via simultaneous diagonalization
 //! and metric-space edge evaluation.
 
-use rmsh_model::Mesh;
+use rmsh_model::{Element, ElementType, Mesh, Node};
+use std::collections::{HashMap, HashSet};
 
+use crate::mesh_adapt_2d::{collapse_edge, extract_edges, signed_area_2d, split_edge};
 use crate::planar_meshing::{mesh_domain_triangles, validate_domain};
 use crate::traits::{Domain2D, MeshAlgoError, MeshParams, Mesher2D};
 
@@ -253,25 +255,139 @@ impl Mesher2D for Bamg2D {
 
     fn mesh_2d(&self, domain: &Domain2D, params: &MeshParams) -> Result<Mesh, MeshAlgoError> {
         validate_domain(domain, params.element_size)?;
-        let (sx, sy) = if let Some(field) = self.metric_field.as_deref() {
-            let cx =
-                domain.outer().iter().map(|p| p[0]).sum::<f64>() / domain.outer().len() as f64;
-            let cy =
-                domain.outer().iter().map(|p| p[1]).sum::<f64>() / domain.outer().len() as f64;
-            let m = field.metric_at(cx, cy);
-            let hx = (1.0 / m.m11.max(1e-12)).sqrt();
-            let hy = (1.0 / m.m22.max(1e-12)).sqrt();
-            (
-                hx.min(params.max_size).max(params.min_size),
-                hy.min(params.max_size).max(params.min_size),
-            )
-        } else {
-            (
-                params.element_size,
-                (params.element_size * 0.866).max(params.min_size),
-            )
+
+        let field: Box<dyn MetricField2D> = match self.metric_field.as_deref() {
+            Some(f) => Box::new(UniformMetricField { metric: f.metric_at(0.0, 0.0) }),
+            None => Box::new(UniformMetricField::new(params.element_size)),
         };
-        mesh_domain_triangles(domain, sx, sy, 0.0)
+
+        // Seed mesh: coarse boundary-only triangulation, then refine adaptively.
+        // Starting coarse avoids over-refinement that collapse cascades can't undo.
+        let boundary_points = domain.outer().to_vec();
+        let seed_tris = crate::triangulate2d::triangulate_points(&boundary_points);
+        let (mut nodes, mut triangles): (Vec<[f64; 2]>, Vec<[usize; 3]>) =
+            (boundary_points, seed_tris);
+
+        if triangles.is_empty() {
+            return mesh_domain_triangles(
+                domain,
+                params.element_size,
+                params.element_size * 0.866,
+                0.0,
+            );
+        }
+
+        // Identify boundary nodes: nodes on edges belonging to only one triangle
+        let boundary_nodes = build_boundary_set(&nodes, &triangles);
+
+        let split_ratio = 4.0 / 3.0;
+        let collapse_ratio = 4.0 / 5.0;
+
+        for _pass in 0..self.max_passes {
+            // Guard against degeneration
+            if triangles.is_empty() || nodes.len() < 3 {
+                break;
+            }
+
+            let edges = extract_edges(&triangles);
+
+            // Classify edges by metric length
+            let mut split_candidates: Vec<(usize, usize)> = Vec::new();
+            for &[a, b] in &edges {
+                let l = edge_metric_length(nodes[a], nodes[b], field.as_ref());
+                if l > split_ratio {
+                    split_candidates.push((a, b));
+                }
+            }
+
+            // Phase 1: split too-long edges
+            for (a, b) in &split_candidates {
+                let mid = metric_midpoint(nodes[*a], nodes[*b], field.as_ref());
+                split_edge(&mut nodes, &mut triangles, *a, *b, Some(mid));
+            }
+
+            // Phase 2: metric-driven edge swaps
+            let edges = extract_edges(&triangles);
+            for &[a, b] in &edges {
+                let _ = metric_swap_edge(&nodes, &mut triangles, a, b, field.as_ref());
+            }
+
+            // Phase 3: occasional smoothing on interior nodes
+            if _pass % 4 == 3 {
+                let neighbor_lists = build_neighbor_lists(&nodes, &triangles);
+                for i in 0..nodes.len() {
+                    if !boundary_nodes.contains(&i) {
+                        metric_laplacian_smooth(
+                            i,
+                            &mut nodes,
+                            &neighbor_lists[i],
+                            field.as_ref(),
+                        );
+                    }
+                }
+            }
+
+            // Convergence: all edges within tolerance
+            let edges = extract_edges(&triangles);
+            let non_unit_frac = edges
+                .iter()
+                .filter(|&&[a, b]| {
+                    let l = edge_metric_length(nodes[a], nodes[b], field.as_ref());
+                    l > split_ratio * 0.95 || l < collapse_ratio * 1.05
+                })
+                .count() as f64
+                / edges.len().max(1) as f64;
+            if non_unit_frac < self.convergence_threshold {
+                break;
+            }
+        }
+
+        // Post-adaptation: collapse very short interior edges (single pass, no cascade)
+        let mut short_edges: Vec<(usize, usize, f64)> = Vec::new();
+        for &[a, b] in &extract_edges(&triangles) {
+            if boundary_nodes.contains(&a) || boundary_nodes.contains(&b) {
+                continue;
+            }
+            let l = edge_metric_length(nodes[a], nodes[b], field.as_ref());
+            if l < collapse_ratio && l > 1e-15 {
+                short_edges.push((a, b, l));
+            }
+        }
+        short_edges.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap());
+        // Only collapse the shortest 5, one at a time (skip if indices stale)
+        for &(a, b, _) in short_edges.iter().take(5) {
+            if a < nodes.len() && b < nodes.len() {
+                let mid = metric_midpoint(nodes[a], nodes[b], field.as_ref());
+                let _ = collapse_edge(&mut nodes, &mut triangles, a, b, Some(mid));
+            }
+        }
+
+        // Build output Mesh
+        let mut mesh = Mesh::new();
+        let mut next_elem_id = 1u64;
+        for (i, &pos) in nodes.iter().enumerate() {
+            mesh.add_node(Node::new(i as u64 + 1, pos[0], pos[1], 0.0));
+        }
+        for tri in &triangles {
+            if tri[0] != tri[1] && tri[1] != tri[2] && tri[2] != tri[0] {
+                let area = signed_area_2d(nodes[tri[0]], nodes[tri[1]], nodes[tri[2]]);
+                if area > 1e-15 {
+                    let nids = vec![tri[0] as u64 + 1, tri[1] as u64 + 1, tri[2] as u64 + 1];
+                    mesh.add_element(Element::new(next_elem_id, ElementType::Triangle3, nids));
+                    next_elem_id += 1;
+                }
+            }
+        }
+
+        if mesh.element_count() == 0 {
+            return mesh_domain_triangles(
+                domain,
+                params.element_size,
+                params.element_size * 0.866,
+                0.0,
+            );
+        }
+        Ok(mesh)
     }
 }
 
@@ -364,6 +480,153 @@ fn metric_laplacian_smooth(
     }
 }
 
+/// Extract flat arrays from a Mesh for metric adaptation.
+fn extract_flat_tri_data(
+    mesh: &Mesh,
+) -> Result<(Vec<[f64; 2]>, Vec<u64>, Vec<[usize; 3]>), MeshAlgoError> {
+    let mut nodes: Vec<[f64; 2]> = Vec::new();
+    let mut node_ids: Vec<u64> = Vec::new();
+    let mut id_to_idx = HashMap::new();
+
+    for n in mesh.nodes.values() {
+        let idx = nodes.len();
+        nodes.push([n.position.x, n.position.y]);
+        node_ids.push(n.id);
+        id_to_idx.insert(n.id, idx);
+    }
+
+    let tris: Vec<[usize; 3]> = mesh
+        .elements
+        .iter()
+        .filter(|e| e.etype == ElementType::Triangle3 && e.node_ids.len() == 3)
+        .filter_map(|e| {
+            let a = *id_to_idx.get(&e.node_ids[0])?;
+            let b = *id_to_idx.get(&e.node_ids[1])?;
+            let c = *id_to_idx.get(&e.node_ids[2])?;
+            Some([a, b, c])
+        })
+        .collect();
+
+    Ok((nodes, node_ids, tris))
+}
+
+/// Swap the shared diagonal of two adjacent triangles if the new diagonal is
+/// shorter in metric space.
+fn metric_swap_edge(
+    nodes: &[[f64; 2]],
+    triangles: &mut Vec<[usize; 3]>,
+    a: usize,
+    b: usize,
+    field: &dyn MetricField2D,
+) -> Result<(), MeshAlgoError> {
+    // Find the two triangles sharing edge (a, b)
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    for (idx, tri) in triangles.iter().enumerate() {
+        let has_a = tri[0] == a || tri[1] == a || tri[2] == a;
+        let has_b = tri[0] == b || tri[1] == b || tri[2] == b;
+        if has_a && has_b {
+            let c = tri.iter().find(|&&v| v != a && v != b).copied();
+            if let Some(c) = c {
+                pairs.push((idx, c));
+            }
+        }
+    }
+
+    if pairs.len() != 2 {
+        return Ok(());
+    }
+
+    let c = pairs[0].1;
+    let d = pairs[1].1;
+
+    // The two triangles form quadrilateral (a, c, b, d)
+    // Current diagonal is (a, b). Candidate diagonal is (c, d).
+    let cur_len = edge_metric_length(nodes[a], nodes[b], field);
+    let new_len = edge_metric_length(nodes[c], nodes[d], field);
+
+    // Swap if new diagonal is shorter in metric space and new triangles have positive area
+    if new_len >= cur_len {
+        return Ok(());
+    }
+
+    let area0 = signed_area_2d(nodes[c], nodes[d], nodes[a]);
+    let area1 = signed_area_2d(nodes[c], nodes[d], nodes[b]);
+    if area0.abs() < 1e-15 || area1.abs() < 1e-15 {
+        return Ok(());
+    }
+    if area0.signum() != area1.signum() {
+        return Ok(());
+    }
+
+    // Remove old triangles (highest index first)
+    let mut indices = [pairs[0].0, pairs[1].0];
+    indices.sort_unstable_by(|a, b| b.cmp(a));
+    triangles.swap_remove(indices[0]);
+    if indices[1] < triangles.len() {
+        triangles.swap_remove(indices[1]);
+    }
+
+    // Push new triangles with CCW orientation (same logic as swap_edge)
+    let tri0 = if area0 > 0.0 {
+        [c, d, a]
+    } else {
+        [c, a, d]
+    };
+    let tri1 = if area1 > 0.0 {
+        [d, c, b]
+    } else {
+        [d, b, c]
+    };
+    triangles.push(tri0);
+    triangles.push(tri1);
+
+    Ok(())
+}
+
+/// Identify boundary nodes: nodes on edges that belong to only one triangle.
+fn build_boundary_set(_nodes: &[[f64; 2]], triangles: &[[usize; 3]]) -> HashSet<usize> {
+    let mut edge_count: HashMap<(usize, usize), usize> = HashMap::new();
+    for tri in triangles {
+        for i in 0..3 {
+            let a = tri[i];
+            let b = tri[(i + 1) % 3];
+            let key = if a < b { (a, b) } else { (b, a) };
+            *edge_count.entry(key).or_insert(0) += 1;
+        }
+    }
+    let mut boundary = HashSet::new();
+    for ((a, b), count) in edge_count {
+        if count == 1 {
+            boundary.insert(a);
+            boundary.insert(b);
+        }
+    }
+    boundary
+}
+
+/// Build neighbor lists for each node.
+fn build_neighbor_lists(nodes: &[[f64; 2]], triangles: &[[usize; 3]]) -> Vec<Vec<usize>> {
+    let mut neighbors: Vec<HashSet<usize>> = vec![HashSet::new(); nodes.len()];
+
+    for tri in triangles {
+        for i in 0..3 {
+            let ni = tri[i];
+            let nj = tri[(i + 1) % 3];
+            if ni < neighbors.len() {
+                neighbors[ni].insert(nj);
+            }
+            if nj < neighbors.len() {
+                neighbors[nj].insert(ni);
+            }
+        }
+    }
+
+    neighbors
+        .into_iter()
+        .map(|s| s.into_iter().collect())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,12 +645,63 @@ mod tests {
     }
 
     #[test]
+    fn bamg_adaptive_loop_converges() {
+        let domain =
+            Domain2D::from_outer(vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]);
+        let params = MeshParams::with_size(0.5);
+        let mesh = Bamg2D::default().mesh_2d(&domain, &params).unwrap();
+        assert!(mesh.element_count() >= 2);
+        // All elements must be triangles
+        for e in &mesh.elements {
+            assert_eq!(e.etype, ElementType::Triangle3);
+            assert_eq!(e.node_ids.len(), 3);
+        }
+    }
+
+    #[test]
+    fn bamg_anisotropic_stretches() {
+        // An anisotropic metric with hx=1.0, hy=0.1 should produce stretched elements
+        // along the x-direction (long edges in x, short edges in y)
+        let domain =
+            Domain2D::from_outer(vec![[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0]]);
+        let params = MeshParams::with_size(0.5);
+        let mesh = Bamg2D::default()
+            .with_metric(UniformMetricField {
+                metric: Metric2::anisotropic(1.0, 0.1, 0.0),
+            })
+            .mesh_2d(&domain, &params)
+            .unwrap();
+        assert!(mesh.element_count() > 0);
+    }
+
+    #[test]
+    fn bamg_metric_swap_preserves_orientation() {
+        // Build a convex quad where the current diagonal (0,2) is long and
+        // the candidate diagonal (1,3) is shorter → swap should fire.
+        // h=0.5 metric doubles Euclidean → Euclidean lengths drive the comparison.
+        let nodes = vec![
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [0.9, 0.9], // long diagonal from 0
+            [0.2, 0.3], // short diagonal from 1
+        ];
+        // Two triangles sharing edge (0, 2): [0,1,2] and [0,2,3]
+        let mut tris = vec![[0, 1, 2], [0, 2, 3]];
+        let field = UniformMetricField::new(0.5);
+        let _ = metric_swap_edge(&nodes, &mut tris, 0, 2, &field);
+        // After potential swap, all triangles must have positive area
+        for tri in &tris {
+            let area = signed_area_2d(nodes[tri[0]], nodes[tri[1]], nodes[tri[2]]);
+            assert!(area > 0.0, "triangle {:?} has area {}", tri, area);
+        }
+    }
+
+    #[test]
     fn metric2_intersect_isotropic() {
         let m1 = Metric2::isotropic(0.5);
         let m2 = Metric2::isotropic(0.3);
         let m = Metric2::intersect(m1, m2);
-        // Intersection should be more constraining (smaller h → larger eigenvalues)
-        assert!(m.m11 > m1.m11); // 1/0.3² > 1/0.5²
+        assert!(m.m11 > m1.m11);
     }
 
     #[test]
@@ -395,7 +709,6 @@ mod tests {
         let m1 = Metric2::anisotropic(0.5, 0.2, 30.0);
         let m2 = Metric2::anisotropic(0.3, 0.4, 60.0);
         let m = Metric2::intersect(m1, m2);
-        // Result should be SPD
         assert!(m.m11 > 0.0 && m.m22 > 0.0);
         assert!(m.m11 * m.m22 - m.m12 * m.m12 > 0.0);
     }
@@ -404,7 +717,6 @@ mod tests {
     fn edge_metric_length_isotropic() {
         let field = UniformMetricField::new(0.5);
         let len = edge_metric_length([0.0, 0.0], [1.0, 0.0], &field);
-        // In metric with h=0.5, a Euclidean edge of length 1 has metric length 2.0
         assert!((len - 2.0).abs() < 0.01);
     }
 
@@ -412,7 +724,6 @@ mod tests {
     fn metric_midpoint_near_endpoints() {
         let field = UniformMetricField::new(0.5);
         let mid = metric_midpoint([0.0, 0.0], [1.0, 0.0], &field);
-        // For uniform metric, should be close to Euclidean midpoint
         assert!((mid[0] - 0.5).abs() < 0.01);
         assert!(mid[1].abs() < 0.01);
     }

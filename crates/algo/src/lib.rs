@@ -35,9 +35,17 @@ pub use frontal_delaunay_2d::FrontalDelaunay2D;
 pub mod bamg_2d;
 pub use bamg_2d::{Bamg2D, Metric2, MetricField2D, UniformMetricField};
 
+/// Delaunay 2-D: Bowyer-Watson triangulation (Gmsh algo 5).
+pub mod delaunay_2d;
+pub use delaunay_2d::Delaunay2D;
+
 /// Quad Paving 2-D: packing of parallelograms / cross-field quads (Gmsh algo 9/11).
 pub mod quad_paving_2d;
 pub use quad_paving_2d::{QuadPaving2D, QuadStrategy};
+
+/// Frontal-Quads 2-D: frontal Delaunay + cross-field quad recombination (Gmsh algo 8).
+pub mod frontal_quads_2d;
+pub use frontal_quads_2d::FrontalQuads2D;
 
 // ─── 3-D volume meshing algorithms ───────────────────────────────────────────
 

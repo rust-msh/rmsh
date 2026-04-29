@@ -32,8 +32,8 @@ use rcad_modeling::builder::{
 };
 use rcad_step::{StepHeader, StepProtocol};
 use rmsh_algo::{
-    CentroidStarMesher3D, Delaunay3D, FrontalDelaunay2D, Frontal3D, Hxt3D,
-    Bamg2D, QuadPaving2D,
+    CentroidStarMesher3D, Delaunay2D, Delaunay3D, FrontalDelaunay2D, Frontal3D, Hxt3D,
+    Bamg2D, FrontalQuads2D, QuadPaving2D,
     LaplacianSmooth,
     MeshAlgoError, MeshOptimizer, MeshParams, Mesher2D, Mesher3D,
     OptimizeParams, Polygon2D, mesh_polygon,
@@ -2854,11 +2854,13 @@ fn model_mesh_generate_impl(
             }
         };
         let domain = Domain2D::from_outer(polygon);
-        // 2D algorithms: 5/6=Frontal-Delaunay, 7=BAMG, 8/9=Quad, else=basic triangulate
+        // 2D algorithms: 5=Delaunay, 6=Frontal-Delaunay, 7=BAMG, 8=Frontal-Quads, 9=Quad-Paving
         match algo_2d {
-            5 | 6 => FrontalDelaunay2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
+            5 => Delaunay2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
+            6 => FrontalDelaunay2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
             7 => Bamg2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
-            8 | 9 => QuadPaving2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
+            8 => FrontalQuads2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
+            9 => QuadPaving2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
             _ => mesh_polygon(&Polygon2D::new(domain.outer().to_vec()), params.element_size)
                     .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?,
         }

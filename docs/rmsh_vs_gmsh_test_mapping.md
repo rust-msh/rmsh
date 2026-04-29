@@ -23,13 +23,24 @@ rmsh (Rust Mesh) 是一个 Rust 网格生成与优化框架，其算法体系、
 | GMSH 算法号 | GMSH 名称 | rmsh 模块 | rmsh 测试函数 | 测试内容 |
 |---|---|---|---|---|
 | 1 | MeshAdapt | `mesh_adapt_2d.rs` | `mesh_adapt_handles_square_with_hole` | 带孔方形域的局部边分裂/折叠/交换 |
+| 5 | Delaunay | `delaunay_2d.rs` | `delaunay_2d_meshes_square` | 方形域 Bowyer-Watson 三角剖分 |
+| 5 | Delaunay | `delaunay_2d.rs` | `delaunay_2d_meshes_with_hole` | 带孔域边界约束三角剖分 |
+| 5 | Delaunay | `delaunay_2d.rs` | `delaunay_2d_name_is_stable` | 模块标识 |
 | 6 | Frontal-Delaunay | `frontal_delaunay_2d.rs` | `frontal_delaunay_handles_l_shape` | L 形域推进波前 |
 | 6 | Frontal-Delaunay | `frontal_delaunay_2d.rs` | `frontal_delaunay_handles_rectangle` | 矩形域推进波前 |
 | 6 | Frontal-Delaunay | `frontal_delaunay_2d.rs` | `frontal_delaunay_handles_hole_domain` | 带孔方域推进波前 |
 | 6 | Frontal-Delaunay | `frontal_delaunay_2d.rs` | `bowyer_watson_insertion_adds_local_triangles` | 逐点插入验证 |
 | 6 | Frontal-Delaunay | `frontal_delaunay_2d.rs` | `segment_intersection_detects_crossing` | 线段相交检测 |
 | 6 | Frontal-Delaunay | `frontal_delaunay_2d.rs` | `frontal_quality_stays_close_to_planar_fallback` | 网格质量退化兜底 |
-| 7 | BAMG | `bamg_2d.rs` | `bamg_metric_affects_density` | 各向同性度量控制密度 |
+| 7 | BAMG | `bamg_2d.rs` | `bamg_metric_affects_density` | 各向异性度量控制密度 (自适应循环) |
+| 7 | BAMG | `bamg_2d.rs` | `bamg_adaptive_loop_converges` | 方形域自适应 split/swap/smooth 收敛 |
+| 7 | BAMG | `bamg_2d.rs` | `bamg_anisotropic_stretches` | 各向异性度量 (1.0, 0.1, 0°) 拉伸验证 |
+| 7 | BAMG | `bamg_2d.rs` | `bamg_metric_swap_preserves_orientation` | 度量驱动的边翻转保向性 |
+| 7 | BAMG | `bamg_2d.rs` | `metric2_intersect_isotropic` / `_anisotropic` | 度量张量相交插值 |
+| 7 | BAMG | `bamg_2d.rs` | `edge_metric_length_isotropic` | 度量空间边长 (2 点 Gauss-Legendre) |
+| 7 | BAMG | `bamg_2d.rs` | `metric_midpoint_near_endpoints` | 度量空间中点计算 |
+| 8 | Frontal-Quads | `frontal_quads_2d.rs` | `frontal_quads_rectangle` | 矩形域三角形→四边形重组 |
+| 8 | Frontal-Quads | `frontal_quads_2d.rs` | `frontal_quads_square` | 方形域四边形网格生成 |
 | 9/11 | Quad Paving | `quad_paving_2d.rs` | `quad_paving_rectangle_produces_quads` | 矩形域四边形生成 |
 
 **GMSH 参考源码**: `meshGFaceDelaunayInsertion.cpp`, `Mesh/meshGFaceQuadqs.cpp`
@@ -142,6 +153,8 @@ rmsh (Rust Mesh) 是一个 Rust 网格生成与优化框架，其算法体系、
 | `tet_mesh.rs` | `neighbor_table_two_tets` / `three_tets` | 邻居表构建 |
 | `tet_mesh.rs` | `apply_2to3_produces_three_tets` | 2→3 翻转 |
 | `tet_mesh.rs` | `apply_3to2_produces_two_tets` | 3→2 翻转 |
+| `tet_mesh.rs` | `bistellar_flip_4_to_4_works` | 4→4 翻转 (4 四面体共享边) |
+| `tet_mesh.rs` | `bistellar_flip_4_to_4_rejects_wrong_count` | 4→4 翻转参数校验 |
 | `tet_mesh.rs` | `tetmesh_flip_activates_on_edge_fan` | 边扇翻转激活 |
 | `tet_mesh.rs` | `quality_parity_with_mesh_version` | 聚合质量指标 |
 | `tet_mesh.rs` | `quality_parity_with_mesh_version` | min_dihedral / sliver_fraction / max_radius_edge |
@@ -324,12 +337,12 @@ rmsh 实现了 GMSH 风格的选项键系统，当前对齐状态记录于 [GMSH
 
 | 类别 | rmsh 测试函数数 | 对应 GMSH 概念数 |
 |---|---|---|
-| 2D 网格算法 | 8 | 4 (algo 1/6/7/9) |
-| 3D 网格算法 | 29 | 4 (algo 1/4/7/10) |
+| 2D 网格算法 | 21 | 6 (algo 1/5/6/7/8/9) |
+| 3D 网格算法 | 31 | 5 (algo 1/4/7/10 + bistellar flips) |
 | Centroid Star (兜底) | 18 | — |
 | Bowyer-Watson 2D | 14 | 1 (Delaunay) |
 | Laplacian 平滑 | 15 | 1 (Smooth) |
-| TetMesh 翻转 | 9 | 1 (Bistellar flips) |
+| TetMesh 翻转 | 11 | 1 (Bistellar flips: 2→3, 3→2, 4→4) |
 | 网格质量优化器 | 14 | 1 (Quality度量 + 拓扑优化) |
 | 质量回归测试 | 3 | 1 (多算法质量基线) |
 | MSH 文件 I/O | 11 | 2 (v2.2 / v4.1) |
@@ -338,4 +351,4 @@ rmsh 实现了 GMSH 风格的选项键系统，当前对齐状态记录于 [GMSH
 | 拓扑分类 | 6 | 1 (classifyFaces) |
 | 端到端流水线 | 5 | 1 (STEP→Mesh→MSH) |
 | Python API + 对比脚本 | 19 脚本 + 8 单元测试 | 1 (gmsh Python API) |
-| **合计** | **~145 测试函数 + ~19 脚本** | **~20 GMSH 功能域** |
+| **合计** | **~156 测试函数 + ~19 脚本** | **~21 GMSH 功能域** |
