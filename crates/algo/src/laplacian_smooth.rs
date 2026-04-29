@@ -188,8 +188,9 @@ fn laplacian_pass(
                 cotangent_centroid(id, neighbors, mesh)?
             }
             LaplacianVariant::Taubin { .. } => {
-                // Taubin is handled via optimize() directly, not here.
-                return Err(MeshAlgoError::NotImplemented);
+                // Taubin uses a uniform pass with the lambda/mu coefficient.
+                // Each individual step is just uniform Laplacian with a specific ω.
+                return laplacian_pass_uniform(mesh, boundary_ids, omega, move_boundary);
             }
         };
 

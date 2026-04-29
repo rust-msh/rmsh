@@ -23,6 +23,13 @@ rmsh (Rust Mesh) 是一个 Rust 网格生成与优化框架，其算法体系、
 | GMSH 算法号 | GMSH 名称 | rmsh 模块 | rmsh 测试函数 | 测试内容 |
 |---|---|---|---|---|
 | 1 | MeshAdapt | `mesh_adapt_2d.rs` | `mesh_adapt_handles_square_with_hole` | 带孔方形域的局部边分裂/折叠/交换 |
+| 1 | MeshAdapt | `mesh_adapt_2d.rs` | `mesh_adapt_simple_square` | 简单方形域自适应循环 |
+| 1 | MeshAdapt | `mesh_adapt_2d.rs` | `split_edge_creates_midpoint` | 边分裂操作符 |
+| 1 | MeshAdapt | `mesh_adapt_2d.rs` | `collapse_edge_merges_nodes` | 边折叠操作符 |
+| 1 | MeshAdapt | `mesh_adapt_2d.rs` | `swap_edge_improves_quality` | 边交换操作符 |
+| 2 | Automatic | *(redirect)* | — | → 转发到 algo 6 (Frontal-Delaunay) |
+| 3 | Initial mesh | *(redirect)* | — | → 转发到 algo 5 (Delaunay) |
+| 4 | Frontal-Quads (legacy) | *(redirect)* | — | → 转发到 algo 8 (Frontal-Quads) |
 | 5 | Delaunay | `delaunay_2d.rs` | `delaunay_2d_meshes_square` | 方形域 Bowyer-Watson 三角剖分 |
 | 5 | Delaunay | `delaunay_2d.rs` | `delaunay_2d_meshes_with_hole` | 带孔域边界约束三角剖分 |
 | 5 | Delaunay | `delaunay_2d.rs` | `delaunay_2d_name_is_stable` | 模块标识 |
@@ -63,6 +70,7 @@ rmsh (Rust Mesh) 是一个 Rust 网格生成与优化框架，其算法体系、
 | 1 | Delaunay | `delaunay_3d.rs` | `refinement_produces_more_elements_than_seed` | Delaunay 细化产出更多单元 |
 | 1 | Delaunay | `delaunay_3d.rs` | 3 个 `solve_3x3_*` | 3x3 线性系统求解器 |
 | 1 | Delaunay | `delaunay_3d.rs` | `tetra_centroid_is_average_of_four_nodes` | 四面体质心 |
+| 3 | Automatic | *(redirect)* | — | → 转发到 algo 1 (Delaunay) |
 | 4 | Frontal 3D | `frontal_3d.rs` | `frontal_3d_generates_mesh` | 立方体推进波前 3D |
 | 10 | HXT | `hxt_3d.rs` | `hilbert_index_progresses_along_diagonal` | Hilbert 排序索引 |
 | 10 | HXT | `hxt_3d.rs` | `hilbert_index_distinguishes_adjacent_points` | Hilbert 区分邻近点 |
@@ -337,8 +345,8 @@ rmsh 实现了 GMSH 风格的选项键系统，当前对齐状态记录于 [GMSH
 
 | 类别 | rmsh 测试函数数 | 对应 GMSH 概念数 |
 |---|---|---|
-| 2D 网格算法 | 21 | 6 (algo 1/5/6/7/8/9) |
-| 3D 网格算法 | 31 | 5 (algo 1/4/7/10 + bistellar flips) |
+| 2D 网格算法 | 29 | 9 (algo 1/2/3/4/5/6/7/8/9) |
+| 3D 网格算法 | 33 | 6 (algo 1/3/4/7/10 + bistellar flips) |
 | Centroid Star (兜底) | 18 | — |
 | Bowyer-Watson 2D | 14 | 1 (Delaunay) |
 | Laplacian 平滑 | 15 | 1 (Smooth) |

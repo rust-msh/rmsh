@@ -33,7 +33,7 @@ use rcad_modeling::builder::{
 use rcad_step::{StepHeader, StepProtocol};
 use rmsh_algo::{
     CentroidStarMesher3D, Delaunay2D, Delaunay3D, FrontalDelaunay2D, Frontal3D, Hxt3D,
-    Bamg2D, FrontalQuads2D, QuadPaving2D,
+    Bamg2D, FrontalQuads2D, MeshAdapt2D, MmgRemesh, QuadPaving2D,
     LaplacianSmooth,
     MeshAlgoError, MeshOptimizer, MeshParams, Mesher2D, Mesher3D,
     OptimizeParams, Polygon2D, mesh_polygon,
@@ -2830,10 +2830,12 @@ fn model_mesh_generate_impl(
     let convert_err = |e: MeshAlgoError| pyo3::exceptions::PyRuntimeError::new_err(e.to_string());
 
     let generated = if dim == 3 {
-        // 3D algorithms: 1=Delaunay, 4=Frontal, 10=HXT, else=CentroidStar(default)
+        // 3D algorithms: 1=Delaunay, 4=Frontal, 7=MMG3D, 10=HXT
+        // 3=Automatic → redirect to 1 (Delaunay)
         match algo_3d {
-            1 => Delaunay3D::default().mesh_3d(&surface, &params).map_err(convert_err)?,
+            1 | 3 => Delaunay3D::default().mesh_3d(&surface, &params).map_err(convert_err)?,
             4 => Frontal3D::default().mesh_3d(&surface, &params).map_err(convert_err)?,
+            7 => MmgRemesh::default().mesh_3d(&surface, &params).map_err(convert_err)?,
             10 => Hxt3D::default().mesh_3d(&surface, &params).map_err(convert_err)?,
             _ => CentroidStarMesher3D.mesh_3d(&surface, &params).map_err(convert_err)?,
         }
@@ -2854,12 +2856,17 @@ fn model_mesh_generate_impl(
             }
         };
         let domain = Domain2D::from_outer(polygon);
-        // 2D algorithms: 5=Delaunay, 6=Frontal-Delaunay, 7=BAMG, 8=Frontal-Quads, 9=Quad-Paving
+        // 2D algorithms: 1=MeshAdapt, 5=Delaunay, 6=Frontal-Delaunay, 7=BAMG,
+        //   8=Frontal-Quads, 9=Quad-Paving
+        // 2=Automatic → redirect to 6 (Frontal-Delaunay)
+        // 3=Initial mesh only → redirect to 5 (Delaunay, coarse)
+        // 4=Frontal-Delaunay for quads (legacy) → redirect to 8 (Frontal-Quads)
         match algo_2d {
-            5 => Delaunay2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
-            6 => FrontalDelaunay2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
+            1 => MeshAdapt2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
+            2 | 6 => FrontalDelaunay2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
+            3 | 5 => Delaunay2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
+            4 | 8 => FrontalQuads2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
             7 => Bamg2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
-            8 => FrontalQuads2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
             9 => QuadPaving2D::default().mesh_2d(&domain, &params).map_err(convert_err)?,
             _ => mesh_polygon(&Polygon2D::new(domain.outer().to_vec()), params.element_size)
                     .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?,

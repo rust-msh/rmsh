@@ -39,10 +39,9 @@
 //!
 //! # Status
 //!
-//! **Mostly implemented** — `mesh_3d()` seeds from CentroidStarMesher3D and runs
-//! `refine_bad_tetrahedra()` with radius-edge-ratio–driven refinement, bistellar
-//! face flips, and quality metric evaluation.  One edge-case refinement path
-//! still returns `NotImplemented`.
+//! **Fully implemented** — `mesh_3d()` seeds from CentroidStarMesher3D and runs
+//! `refine_bad_tetrahedra()` with radius-edge-ratio–driven Delaunay refinement
+//! and bistellar face flips (2-to-3, 3-to-2, 4-to-4).
 
 use rmsh_model::{Element, ElementType, Mesh, Node};
 use std::collections::HashMap;

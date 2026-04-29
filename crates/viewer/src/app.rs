@@ -277,6 +277,7 @@ impl Default for MeshAdapt2DSettings {
 struct FrontalDelaunay2DSettings {
     ideal_triangle_angle_deg: f64,
     front_closure_tol: f64,
+    max_edge_failures: u32,
 }
 
 impl Default for FrontalDelaunay2DSettings {
@@ -285,6 +286,7 @@ impl Default for FrontalDelaunay2DSettings {
         Self {
             ideal_triangle_angle_deg: defaults.ideal_triangle_angle_deg,
             front_closure_tol: defaults.front_closure_tol,
+            max_edge_failures: defaults.max_edge_failures,
         }
     }
 }
@@ -938,6 +940,11 @@ impl RmshApp {
                     egui::DragValue::new(&mut self.frontal_delaunay_2d.front_closure_tol)
                         .range(1.0e-12..=1.0)
                         .speed(1.0e-6),
+                );
+                ui.label("Max edge failures");
+                ui.add(
+                    egui::DragValue::new(&mut self.frontal_delaunay_2d.max_edge_failures)
+                        .range(0..=100),
                 );
             }
             MeshingAlgo2D::Bamg => {
@@ -2425,6 +2432,7 @@ fn mesh_face_async(
         MeshingAlgo2D::FrontalDelaunay => FrontalDelaunay2D {
             ideal_triangle_angle_deg: frontal.ideal_triangle_angle_deg,
             front_closure_tol: frontal.front_closure_tol,
+            max_edge_failures: frontal.max_edge_failures,
         }
         .mesh_2d(&domain, &mesh_params)
         .map_err(|e| e.to_string())?,

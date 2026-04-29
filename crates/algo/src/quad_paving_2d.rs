@@ -104,7 +104,7 @@ impl Mesher2D for QuadPaving2D {
     }
 
     fn mesh_2d(&self, domain: &Domain2D, params: &MeshParams) -> Result<Mesh, MeshAlgoError> {
-        // Fast path: axis-aligned rectangle
+        // Fast path: axis-aligned rectangle → structured quad mesh
         if domain.boundaries.len() == 1 {
             if let Some((min, max)) = is_axis_aligned_rectangle(domain.outer()) {
                 return Ok(structured_quad_mesh_rectangle(
@@ -115,6 +115,16 @@ impl Mesher2D for QuadPaving2D {
             }
         }
 
+        // QuasiStructured (Gmsh algo 11): uses higher cross-field iteration count
+        // and enforces pure-quad output for topological correctness.
+        let (cf_iters, require_pure) = match self.strategy {
+            QuadStrategy::QuasiStructured => (self.cross_field_iterations.max(200), true),
+            QuadStrategy::Recombine => (self.cross_field_iterations, self.require_pure_quad),
+            QuadStrategy::PackingOfParallelograms => {
+                (self.cross_field_iterations, self.require_pure_quad)
+            }
+        };
+
         // Generate base triangle mesh
         let tri_mesh =
             mesh_domain_triangles(domain, params.element_size, params.element_size, 0.0)?;
@@ -124,18 +134,14 @@ impl Mesher2D for QuadPaving2D {
 
         // Compute cross field
         let boundary_edges = extract_boundary_edges(&tris);
-        let cross_field = CrossField::compute(
-            &nodes,
-            &tris,
-            &boundary_edges,
-            self.cross_field_iterations,
-        );
+        let cross_field =
+            CrossField::compute(&nodes, &tris, &boundary_edges, cf_iters);
 
         // Recombine triangles into quads
         let quads = recombine_triangles(&nodes, &tris, &cross_field);
 
         if quads.is_empty() {
-            if self.require_pure_quad {
+            if require_pure {
                 return Err(MeshAlgoError::Generation(
                     "could not form any quads from the triangulation".to_string(),
                 ));
