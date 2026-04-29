@@ -7,3 +7,4 @@ edition.workspace = true
 rmsh-io = { workspace = true }
 rmsh-model = { workspace = true }
 thiserror = { workspace = true }
+rayon = { workspace = true }

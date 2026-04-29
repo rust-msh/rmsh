@@ -76,6 +76,9 @@ web-sys = "0.3"
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports"] }
 
+# Parallelism
+rayon = "1"
+
 [profile.release]
 opt-level = 2
 

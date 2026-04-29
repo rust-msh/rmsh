@@ -30,6 +30,10 @@
 //!
 //! **Not yet implemented** — this module provides the public API skeleton only.
 
+use std::cmp::Ordering;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
+
 use rmsh_model::{Element, ElementType, Mesh, Node};
 
 use crate::planar_meshing::{mesh_domain_triangles, point_in_domain, validate_domain};
@@ -51,6 +55,10 @@ pub struct FrontalDelaunay2D {
 
     /// Tolerance used when testing whether the advancing front has closed.
     pub front_closure_tol: f64,
+
+    /// Maximum number of consecutive failures allowed for a front edge
+    /// before it is permanently discarded.  Defaults to `10`.
+    pub max_edge_failures: u32,
 }
 
 impl Default for FrontalDelaunay2D {
@@ -58,6 +66,7 @@ impl Default for FrontalDelaunay2D {
         Self {
             ideal_triangle_angle_deg: 60.0,
             front_closure_tol: 1e-10,
+            max_edge_failures: 10,
         }
     }
 }
@@ -114,11 +123,14 @@ impl Mesher2D for FrontalDelaunay2D {
         let mut front = Front::from_domain(domain, &nodes);
         let mut front_tris: Vec<[usize; 3]> = Vec::new();
         let mut iter_count = 0usize;
-        let max_iters = front.edges.len().saturating_mul(64).max(2048);
+        let init_edge_count = front.active.len();
+        let max_iters = (init_edge_count as u64)
+            .saturating_mul(128)
+            .saturating_add(4096) as usize;
 
         while !front.is_empty() && iter_count < max_iters {
             iter_count += 1;
-            let Some((a, b, n)) = front.pop_shortest(&nodes) else {
+            let Some((a, b, n)) = front.pop_shortest() else {
                 break;
             };
             let pa = nodes[a];
@@ -154,27 +166,32 @@ impl Mesher2D for FrontalDelaunay2D {
             };
 
             if c == a || c == b {
+                front.requeue_edge(a, b, n, &nodes, self.max_edge_failures);
                 continue;
             }
 
             let pc = nodes[c];
             let area2 = oriented_area2(pa, pb, pc).abs();
             if area2 < 1e-12 {
+                front.requeue_edge(a, b, n, &nodes, self.max_edge_failures);
                 continue;
             }
 
             if min_angle_triangle_deg(pa, pb, pc) < 5.0 {
+                front.requeue_edge(a, b, n, &nodes, self.max_edge_failures);
                 continue;
             }
 
             let centroid = [(pa[0] + pb[0] + pc[0]) / 3.0, (pa[1] + pb[1] + pc[1]) / 3.0];
             if !point_in_domain(domain, centroid) {
+                front.requeue_edge(a, b, n, &nodes, self.max_edge_failures);
                 continue;
             }
 
             if front.intersects_existing_edge(&nodes, a, c)
                 || front.intersects_existing_edge(&nodes, c, b)
             {
+                front.requeue_edge(a, b, n, &nodes, self.max_edge_failures);
                 continue;
             }
 
@@ -259,20 +276,56 @@ impl Mesher2D for FrontalDelaunay2D {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-/// The advancing front: a doubly-linked list of oriented half-edges.
+/// A front edge with the metadata needed for heap-based shortest-edge lookup.
+#[derive(Clone, Copy)]
+struct FrontEdge {
+    /// `f64::to_bits(edge_length_sq)` — preserves ordering for positive lengths.
+    len_bits: u64,
+    a: usize,
+    b: usize,
+    normal: [f64; 2],
+}
+
+impl Ord for FrontEdge {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.len_bits.cmp(&other.len_bits)
+    }
+}
+impl PartialOrd for FrontEdge {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl PartialEq for FrontEdge {
+    fn eq(&self, other: &Self) -> bool {
+        self.len_bits == other.len_bits
+    }
+}
+impl Eq for FrontEdge {}
+
+/// The advancing front: a min-heap of oriented half-edges with a companion
+/// active-set for O(1) cancellation testing.
 ///
-/// Each entry records the two endpoint node indices and the inward-pointing
-/// unit normal of the front edge.
+/// The heap gives O(log n) shortest-edge pop.  The `active` set tracks which
+/// edges are still live; stale heap entries are skipped on pop.
 #[allow(dead_code)]
 struct Front {
-    /// List of active front edges: `(node_a, node_b, inward_normal)`.
-    edges: Vec<(usize, usize, [f64; 2])>,
+    /// Active (live) edge keys for fast membership testing.
+    active: HashSet<(usize, usize)>,
+    /// Min-heap of all ever-inserted edges (including cancelled ones).
+    heap: BinaryHeap<Reverse<FrontEdge>>,
+    /// Per-edge consecutive failure counter (avoids infinite requeue loops).
+    fail_count: HashMap<(usize, usize), u32>,
 }
 
 #[allow(dead_code)]
 impl Front {
     fn new() -> Self {
-        Self { edges: Vec::new() }
+        Self {
+            active: HashSet::new(),
+            heap: BinaryHeap::new(),
+            fail_count: HashMap::new(),
+        }
     }
 
     /// Initialize the front from the domain boundary.
@@ -289,52 +342,84 @@ impl Front {
                 let a = offset + i;
                 let b = offset + (i + 1) % n;
                 let normal = edge_inward_normal(domain, nodes[a], nodes[b]);
-                front.edges.push((a, b, normal));
+                front.push_edge(a, b, normal, nodes);
             }
             offset += n;
         }
         front
     }
 
-    /// Return `true` when the front contains no more edges.
+    /// Return `true` when the front contains no more live edges.
     fn is_empty(&self) -> bool {
-        self.edges.is_empty()
+        self.active.is_empty()
     }
 
-    /// Pop the shortest edge from the front.
-    fn pop_shortest(&mut self, nodes: &[[f64; 2]]) -> Option<(usize, usize, [f64; 2])> {
-        if self.edges.is_empty() {
-            return None;
+    /// Push a new edge onto the heap and mark it active.
+    fn push_edge(&mut self, a: usize, b: usize, normal: [f64; 2], nodes: &[[f64; 2]]) {
+        if !self.active.insert((a, b)) {
+            return; // already active
         }
-        let mut best_idx = 0usize;
-        let mut best_len2 = f64::INFINITY;
-        for (i, (a, b, _)) in self.edges.iter().enumerate() {
-            let dx = nodes[*a][0] - nodes[*b][0];
-            let dy = nodes[*a][1] - nodes[*b][1];
-            let l2 = dx * dx + dy * dy;
-            if l2 < best_len2 {
-                best_len2 = l2;
-                best_idx = i;
+        let dx = nodes[a][0] - nodes[b][0];
+        let dy = nodes[a][1] - nodes[b][1];
+        let len_bits = f64::to_bits(dx * dx + dy * dy);
+        self.heap.push(Reverse(FrontEdge {
+            len_bits,
+            a,
+            b,
+            normal,
+        }));
+    }
+
+    /// Pop the shortest live edge from the front.
+    ///
+    /// Skips stale heap entries whose edge has been cancelled.
+    fn pop_shortest(&mut self) -> Option<(usize, usize, [f64; 2])> {
+        while let Some(Reverse(edge)) = self.heap.pop() {
+            if !self.active.remove(&(edge.a, edge.b)) {
+                continue; // stale entry
             }
+            self.fail_count.remove(&(edge.a, edge.b));
+            return Some((edge.a, edge.b, edge.normal));
         }
-        Some(self.edges.swap_remove(best_idx))
+        None
     }
 
+    /// Re-insert a popped edge that failed to produce a valid triangle.
+    ///
+    /// If the edge has exceeded `max_failures` consecutive failures it is
+    /// permanently discarded.
+    fn requeue_edge(
+        &mut self,
+        a: usize,
+        b: usize,
+        normal: [f64; 2],
+        nodes: &[[f64; 2]],
+        max_failures: u32,
+    ) {
+        let key = (a, b);
+        let count = self.fail_count.entry(key).or_insert(0);
+        if *count >= max_failures {
+            self.fail_count.remove(&key);
+            return; // discarded permanently
+        }
+        *count += 1;
+        self.push_edge(a, b, normal, nodes);
+    }
+
+    /// Add edge `(a, b)` to the front, or cancel it if the reverse edge
+    /// `(b, a)` is already active.
     fn add_or_cancel_edge(&mut self, domain: &Domain2D, nodes: &[[f64; 2]], a: usize, b: usize) {
-        if let Some(i) = self
-            .edges
-            .iter()
-            .position(|(u, v, _)| *u == b && *v == a)
-        {
-            self.edges.swap_remove(i);
+        if self.active.remove(&(b, a)) {
+            // Reverse edge was active → cancel both: don't add (a, b).
             return;
         }
-        let n = edge_inward_normal(domain, nodes[a], nodes[b]);
-        self.edges.push((a, b, n));
+        let normal = edge_inward_normal(domain, nodes[a], nodes[b]);
+        self.push_edge(a, b, normal, nodes);
     }
 
+    /// Test whether the segment `(a, b)` intersects any live edge of the front.
     fn intersects_existing_edge(&self, nodes: &[[f64; 2]], a: usize, b: usize) -> bool {
-        for (u, v, _) in &self.edges {
+        for (u, v) in &self.active {
             if *u == a || *u == b || *v == a || *v == b {
                 continue;
             }

@@ -79,7 +79,7 @@ impl LaplacianSmooth {
 // ─── Variant enum ─────────────────────────────────────────────────────────────
 
 /// The smoothing weighting scheme.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum LaplacianVariant {
     /// Unweighted centroid average (fastest, may shrink mesh).
     #[default]
@@ -90,12 +90,15 @@ pub enum LaplacianVariant {
 
     /// Taubin λ/μ scheme: alternating positive (`λ`) and negative (`μ`) steps
     /// to prevent volume shrinkage.
+    ///
+    /// Each iteration does a λ-step (positive relaxation) followed by a μ-step
+    /// (negative relaxation).  With `|μ| > λ` the scheme preserves volume while
+    /// smoothing high-frequency noise.
     Taubin {
         /// Positive step size (`λ > 0`).  Typical: `0.5`.
-        lambda: u32,
-        /// Negative step size (`μ < 0`, stored as negative integer in milliradians
-        /// for `Copy` compatibility — cast back to `f64 / 1000.0`).
-        mu_milli: i32,
+        lambda: f64,
+        /// Negative step size (`μ < 0`).  Typical: `-0.53`.
+        mu: f64,
     },
 }
 
@@ -109,17 +112,41 @@ impl MeshOptimizer for LaplacianSmooth {
     fn optimize(&self, mesh: &mut Mesh, params: &OptimizeParams) -> Result<(), MeshAlgoError> {
         let boundary_node_ids = collect_boundary_nodes(mesh);
 
-        for _iter in 0..params.iterations {
-            let max_displacement = laplacian_pass(
-                mesh,
-                &boundary_node_ids,
-                self.omega,
-                &self.variant,
-                params.move_boundary_nodes,
-            )?;
-
-            if max_displacement < params.tolerance {
-                break;
+        match &self.variant {
+            LaplacianVariant::Taubin { lambda, mu } => {
+                // Taubin: alternating positive (λ) and negative (μ) passes.
+                // The two-pass pair is one "iteration".
+                for _iter in 0..params.iterations {
+                    let d1 = laplacian_pass_uniform(
+                        mesh,
+                        &boundary_node_ids,
+                        *lambda,
+                        params.move_boundary_nodes,
+                    )?;
+                    let d2 = laplacian_pass_uniform(
+                        mesh,
+                        &boundary_node_ids,
+                        *mu,
+                        params.move_boundary_nodes,
+                    )?;
+                    if d1.max(d2) < params.tolerance {
+                        break;
+                    }
+                }
+            }
+            _ => {
+                for _iter in 0..params.iterations {
+                    let max_displacement = laplacian_pass(
+                        mesh,
+                        &boundary_node_ids,
+                        self.omega,
+                        &self.variant,
+                        params.move_boundary_nodes,
+                    )?;
+                    if max_displacement < params.tolerance {
+                        break;
+                    }
+                }
             }
         }
 
@@ -158,11 +185,10 @@ fn laplacian_pass(
         let new_pos = match variant {
             LaplacianVariant::Uniform => uniform_centroid(id, neighbors, mesh)?,
             LaplacianVariant::Cotangent => {
-                // TODO: cotangent-weighted centroid
-                return Err(MeshAlgoError::NotImplemented);
+                cotangent_centroid(id, neighbors, mesh)?
             }
             LaplacianVariant::Taubin { .. } => {
-                // TODO: alternating λ/μ steps
+                // Taubin is handled via optimize() directly, not here.
                 return Err(MeshAlgoError::NotImplemented);
             }
         };
@@ -204,6 +230,168 @@ fn uniform_centroid(_id: u64, neighbors: &[u64], mesh: &Mesh) -> Result<[f64; 3]
         sum[2] += nb.position.z;
     }
     Ok([sum[0] / n, sum[1] / n, sum[2] / n])
+}
+
+/// Perform one Laplacian pass with a uniform (unweighted) centroid for all nodes.
+///
+/// Used by the Taubin variant where alternating positive/negative relaxation
+/// factors are applied using the same centroid computation.
+fn laplacian_pass_uniform(
+    mesh: &mut Mesh,
+    boundary_ids: &std::collections::HashSet<u64>,
+    omega: f64,
+    move_boundary: bool,
+) -> Result<f64, MeshAlgoError> {
+    let adjacency = build_node_adjacency(mesh);
+    let mut max_disp = 0.0_f64;
+    let node_ids: Vec<u64> = mesh.nodes.keys().copied().collect();
+
+    for id in node_ids {
+        if !move_boundary && boundary_ids.contains(&id) {
+            continue;
+        }
+        let neighbors = match adjacency.get(&id) {
+            Some(nbrs) if !nbrs.is_empty() => nbrs,
+            _ => continue,
+        };
+
+        let centroid = uniform_centroid(id, neighbors, mesh)?;
+        let node = mesh.nodes.get_mut(&id).unwrap();
+        let old = [node.position.x, node.position.y, node.position.z];
+        let relaxed = [
+            (1.0 - omega) * old[0] + omega * centroid[0],
+            (1.0 - omega) * old[1] + omega * centroid[1],
+            (1.0 - omega) * old[2] + omega * centroid[2],
+        ];
+        node.position.x = relaxed[0];
+        node.position.y = relaxed[1];
+        node.position.z = relaxed[2];
+
+        let dx = relaxed[0] - old[0];
+        let dy = relaxed[1] - old[1];
+        let dz = relaxed[2] - old[2];
+        max_disp = max_disp.max((dx * dx + dy * dy + dz * dz).sqrt());
+    }
+
+    Ok(max_disp)
+}
+
+/// Compute the cotangent of the angle at vertex `opp` in triangle `(u, v, opp)`.
+///
+/// Returns `cot(θ) = dot(u-opp, v-opp) / |cross(u-opp, v-opp)|`.
+/// Returns 0 when the triangle is degenerate (zero area).
+fn cotangent(pu: [f64; 3], pv: [f64; 3], popp: [f64; 3]) -> f64 {
+    let a = [pu[0] - popp[0], pu[1] - popp[1], pu[2] - popp[2]];
+    let b = [pv[0] - popp[0], pv[1] - popp[1], pv[2] - popp[2]];
+    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let cross = [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ];
+    let cross_norm = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+    if cross_norm < 1e-15 {
+        return 0.0;
+    }
+    dot / cross_norm
+}
+
+/// Build a map from each edge to its one or two opposite vertices in triangle
+/// elements of the mesh.
+///
+/// For edge `(a, b)` the map stores `[opp1, opp2]`, where `opp1`/`opp2` are
+/// the third vertices of the one or two triangles sharing that edge.  Boundary
+/// edges have `opp2 == u64::MAX`.
+fn build_edge_triangle_map(mesh: &Mesh) -> std::collections::HashMap<(u64, u64), [u64; 2]> {
+    use std::collections::HashMap;
+    let mut edge_to_opp: HashMap<(u64, u64), Vec<u64>> = HashMap::new();
+    for elem in &mesh.elements {
+        if elem.node_ids.len() == 3 {
+            let ids = &elem.node_ids;
+            let edges = [(ids[0], ids[1], ids[2]),
+                         (ids[1], ids[2], ids[0]),
+                         (ids[0], ids[2], ids[1])];
+            for (u, v, opp) in edges {
+                let key = if u < v { (u, v) } else { (v, u) };
+                edge_to_opp.entry(key).or_default().push(opp);
+            }
+        }
+    }
+    edge_to_opp
+        .into_iter()
+        .map(|(k, v)| {
+            let opp = if v.len() >= 2 {
+                [v[0], v[1]]
+            } else if v.len() == 1 {
+                [v[0], u64::MAX]
+            } else {
+                [u64::MAX, u64::MAX]
+            };
+            (k, opp)
+        })
+        .collect()
+}
+
+/// Compute the cotangent-weighted centroid of a node's neighbours.
+///
+/// Weight `w_ij = (cot(α_ij) + cot(β_ij)) / 2` where `α_ij` and `β_ij` are
+/// the angles opposite edge `(i, j)` in the two adjacent triangles.
+/// Falls back to uniform centroid when no valid cotangent weights exist.
+fn cotangent_centroid(id: u64, neighbors: &[u64], mesh: &Mesh) -> Result<[f64; 3], MeshAlgoError> {
+    let edge_map = build_edge_triangle_map(mesh);
+    let pi = {
+        let n = mesh.nodes.get(&id)
+            .ok_or_else(|| MeshAlgoError::Generation(format!("missing node {id}")))?;
+        [n.position.x, n.position.y, n.position.z]
+    };
+
+    let mut weighted_sum = [0.0_f64; 3];
+    let mut total_weight = 0.0_f64;
+
+    for &j in neighbors {
+        let key = if id < j { (id, j) } else { (j, id) };
+        let opp = edge_map.get(&key).copied().unwrap_or([u64::MAX, u64::MAX]);
+
+        let pj = {
+            let n = mesh.nodes.get(&j)
+                .ok_or_else(|| MeshAlgoError::Generation(format!("missing neighbour node {j}")))?;
+            [n.position.x, n.position.y, n.position.z]
+        };
+
+        let mut w = 0.0_f64;
+        let mut valid_count = 0u32;
+        for &o in &opp {
+            if o != u64::MAX {
+                let po = {
+                    let n = mesh.nodes.get(&o)
+                        .ok_or_else(|| MeshAlgoError::Generation(format!("missing opposite node {o}")))?;
+                    [n.position.x, n.position.y, n.position.z]
+                };
+                let c = cotangent(pi, pj, po);
+                // Only accumulate positive cotangents (negative ones indicate
+                // degenerate or inverted elements).
+                if c > 1e-12 {
+                    w += c;
+                    valid_count += 1;
+                }
+            }
+        }
+        if valid_count > 0 {
+            w /= valid_count as f64;
+            weighted_sum[0] += w * pj[0];
+            weighted_sum[1] += w * pj[1];
+            weighted_sum[2] += w * pj[2];
+            total_weight += w;
+        }
+    }
+
+    if total_weight <= 1e-15 {
+        // Fall back to uniform if cotangent weights are degenerate.
+        return uniform_centroid(id, neighbors, mesh);
+    }
+
+    let inv = 1.0 / total_weight;
+    Ok([weighted_sum[0] * inv, weighted_sum[1] * inv, weighted_sum[2] * inv])
 }
 
 /// Build a node-to-neighbours adjacency map from the element connectivity.
@@ -466,39 +654,47 @@ mod tests {
     // ── Unimplemented variants ────────────────────────────────────────────────
 
     #[test]
-    fn cotangent_variant_returns_not_implemented() {
-        let mut mesh = two_triangle_mesh();
-        let result = LaplacianSmooth::new()
+    fn cotangent_variant_smooths_triangle_mesh() {
+        let mut mesh = uniform_grid_mesh();
+        LaplacianSmooth::new()
             .with_variant(LaplacianVariant::Cotangent)
             .optimize(
                 &mut mesh,
                 &OptimizeParams {
-                    move_boundary_nodes: true, // ensure at least one node is processed
+                    iterations: 10,
+                    move_boundary_nodes: true,
                     ..Default::default()
                 },
-            );
-        assert!(
-            matches!(result, Err(MeshAlgoError::NotImplemented)),
-            "Cotangent should return NotImplemented"
-        );
+            )
+            .expect("Cotangent should succeed");
+        // Node/element counts unchanged.
+        assert_eq!(mesh.node_count(), 9);
+        assert_eq!(mesh.elements_by_dimension(2).len(), 8);
+        // Interior node (id=5) should have moved from (0.5, 0.5) due to
+        // non-uniform cotangent weights on a regular grid.
+        let interior = &mesh.nodes[&5];
+        let moved = (interior.position.x - 0.5).abs() > 1e-6
+            || (interior.position.y - 0.5).abs() > 1e-6;
+        assert!(moved, "interior node should have moved after cotangent smooth");
     }
 
     #[test]
-    fn taubin_variant_returns_not_implemented() {
+    fn taubin_variant_smooths_without_error() {
         let mut mesh = two_triangle_mesh();
         let result = LaplacianSmooth::new()
-            .with_variant(LaplacianVariant::Taubin { lambda: 500, mu_milli: -530 })
+            .with_variant(LaplacianVariant::Taubin { lambda: 0.5, mu: -0.53 })
             .optimize(
                 &mut mesh,
                 &OptimizeParams {
-                    move_boundary_nodes: true, // ensure at least one node is processed
+                    move_boundary_nodes: true,
+                    iterations: 5,
                     ..Default::default()
                 },
             );
-        assert!(
-            matches!(result, Err(MeshAlgoError::NotImplemented)),
-            "Taubin should return NotImplemented"
-        );
+        assert!(result.is_ok(), "Taubin should succeed, got: {result:?}");
+        // Mesh should still have the same number of nodes and elements.
+        assert_eq!(mesh.node_count(), 4);
+        assert_eq!(mesh.element_count(), 2);
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
