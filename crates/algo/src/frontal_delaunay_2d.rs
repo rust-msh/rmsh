@@ -28,7 +28,7 @@
 //!
 //! # Status
 //!
-//! **Not yet implemented** — this module provides the public API skeleton only.
+//! **Fully implemented** — see `FrontalDelaunay2D::mesh_2d()`.
 
 use std::cmp::Ordering;
 use std::cmp::Reverse;

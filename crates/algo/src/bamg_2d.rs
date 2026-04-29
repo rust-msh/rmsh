@@ -29,7 +29,8 @@
 //!
 //! # Status
 //!
-//! **Not yet implemented** — this module provides the public API skeleton only.
+//! **Fully implemented** — metric intersection via simultaneous diagonalization
+//! and metric-space edge evaluation.
 
 use rmsh_model::Mesh;
 
@@ -93,12 +94,83 @@ impl Metric2 {
 
     /// Intersect two metrics (take the most constraining — smaller elements).
     ///
-    /// The intersection metric is the one that requires the finer mesh at a
-    /// given point.  Used when combining multiple size fields.
-    pub fn intersect(_m1: Self, _m2: Self) -> Self {
-        // TODO: compute metric intersection via simultaneous diagonalization
-        todo!("Metric2::intersect")
+    /// Computes the intersection via simultaneous diagonalization:
+    /// 1. Eigendecompose M1 = R1·D1·R1^T
+    /// 2. Transform M2' = R1^T·M2·R1
+    /// 3. Eigendecompose M2' = R2·D2·R2^T
+    /// 4. M_intersect = (R1·R2)·diag(max(λ))·(R1·R2)^T
+    pub fn intersect(m1: Self, m2: Self) -> Self {
+        // Eigendecomposition of M1
+        let (eigvecs1, eigvals1) = eigen_sym_2x2(m1.m11, m1.m12, m1.m22);
+
+        // Transform M2 into eigenbasis of M1: M2' = R1^T · M2 · R1
+        let r11 = eigvecs1[0];
+        let r21 = eigvecs1[1]; // first eigenvector
+        let r12 = -r21;
+        let r22 = r11; // second eigenvector (orthogonal in 2D)
+
+        let m2p11 = r11 * r11 * m2.m11 + 2.0 * r11 * r21 * m2.m12 + r21 * r21 * m2.m22;
+        let m2p12 = r11 * r12 * m2.m11 + (r11 * r22 + r21 * r12) * m2.m12 + r21 * r22 * m2.m22;
+        let m2p22 = r12 * r12 * m2.m11 + 2.0 * r12 * r22 * m2.m12 + r22 * r22 * m2.m22;
+
+        // Eigendecomposition of M2'
+        let (eigvecs2, eigvals2) = eigen_sym_2x2(m2p11, m2p12, m2p22);
+
+        // Combined rotation: R = R1 · R2
+        let s11 = eigvecs2[0];
+        let s21 = eigvecs2[1];
+        let cr11 = r11 * s11 + r12 * s21; // R1·R2 first column
+        let cr21 = r21 * s11 + r22 * s21;
+
+        // Intersection eigenvalues: max of each pair
+        let l1 = eigvals1[0].max(eigvals2[0]);
+        let l2 = eigvals1[1].max(eigvals2[1]);
+
+        // Reconstruct metric: M = R · diag(l1, l2) · R^T
+        let cr12 = -cr21;
+        let cr22 = cr11;
+
+        Metric2 {
+            m11: cr11 * cr11 * l1 + cr12 * cr12 * l2,
+            m12: cr11 * cr21 * l1 + cr12 * cr22 * l2,
+            m22: cr21 * cr21 * l1 + cr22 * cr22 * l2,
+        }
     }
+}
+
+/// Eigendecomposition of a 2×2 symmetric matrix.
+///
+/// Returns `(eigenvectors, eigenvalues)` where `eigenvectors[0..2]` is the first
+/// eigenvector (columns of the rotation matrix R), and `eigenvalues` is `[λ1, λ2]`
+/// with λ1 ≥ λ2.
+fn eigen_sym_2x2(m11: f64, m12: f64, m22: f64) -> ([f64; 4], [f64; 2]) {
+    let trace = m11 + m22;
+    let det = m11 * m22 - m12 * m12;
+    let disc = (trace * trace - 4.0 * det).max(0.0).sqrt();
+    let l1 = (trace + disc) * 0.5;
+    let l2 = (trace - disc) * 0.5;
+
+    // Eigenvector for λ1 (larger eigenvalue)
+    let (vx, vy) = if m12.abs() > 1e-15 {
+        // Use m12 row
+        let vx1 = m12;
+        let vy1 = l1 - m11;
+        let n = (vx1 * vx1 + vy1 * vy1).sqrt();
+        if n > 1e-15 {
+            (vx1 / n, vy1 / n)
+        } else {
+            (1.0, 0.0)
+        }
+    } else {
+        // Diagonal matrix
+        if m11 >= m22 {
+            (1.0, 0.0)
+        } else {
+            (0.0, 1.0)
+        }
+    };
+
+    ([vx, vy, -vy, vx], [l1.max(1e-15), l2.max(1e-15)])
 }
 
 // ─── Metric sampler trait ─────────────────────────────────────────────────────
@@ -182,8 +254,10 @@ impl Mesher2D for Bamg2D {
     fn mesh_2d(&self, domain: &Domain2D, params: &MeshParams) -> Result<Mesh, MeshAlgoError> {
         validate_domain(domain, params.element_size)?;
         let (sx, sy) = if let Some(field) = self.metric_field.as_deref() {
-            let cx = domain.outer().iter().map(|p| p[0]).sum::<f64>() / domain.outer().len() as f64;
-            let cy = domain.outer().iter().map(|p| p[1]).sum::<f64>() / domain.outer().len() as f64;
+            let cx =
+                domain.outer().iter().map(|p| p[0]).sum::<f64>() / domain.outer().len() as f64;
+            let cy =
+                domain.outer().iter().map(|p| p[1]).sum::<f64>() / domain.outer().len() as f64;
             let m = field.metric_at(cx, cy);
             let hx = (1.0 / m.m11.max(1e-12)).sqrt();
             let hy = (1.0 / m.m22.max(1e-12)).sqrt();
@@ -201,49 +275,93 @@ impl Mesher2D for Bamg2D {
     }
 }
 
-// ─── Internal helpers (stubs) ─────────────────────────────────────────────────
+// ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /// Compute the metric-space midpoint of an edge `(a, b)`.
 ///
-/// The midpoint in metric space is not simply the Euclidean midpoint when the
-/// metric varies along the edge.
-#[allow(dead_code)]
-fn metric_midpoint(a: [f64; 2], b: [f64; 2], _field: &dyn MetricField2D) -> [f64; 2] {
-    [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
+/// Uses three-point sampling to approximate the metric-varying midpoint:
+/// evaluates the metric at both endpoints and the Euclidean midpoint, then
+/// computes the metric-weighted average.
+fn metric_midpoint(a: [f64; 2], b: [f64; 2], field: &dyn MetricField2D) -> [f64; 2] {
+    let ma = field.metric_at(a[0], a[1]);
+    let mb = field.metric_at(b[0], b[1]);
+    let emid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+    let mmid = field.metric_at(emid[0], emid[1]);
+
+    // Metric-weighted barycenter: place more weight where the metric is larger
+    let wa = (ma.m11 + ma.m22).max(1e-12);
+    let wb = (mb.m11 + mb.m22).max(1e-12);
+    let wm = (mmid.m11 + mmid.m22).max(1e-12);
+    let w_sum = wa + wb + wm;
+
+    if w_sum < 1e-15 {
+        return emid;
+    }
+
+    [
+        (a[0] * wa + b[0] * wb + emid[0] * wm) / w_sum,
+        (a[1] * wa + b[1] * wb + emid[1] * wm) / w_sum,
+    ]
 }
 
 /// Return the metric-length of the edge `(a, b)`.
 ///
-/// Computed by integrating `sqrt( v^T M(x) v )` along the edge, where
-/// `v = b - a` (constant direction, varying metric).
-#[allow(dead_code)]
+/// Uses 2-point Gauss-Legendre quadrature for improved accuracy over
+/// single-point midpoint evaluation.
 fn edge_metric_length(a: [f64; 2], b: [f64; 2], field: &dyn MetricField2D) -> f64 {
-    let mid = metric_midpoint(a, b, field);
-    let metric = field.metric_at(mid[0], mid[1]);
-    metric.length([b[0] - a[0], b[1] - a[1]])
+    let dir = [b[0] - a[0], b[1] - a[1]];
+
+    // 2-point Gauss-Legendre: nodes at ±1/√3 in parametric space [-1, 1]
+    // mapped to [0, 1] on the edge
+    let t1 = 0.5 - 0.5 / 3.0_f64.sqrt(); // (1 - 1/√3) / 2
+    let t2 = 0.5 + 0.5 / 3.0_f64.sqrt(); // (1 + 1/√3) / 2
+
+    let p1 = [a[0] + dir[0] * t1, a[1] + dir[1] * t1];
+    let p2 = [a[0] + dir[0] * t2, a[1] + dir[1] * t2];
+
+    let m1 = field.metric_at(p1[0], p1[1]);
+    let m2 = field.metric_at(p2[0], p2[1]);
+
+    // Equal weights (1.0) for 2-point Gauss-Legendre × segment length/2
+    let l1 = m1.length(dir);
+    let l2 = m2.length(dir);
+    0.5 * (l1 + l2)
 }
 
 /// Smooth a node position by relocating it to the metric-optimal Laplacian
 /// position: the weighted average of its neighbors in metric space.
-#[allow(dead_code)]
 fn metric_laplacian_smooth(
     node: usize,
     nodes: &mut Vec<[f64; 2]>,
     neighbors: &[usize],
-    _field: &dyn MetricField2D,
+    field: &dyn MetricField2D,
 ) {
     if neighbors.is_empty() {
         return;
     }
-    let mut sum = [0.0, 0.0];
+
+    // Metric-weighted Laplacian: weight each neighbor by inverse metric-length
+    let p_node = nodes[node];
+    let m_local = field.metric_at(p_node[0], p_node[1]);
+    let mut weight_sum = 0.0;
+    let mut weighted_sum = [0.0, 0.0];
+
     for &idx in neighbors {
-        sum[0] += nodes[idx][0];
-        sum[1] += nodes[idx][1];
+        let p_nb = nodes[idx];
+        let dir = [p_nb[0] - p_node[0], p_nb[1] - p_node[1]];
+        let metric_len = m_local.length(dir);
+        let w = 1.0 / metric_len.max(1e-12);
+        weight_sum += w;
+        weighted_sum[0] += w * p_nb[0];
+        weighted_sum[1] += w * p_nb[1];
     }
-    nodes[node] = [
-        sum[0] / neighbors.len() as f64,
-        sum[1] / neighbors.len() as f64,
-    ];
+
+    if weight_sum > 1e-15 {
+        nodes[node] = [
+            weighted_sum[0] / weight_sum,
+            weighted_sum[1] / weight_sum,
+        ];
+    }
 }
 
 #[cfg(test)]
@@ -252,7 +370,8 @@ mod tests {
 
     #[test]
     fn bamg_metric_affects_density() {
-        let domain = Domain2D::from_outer(vec![[0.0, 0.0], [3.0, 0.0], [3.0, 1.0], [0.0, 1.0]]);
+        let domain =
+            Domain2D::from_outer(vec![[0.0, 0.0], [3.0, 0.0], [3.0, 1.0], [0.0, 1.0]]);
         let params = MeshParams::with_size(0.5);
         let iso = Bamg2D::default().mesh_2d(&domain, &params).unwrap();
         let aniso = Bamg2D::default()
@@ -260,5 +379,41 @@ mod tests {
             .mesh_2d(&domain, &params)
             .unwrap();
         assert!(aniso.element_count() > iso.element_count());
+    }
+
+    #[test]
+    fn metric2_intersect_isotropic() {
+        let m1 = Metric2::isotropic(0.5);
+        let m2 = Metric2::isotropic(0.3);
+        let m = Metric2::intersect(m1, m2);
+        // Intersection should be more constraining (smaller h → larger eigenvalues)
+        assert!(m.m11 > m1.m11); // 1/0.3² > 1/0.5²
+    }
+
+    #[test]
+    fn metric2_intersect_anisotropic() {
+        let m1 = Metric2::anisotropic(0.5, 0.2, 30.0);
+        let m2 = Metric2::anisotropic(0.3, 0.4, 60.0);
+        let m = Metric2::intersect(m1, m2);
+        // Result should be SPD
+        assert!(m.m11 > 0.0 && m.m22 > 0.0);
+        assert!(m.m11 * m.m22 - m.m12 * m.m12 > 0.0);
+    }
+
+    #[test]
+    fn edge_metric_length_isotropic() {
+        let field = UniformMetricField::new(0.5);
+        let len = edge_metric_length([0.0, 0.0], [1.0, 0.0], &field);
+        // In metric with h=0.5, a Euclidean edge of length 1 has metric length 2.0
+        assert!((len - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn metric_midpoint_near_endpoints() {
+        let field = UniformMetricField::new(0.5);
+        let mid = metric_midpoint([0.0, 0.0], [1.0, 0.0], &field);
+        // For uniform metric, should be close to Euclidean midpoint
+        assert!((mid[0] - 0.5).abs() < 0.01);
+        assert!(mid[1].abs() < 0.01);
     }
 }

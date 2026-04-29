@@ -54,7 +54,16 @@ rmsh (Rust Mesh) 是一个 Rust 网格生成与优化框架，其算法体系、
 | 1 | Delaunay | `delaunay_3d.rs` | `tetra_centroid_is_average_of_four_nodes` | 四面体质心 |
 | 4 | Frontal 3D | `frontal_3d.rs` | `frontal_3d_generates_mesh` | 立方体推进波前 3D |
 | 10 | HXT | `hxt_3d.rs` | `hilbert_index_progresses_along_diagonal` | Hilbert 排序索引 |
+| 10 | HXT | `hxt_3d.rs` | `hilbert_index_distinguishes_adjacent_points` | Hilbert 区分邻近点 |
+| 10 | HXT | `hxt_3d.rs` | `hilbert_index_is_deterministic` | Hilbert 确定性 |
+| 10 | HXT | `hxt_3d.rs` | `hilbert_index_out_of_range_clamps` | Hilbert 边界截断 |
+| 10 | HXT | `hxt_3d.rs` | `grid_coloring_eight_colors` | 3D 8色网格着色 |
+| 10 | HXT | `hxt_3d.rs` | `adjacent_cells_have_different_colors` | 相邻网格颜色不同 |
+| 10 | HXT | `hxt_3d.rs` | `tet_ownership_exclusive_access` | CAS 所有权互斥 |
+| 10 | HXT | `hxt_3d.rs` | `split_containing_tet_works` | 四面体 1→4 分裂 |
+| 10 | HXT | `hxt_3d.rs` | `split_containing_tet_outside_point` | 外部点无分裂 |
 | 10 | HXT | `hxt_3d.rs` | `hxt_3d_generates_mesh` | 立方体 HXT 并行网格 |
+| 10 | HXT | `hxt_3d.rs` | `hxt_3d_single_threaded_works` | 单线程模式 |
 | 7 | MMG3D | `mmg_remesh.rs` | `classify_edges_buckets_metric_lengths` | 边长分类 |
 | 7 | MMG3D | `mmg_remesh.rs` | `mmg_remesh_generates_volume_mesh` | 立方体 MMG3D 网格 |
 
@@ -117,8 +126,11 @@ rmsh (Rust Mesh) 是一个 Rust 网格生成与优化框架，其算法体系、
 | `laplacian_smooth.rs` | `smooth_returns_ok_on_empty_mesh` | 空网格稳定 |
 | `laplacian_smooth.rs` | `uniform_smooth_on_regular_grid_converges` | 规则网格收敛 |
 | `laplacian_smooth.rs` | `uniform_smooth_with_omega_zero_point_five_keeps_nodes_inside_domain` | 松弛因子 ω=0.5 |
-| `laplacian_smooth.rs` | `cotangent_variant_returns_not_implemented` | Cotangent 加权变体（未实现） |
-| `laplacian_smooth.rs` | `taubin_variant_returns_not_implemented` | Taubin 变体（未实现） |
+| `laplacian_smooth.rs` | `cotangent_variant_smooths_triangle_mesh` | Cotangent 加权变体（已实现） |
+| `laplacian_smooth.rs` | `taubin_variant_smooths_without_error` | Taubin λ/μ 变体（已实现） |
+| `laplacian_smooth.rs` | `build_node_adjacency_two_triangles` | 节点邻接表构建 |
+| `laplacian_smooth.rs` | `build_edge_triangle_map` | 边→三角形映射表 |
+| `laplacian_smooth.rs` | `collect_boundary_nodes_two_triangles` | 边界节点收集 |
 
 **GMSH 参考源码**: `Mesh/qualityMeasures.cpp`
 
@@ -134,11 +146,25 @@ rmsh (Rust Mesh) 是一个 Rust 网格生成与优化框架，其算法体系、
 | `tet_mesh.rs` | `quality_parity_with_mesh_version` | 聚合质量指标 |
 | `tet_mesh.rs` | `quality_parity_with_mesh_version` | min_dihedral / sliver_fraction / max_radius_edge |
 
-### 网格质量优化器（尚未实现）
+### 网格质量优化器（已实现）
 
-| rmsh 模块 | GMSH 参考 | 状态 |
+| rmsh 模块 | rmsh 测试函数 | 对应 GMSH |
 |---|---|---|
-| `mesh_optimize.rs` | `Mesh/qualityMeasures.cpp`, `Mesh/meshGRegionDelaunayInsertion.cpp` | **骨架仅，未实现** |
+| `mesh_optimize.rs` | `test_triangle_min_angle_equilateral` | 三角形最小角指标 |
+| `mesh_optimize.rs` | `test_triangle_scaled_jacobian_equilateral` | 三角形 Scaled Jacobian |
+| `mesh_optimize.rs` | `test_triangle_aspect_ratio_unit` / `_degenerate` | 三角形纵横比 |
+| `mesh_optimize.rs` | `test_tet_min_dihedral_regular` | 四面体最小二面角 |
+| `mesh_optimize.rs` | `test_radius_edge_ratio_regular` | 四面体半径边比 |
+| `mesh_optimize.rs` | `test_tet_scaled_jacobian_regular` | 四面体 Scaled Jacobian |
+| `mesh_optimize.rs` | `test_tet_aspect_ratio_regular` | 四面体纵横比 |
+| `mesh_optimize.rs` | `test_should_swap_2d_improves_quality` | 2D 边翻转 |
+| `mesh_optimize.rs` | `test_node_insertion_split_triangle` | 节点插入（形心分裂） |
+| `mesh_optimize.rs` | `test_edge_collapse_short_edge` | 短边折叠 |
+| `mesh_optimize.rs` | `test_optimizer_on_empty_mesh` | 空网格稳定 |
+| `mesh_optimize.rs` | `test_optimizer_triangle_quality` | 三角形质量优化 |
+| `mesh_optimize.rs` | `test_quality_improvement` | 质量提升验证 |
+
+**GMSH 参考源码**: `Mesh/qualityMeasures.cpp`, `Mesh/meshGRegionDelaunayInsertion.cpp`
 
 ### 质量回归测试
 
@@ -299,14 +325,17 @@ rmsh 实现了 GMSH 风格的选项键系统，当前对齐状态记录于 [GMSH
 | 类别 | rmsh 测试函数数 | 对应 GMSH 概念数 |
 |---|---|---|
 | 2D 网格算法 | 8 | 4 (algo 1/6/7/9) |
-| 3D 网格算法 | 19 | 4 (algo 1/4/7/10) |
+| 3D 网格算法 | 29 | 4 (algo 1/4/7/10) |
 | Centroid Star (兜底) | 18 | — |
 | Bowyer-Watson 2D | 14 | 1 (Delaunay) |
-| 网格优化 + 质量 | 20 | 2 (Smooth / Quality) |
+| Laplacian 平滑 | 15 | 1 (Smooth) |
+| TetMesh 翻转 | 9 | 1 (Bistellar flips) |
+| 网格质量优化器 | 14 | 1 (Quality度量 + 拓扑优化) |
+| 质量回归测试 | 3 | 1 (多算法质量基线) |
 | MSH 文件 I/O | 11 | 2 (v2.2 / v4.1) |
 | STEP I/O + 严格模式 | 12 | 1 (gmsh_strict) |
 | 单元类型映射 | 4 | 8 (GMSH type ID 族) |
 | 拓扑分类 | 6 | 1 (classifyFaces) |
 | 端到端流水线 | 5 | 1 (STEP→Mesh→MSH) |
 | Python API + 对比脚本 | 19 脚本 + 8 单元测试 | 1 (gmsh Python API) |
-| **合计** | **~108 测试函数 + ~19 脚本** | **~20 GMSH 功能域** |
+| **合计** | **~145 测试函数 + ~19 脚本** | **~20 GMSH 功能域** |

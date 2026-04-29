@@ -32,8 +32,8 @@
 //!
 //! # Status
 //!
-//! The basic (unweighted) Laplacian smoother is trivially implementable.
-//! The weighted and Taubin variants are left as stubs.
+//! **All three variants implemented** — `Uniform`, `Cotangent`-weighted, and
+//! `Taubin` λ/μ scheme with alternating relaxation passes.
 
 use rmsh_model::{Mesh, Node};
 

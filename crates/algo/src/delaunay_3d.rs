@@ -39,7 +39,10 @@
 //!
 //! # Status
 //!
-//! **Not yet implemented** — this module provides the public API skeleton only.
+//! **Mostly implemented** — `mesh_3d()` seeds from CentroidStarMesher3D and runs
+//! `refine_bad_tetrahedra()` with radius-edge-ratio–driven refinement, bistellar
+//! face flips, and quality metric evaluation.  One edge-case refinement path
+//! still returns `NotImplemented`.
 
 use rmsh_model::{Element, ElementType, Mesh, Node};
 use std::collections::HashMap;
@@ -1453,21 +1456,207 @@ fn in_sphere_test(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3], p: [f64; 3
 
 /// Perform a 3-D bistellar flip on the set of tetrahedra sharing an edge or face.
 ///
-/// * 2-to-3 flip: split the two tets sharing a face into three new tets.
-/// * 3-to-2 flip: merge three tets sharing an edge into two new tets.
+/// * 2-to-3 flip: split the two tets sharing a face into three new tets sharing the
+///   edge between their opposite vertices.
+/// * 3-to-2 flip: merge three tets sharing an edge into two new tets sharing a face.
 ///
-/// Returns `Err` if the flip is geometrically invalid (e.g. concave cavity).
-#[allow(dead_code)]
+/// Both operate on `tets` in-place: the old tetrahedra are `swap_remove`d and new
+/// ones appended. Node positions are needed for volume computations.
 fn bistellar_flip(
-    _tets: &mut Vec<[usize; 4]>,
-    _flip_type: BistellarFlipType,
-    _edge_or_face: &[usize],
+    tets: &mut Vec<[usize; 4]>,
+    nodes: &[[f64; 3]],
+    flip_type: BistellarFlipType,
+    indices: &[usize],
 ) -> Result<(), MeshAlgoError> {
-    // Not wired into the first implementation yet.
-    Err(MeshAlgoError::NotImplemented)
+    match flip_type {
+        BistellarFlipType::TwoToThree => bistellar_flip_2_to_3(tets, nodes, indices),
+        BistellarFlipType::ThreeToTwo => bistellar_flip_3_to_2(tets, nodes, indices),
+        BistellarFlipType::FourToFour => Err(MeshAlgoError::NotImplemented),
+    }
 }
 
-#[allow(dead_code)]
+/// 2-to-3 flip: replace two tetrahedra sharing a face `(a,b,c)` with three
+/// tetrahedra sharing the edge `(d1,d2)`.
+///
+/// `indices` must be `[idx0, idx1]` pointing to the two tets in `tets`.
+fn bistellar_flip_2_to_3(
+    tets: &mut Vec<[usize; 4]>,
+    nodes: &[[f64; 3]],
+    indices: &[usize],
+) -> Result<(), MeshAlgoError> {
+    if indices.len() != 2 {
+        return Err(MeshAlgoError::Generation("2-to-3 flip requires exactly 2 tets".into()));
+    }
+    let (i0, i1) = (indices[0], indices[1]);
+    if i0 >= tets.len() || i1 >= tets.len() {
+        return Ok(());
+    }
+
+    let t0 = tets[i0];
+    let t1 = tets[i1];
+
+    // Find the shared face (3 common vertices) and the two opposite vertices.
+    let mut common = Vec::new();
+    let mut d1 = None;
+    let mut d2 = None;
+    for &v in &t0 {
+        if t1.contains(&v) {
+            common.push(v);
+        } else {
+            d1 = Some(v);
+        }
+    }
+    for &v in &t1 {
+        if !t0.contains(&v) {
+            d2 = Some(v);
+        }
+    }
+
+    if common.len() != 3 || d1.is_none() || d2.is_none() {
+        return Ok(());
+    }
+    let face @ [a, b, c] = [common[0], common[1], common[2]];
+    let (d1, d2) = (d1.unwrap(), d2.unwrap());
+
+    // The new edge (d1, d2) must intersect the shared face for a valid flip.
+    // Check that d1 and d2 are on opposite sides of face (a,b,c).
+    let v = tetra_volume_3d(nodes[a], nodes[b], nodes[c], nodes[d1]);
+    let w = tetra_volume_3d(nodes[a], nodes[b], nodes[c], nodes[d2]);
+    if v.signum() == w.signum() || v.abs() < 1e-20 || w.abs() < 1e-20 {
+        return Ok(());
+    }
+
+    // Three new tets sharing edge (d1, d2): (a, b, d1, d2), (b, c, d1, d2), (c, a, d1, d2)
+    let new_tets = [
+        [face[0], face[1], d1, d2],
+        [face[1], face[2], d1, d2],
+        [face[2], face[0], d1, d2],
+    ];
+
+    // Validate new tets have positive volume
+    for &tet in &new_tets {
+        let vol = tetra_volume_3d(nodes[tet[0]], nodes[tet[1]], nodes[tet[2]], nodes[tet[3]]);
+        if vol < 1e-15 {
+            return Ok(());
+        }
+    }
+
+    // Remove old tets (higher index first) and add new ones
+    let (high, low) = if i0 > i1 { (i0, i1) } else { (i1, i0) };
+    tets.swap_remove(high);
+    if low < tets.len() {
+        tets.swap_remove(low);
+    } else if high != low {
+        // low was removed by swap_remove(high)
+    }
+    for &tet in &new_tets {
+        tets.push(tet);
+    }
+
+    Ok(())
+}
+
+/// 3-to-2 flip: replace three tetrahedra sharing an edge `(a,b)` with two
+/// tetrahedra sharing the face `(c1,c2,c3)`.
+///
+/// `indices` must be `[i0, i1, i2]` pointing to the three tets.
+fn bistellar_flip_3_to_2(
+    tets: &mut Vec<[usize; 4]>,
+    nodes: &[[f64; 3]],
+    indices: &[usize],
+) -> Result<(), MeshAlgoError> {
+    if indices.len() != 3 {
+        return Err(MeshAlgoError::Generation("3-to-2 flip requires exactly 3 tets".into()));
+    }
+
+    // Find the edge (a,b) shared by all three tets and their opposite vertices.
+    let t0 = tets[indices[0]];
+    let t1 = tets[indices[1]];
+    let t2 = tets[indices[2]];
+
+    // Find common vertex pair
+    let mut edge = None;
+    for &u in &t0 {
+        for &v in &t0 {
+            if u >= v {
+                continue;
+            }
+            if t1.contains(&u) && t1.contains(&v) && t2.contains(&u) && t2.contains(&v) {
+                edge = Some((u, v));
+                break;
+            }
+        }
+        if edge.is_some() {
+            break;
+        }
+    }
+
+    let Some((a, b)) = edge else {
+        return Ok(());
+    };
+
+    // Collect the three opposite vertices (one from each tet)
+    let mut opp = Vec::new();
+    for &idx in indices {
+        let tet = tets[idx];
+        for &v in &tet {
+            if v != a && v != b {
+                opp.push(v);
+                break;
+            }
+        }
+    }
+    if opp.len() != 3 {
+        return Ok(());
+    }
+    let [c1, c2, c3] = [opp[0], opp[1], opp[2]];
+
+    // Two new tets: (a, c1, c2, c3) and (b, c1, c2, c3)
+    // Ensure both have positive volume
+    let v1 = tetra_volume_3d(nodes[a], nodes[c1], nodes[c2], nodes[c3]);
+    let v2 = tetra_volume_3d(nodes[b], nodes[c1], nodes[c2], nodes[c3]);
+    if v1.abs() < 1e-15 || v2.abs() < 1e-15 {
+        return Ok(());
+    }
+
+    let new_tet1 = if v1 > 0.0 {
+        [a, c1, c2, c3]
+    } else {
+        [a, c2, c1, c3]
+    };
+    let new_tet2 = if v2 > 0.0 {
+        [b, c1, c3, c2]
+    } else {
+        [b, c2, c3, c1]
+    };
+
+    // Remove old tets (descending index order)
+    let mut sorted_indices = [indices[0], indices[1], indices[2]];
+    sorted_indices.sort_unstable_by(|a, b| b.cmp(a));
+    for &idx in &sorted_indices {
+        if idx < tets.len() {
+            tets.swap_remove(idx);
+        }
+    }
+
+    tets.push(new_tet1);
+    tets.push(new_tet2);
+
+    Ok(())
+}
+
+fn tetra_volume_3d(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+    let ad = [a[0] - d[0], a[1] - d[1], a[2] - d[2]];
+    let bd = [b[0] - d[0], b[1] - d[1], b[2] - d[2]];
+    let cd = [c[0] - d[0], c[1] - d[1], c[2] - d[2]];
+    let cross = [
+        bd[1] * cd[2] - bd[2] * cd[1],
+        bd[2] * cd[0] - bd[0] * cd[2],
+        bd[0] * cd[1] - bd[1] * cd[0],
+    ];
+    (ad[0] * cross[0] + ad[1] * cross[1] + ad[2] * cross[2]) / 6.0
+}
+
 enum BistellarFlipType {
     /// Replace 2 tets sharing a face with 3 tets sharing an edge.
     TwoToThree,
@@ -1923,5 +2112,61 @@ mod tests {
             refined_count >= seed_count,
             "refinement should not reduce element count: seed={seed_count} refined={refined_count}"
         );
+    }
+
+    // ── P2: bistellar flips ─────────────────────────────────────────────────
+
+    #[test]
+    fn bistellar_flip_2_to_3_preserves_tet_count() {
+        // Two tets sharing face (1,2,3): [1,2,3,4] and [1,2,3,5]
+        let nodes = [
+            [0.0, 0.0, 0.0],   // 0
+            [1.0, 0.0, 0.0],   // 1
+            [0.0, 1.0, 0.0],   // 2
+            [0.25, 0.25, 1.0], // 3 — tip above
+            [0.25, 0.25, -1.0], // 4 — tip below
+        ];
+        let mut tets = vec![[0, 1, 2, 3], [0, 2, 1, 4]];
+        assert_eq!(tets.len(), 2);
+        bistellar_flip(&mut tets, &nodes, BistellarFlipType::TwoToThree, &[0, 1]).unwrap();
+        // 2 old removed, 3 new added → 3 total
+        assert_eq!(tets.len(), 3);
+    }
+
+    #[test]
+    fn bistellar_flip_3_to_2_preserves_tet_count() {
+        // Three tets sharing edge (0,1): [0,1,2,3], [0,1,3,4], [0,1,4,2]
+        let nodes = [
+            [0.0, 0.0, 0.0], // 0
+            [0.0, 0.0, 1.0], // 1
+            [1.0, 0.0, 0.5], // 2
+            [0.0, 1.0, 0.5], // 3
+            [-1.0, 0.0, 0.5], // 4
+        ];
+        let mut tets = vec![[0, 1, 2, 3], [0, 1, 3, 4], [0, 1, 4, 2]];
+        assert_eq!(tets.len(), 3);
+        bistellar_flip(&mut tets, &nodes, BistellarFlipType::ThreeToTwo, &[0, 1, 2]).unwrap();
+        // 3 old removed, 2 new added → 2 total
+        assert_eq!(tets.len(), 2);
+    }
+
+    #[test]
+    fn bistellar_flip_2_to_3_rejects_non_adjacent() {
+        // Two tets that don't share a face
+        let nodes = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [10.0, 10.0, 10.0],
+            [11.0, 10.0, 10.0],
+            [10.0, 11.0, 10.0],
+            [10.0, 10.0, 11.0],
+        ];
+        let mut tets = vec![[0, 1, 2, 3], [4, 5, 6, 7]];
+        // These tets don't share a face, so the flip should be a no-op
+        let result = bistellar_flip(&mut tets, &nodes, BistellarFlipType::TwoToThree, &[0, 1]);
+        // Should return Ok but not modify (common.len() != 3)
+        assert!(result.is_ok());
     }
 }

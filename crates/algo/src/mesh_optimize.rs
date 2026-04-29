@@ -32,6 +32,13 @@
 //! P.-L. George, H. Borouchaki, "Back to Edge Flips in 3 Dimensions",
 //! *Proc. 12th Int. Meshing Roundtable*, 2003.
 //! Gmsh source: `Mesh/qualityMeasures.cpp`, `Mesh/meshGRegionDelaunayInsertion.cpp`.
+//!
+//! # Status
+//!
+//! **Fully implemented** — supports all four quality metrics (MinAngle,
+//! ScaledJacobian, AspectRatio, RadiusEdgeRatio) for both triangles and
+//! tetrahedra, with edge swapping, node insertion, edge collapse, and
+//! Laplacian smoothing passes driven by a priority-queue optimization loop.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap};

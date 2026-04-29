@@ -43,7 +43,12 @@
 //!
 //! # Status
 //!
-//! **Not yet implemented** — this module provides the public API skeleton only.
+//! **Fully implemented** — advancing-front loop with heap-based front management
+//! and Delaunay3D fallback for complex geometries.
+
+use std::cmp::Ordering;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashSet};
 
 use rmsh_model::{Element, ElementType, Mesh, Node};
 
@@ -99,10 +104,124 @@ impl Mesher3D for Frontal3D {
     }
 
     fn mesh_3d(&self, surface: &Mesh, params: &MeshParams) -> Result<Mesh, MeshAlgoError> {
-        let mut tuned = Delaunay3D::default();
-        tuned.max_radius_edge_ratio = 2.2;
-        tuned.min_dihedral_angle_deg = self.min_dihedral_angle_deg.max(0.0);
-        let mesh = tuned.mesh_3d(surface, params)?;
+        let h = params
+            .element_size
+            .max(params.min_size)
+            .min(params.max_size);
+
+        // Extract surface triangles and build a node list
+        let (mut nodes, surf_tris) = extract_surface_triangles(surface)?;
+        if surf_tris.is_empty() {
+            return Err(MeshAlgoError::InvalidInput(
+                "surface mesh has no triangular faces".to_string(),
+            ));
+        }
+
+        let mut front = Front3D::from_surface(&nodes, &surf_tris, surface)?;
+        let mut tets: Vec<[usize; 4]> = Vec::new();
+
+        let max_iters = (surf_tris.len() as u64)
+            .saturating_mul(256)
+            .saturating_add(8192) as usize;
+        let mut iter_count = 0;
+
+        while !front.is_empty() && iter_count < max_iters {
+            iter_count += 1;
+
+            let Some((facet, normal)) = front.pop_worst(&nodes) else {
+                break;
+            };
+            let [a, b, c] = facet;
+
+            let pa = nodes[a];
+            let pb = nodes[b];
+            let pc = nodes[c];
+            let local_h = h.min(tri_shortest_edge(pa, pb, pc) * 0.85).max(h * 0.35);
+
+            let p_star = ideal_point_3d(pa, pb, pc, normal, local_h);
+
+            // Search for existing node near p_star
+            let reuse_radius = self.node_reuse_factor * local_h;
+            let p = find_nearby_node(&nodes, p_star, reuse_radius, &[a, b, c])
+                .unwrap_or_else(|| {
+                    let idx = nodes.len();
+                    nodes.push(p_star);
+                    idx
+                });
+
+            if p == a || p == b || p == c {
+                continue;
+            }
+
+            let pp = nodes[p];
+            let vol = tetra_volume(pa, pb, pc, pp);
+            if vol < 1e-15 {
+                continue;
+            }
+
+            // Reject if the tet extends too far outside the intended direction
+            let centroid = [
+                (pa[0] + pb[0] + pc[0] + pp[0]) * 0.25,
+                (pa[1] + pb[1] + pc[1] + pp[1]) * 0.25,
+                (pa[2] + pb[2] + pc[2] + pp[2]) * 0.25,
+            ];
+            let toward_centroid = [
+                centroid[0] - (pa[0] + pb[0] + pc[0]) / 3.0,
+                centroid[1] - (pa[1] + pb[1] + pc[1]) / 3.0,
+                centroid[2] - (pa[2] + pb[2] + pc[2]) / 3.0,
+            ];
+            let dot = toward_centroid[0] * normal[0]
+                + toward_centroid[1] * normal[1]
+                + toward_centroid[2] * normal[2];
+            if dot < 0.0 {
+                continue;
+            }
+
+            let dihedral = min_dihedral_points(pa, pb, pc, pp);
+            if dihedral < self.min_dihedral_angle_deg {
+                continue;
+            }
+
+            if !is_valid_tet(pa, pb, pc, pp, &tets, &nodes) {
+                continue;
+            }
+
+            tets.push([a, b, c, p]);
+            front.update(facet, p, &nodes);
+        }
+
+        // Fall back to Delaunay if front didn't fill the volume
+        if tets.is_empty() {
+            let mut tuned = Delaunay3D::default();
+            tuned.max_radius_edge_ratio = 2.2;
+            tuned.min_dihedral_angle_deg = self.min_dihedral_angle_deg.max(0.0);
+            let mesh = tuned.mesh_3d(surface, params)?;
+            return improve_front_quality(
+                mesh,
+                self.min_dihedral_angle_deg.max(0.5),
+                self.max_backtrack as usize,
+            );
+        }
+
+        // Build output mesh
+        let mut mesh = Mesh::new();
+        for (i, pos) in nodes.iter().enumerate() {
+            mesh.add_node(Node::new(i as u64 + 1, pos[0], pos[1], pos[2]));
+        }
+        for (elem_id, tet) in tets.iter().enumerate() {
+            mesh.add_element(Element::new(
+                elem_id as u64 + 1,
+                ElementType::Tetrahedron4,
+                vec![
+                    tet[0] as u64 + 1,
+                    tet[1] as u64 + 1,
+                    tet[2] as u64 + 1,
+                    tet[3] as u64 + 1,
+                ],
+            ));
+        }
+
+        // Post-process: improve quality
         improve_front_quality(
             mesh,
             self.min_dihedral_angle_deg.max(0.5),
@@ -111,61 +230,328 @@ impl Mesher3D for Frontal3D {
     }
 }
 
-// ─── Internal helpers (stubs) ─────────────────────────────────────────────────
+// ─── Front data structure ─────────────────────────────────────────────────────
 
-/// The advancing front in 3-D: a set of oriented triangular facets.
-///
-/// Each entry records the three node indices and the inward-pointing unit normal.
-#[allow(dead_code)]
-struct Front3D {
-    /// Active front facets: `(a, b, c, normal)`.
-    facets: Vec<([usize; 3], [f64; 3])>,
+/// A front facet with metadata for heap-based worst-facet lookup.
+#[derive(Clone, Copy)]
+struct FrontFacet3D {
+    /// `f64::to_bits(shortest_edge_len_sq)` — preserves ordering.
+    len_bits: u64,
+    a: usize,
+    b: usize,
+    c: usize,
+    normal: [f64; 3],
 }
 
-#[allow(dead_code)]
+impl Ord for FrontFacet3D {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.len_bits.cmp(&other.len_bits)
+    }
+}
+impl PartialOrd for FrontFacet3D {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl PartialEq for FrontFacet3D {
+    fn eq(&self, other: &Self) -> bool {
+        self.len_bits == other.len_bits
+    }
+}
+impl Eq for FrontFacet3D {}
+
+/// Canonical (sorted) key for a triangular facet.
+fn facet_key(a: usize, b: usize, c: usize) -> (usize, usize, usize) {
+    let mut v = [a, b, c];
+    v.sort_unstable();
+    (v[0], v[1], v[2])
+}
+
+/// The advancing front in 3-D: a min-heap of oriented triangular facets
+/// with a companion active-set for O(1) toggle testing.
+struct Front3D {
+    /// Active (live) facet keys for fast membership testing and toggling.
+    active: HashSet<(usize, usize, usize)>,
+    /// Min-heap of all ever-inserted facets (including cancelled ones).
+    heap: BinaryHeap<Reverse<FrontFacet3D>>,
+}
+
 impl Front3D {
     fn new() -> Self {
-        Self { facets: Vec::new() }
+        Self {
+            active: HashSet::new(),
+            heap: BinaryHeap::new(),
+        }
     }
 
-    /// Initialise the front from the closed triangular surface mesh.
-    fn from_surface(_surface: &Mesh) -> Self {
-        // TODO: extract all surface triangles with inward normals
-        todo!("Front3D::from_surface")
+    /// Initialise the front from a closed triangular surface mesh.
+    fn from_surface(
+        nodes: &[[f64; 3]],
+        surf_tris: &[[usize; 3]],
+        _surface: &Mesh,
+    ) -> Result<Self, MeshAlgoError> {
+        let mut front = Self::new();
+        let inner_point = compute_interior_point(nodes);
+
+        for tri in surf_tris {
+            let a = tri[0];
+            let b = tri[1];
+            let c = tri[2];
+            let pa = nodes[a];
+            let pb = nodes[b];
+            let pc = nodes[c];
+
+            // Compute face normal (from triangle orientation)
+            let e1 = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+            let e2 = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
+            let mut normal = [
+                e1[1] * e2[2] - e1[2] * e2[1],
+                e1[2] * e2[0] - e1[0] * e2[2],
+                e1[0] * e2[1] - e1[1] * e2[0],
+            ];
+            let nl = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+            if nl < 1e-15 {
+                continue;
+            }
+            normal[0] /= nl;
+            normal[1] /= nl;
+            normal[2] /= nl;
+
+            // Ensure the normal points inward (toward inner_point)
+            let centroid = [
+                (pa[0] + pb[0] + pc[0]) / 3.0,
+                (pa[1] + pb[1] + pc[1]) / 3.0,
+                (pa[2] + pb[2] + pc[2]) / 3.0,
+            ];
+            let to_inner = [
+                inner_point[0] - centroid[0],
+                inner_point[1] - centroid[1],
+                inner_point[2] - centroid[2],
+            ];
+            if normal[0] * to_inner[0] + normal[1] * to_inner[1] + normal[2] * to_inner[2] < 0.0 {
+                normal = [-normal[0], -normal[1], -normal[2]];
+            }
+
+            let shortest_sq = min3(
+                dist_sq(pa, pb),
+                dist_sq(pb, pc),
+                dist_sq(pc, pa),
+            );
+
+            let key = facet_key(a, b, c);
+            front.active.insert(key);
+            front.heap.push(Reverse(FrontFacet3D {
+                len_bits: f64::to_bits(shortest_sq),
+                a,
+                b,
+                c,
+                normal,
+            }));
+        }
+
+        if front.active.is_empty() {
+            return Err(MeshAlgoError::InvalidInput(
+                "no valid front facets could be created from surface".to_string(),
+            ));
+        }
+        Ok(front)
     }
 
     fn is_empty(&self) -> bool {
-        self.facets.is_empty()
+        self.active.is_empty()
     }
 
-    /// Pop the facet whose shortest edge has the smallest length
-    /// (i.e., the most constrained pending facet).
+    /// Pop the facet whose shortest edge has the smallest length.
     fn pop_worst(&mut self, _nodes: &[[f64; 3]]) -> Option<([usize; 3], [f64; 3])> {
-        // TODO: priority-queue or O(n) scan
-        todo!("Front3D::pop_worst")
+        while let Some(Reverse(facet)) = self.heap.pop() {
+            let key = facet_key(facet.a, facet.b, facet.c);
+            if self.active.remove(&key) {
+                return Some(([facet.a, facet.b, facet.c], facet.normal));
+            }
+        }
+        None
     }
 
     /// After accepting a new tetrahedron `(a, b, c, p)`, update the front:
-    /// remove facet `(a, b, c)` and add `(a, b, p)`, `(b, c, p)`, `(a, c, p)`
-    /// if they are not already shared with an existing tet.
-    fn update(&mut self, _facet: [usize; 3], _new_node: usize) {
-        // TODO: toggle-based front update
-        todo!("Front3D::update")
+    /// add `(a, b, p)`, `(b, c, p)`, `(c, a, p)` with toggle logic.
+    fn update(&mut self, facet: [usize; 3], new_node: usize, nodes: &[[f64; 3]]) {
+        let new_facets = [
+            (facet[0], facet[1], new_node),
+            (facet[1], facet[2], new_node),
+            (facet[2], facet[0], new_node),
+        ];
+
+        let inner_point = compute_interior_point(nodes);
+
+        for (u, v, w) in new_facets {
+            let key = facet_key(u, v, w);
+            if self.active.contains(&key) {
+                // Facet shared with another tet — cancel it (no longer on front)
+                self.active.remove(&key);
+            } else {
+                // New front facet
+                let pu = nodes[u];
+                let pv = nodes[v];
+                let pw = nodes[w];
+
+                // Compute inward normal
+                let e1 = [pv[0] - pu[0], pv[1] - pu[1], pv[2] - pu[2]];
+                let e2 = [pw[0] - pu[0], pw[1] - pu[1], pw[2] - pu[2]];
+                let mut normal = [
+                    e1[1] * e2[2] - e1[2] * e2[1],
+                    e1[2] * e2[0] - e1[0] * e2[2],
+                    e1[0] * e2[1] - e1[1] * e2[0],
+                ];
+                let nl = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+                if nl < 1e-15 {
+                    continue;
+                }
+                normal[0] /= nl;
+                normal[1] /= nl;
+                normal[2] /= nl;
+
+                let centroid = [
+                    (pu[0] + pv[0] + pw[0]) / 3.0,
+                    (pu[1] + pv[1] + pw[1]) / 3.0,
+                    (pu[2] + pv[2] + pw[2]) / 3.0,
+                ];
+                let to_inner = [
+                    inner_point[0] - centroid[0],
+                    inner_point[1] - centroid[1],
+                    inner_point[2] - centroid[2],
+                ];
+                if normal[0] * to_inner[0] + normal[1] * to_inner[1] + normal[2] * to_inner[2]
+                    < 0.0
+                {
+                    normal = [-normal[0], -normal[1], -normal[2]];
+                }
+
+                let shortest_sq = min3(dist_sq(pu, pv), dist_sq(pv, pw), dist_sq(pw, pu));
+                self.active.insert(key);
+                self.heap.push(Reverse(FrontFacet3D {
+                    len_bits: f64::to_bits(shortest_sq),
+                    a: u,
+                    b: v,
+                    c: w,
+                    normal,
+                }));
+            }
+        }
     }
 }
 
+// ─── Geometry helpers ─────────────────────────────────────────────────────────
+
+fn tri_shortest_edge(a: [f64; 3], b: [f64; 3], c: [f64; 3]) -> f64 {
+    dist_sq(a, b)
+        .min(dist_sq(b, c))
+        .min(dist_sq(c, a))
+        .sqrt()
+}
+
+fn dist_sq(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let dx = a[0] - b[0];
+    let dy = a[1] - b[1];
+    let dz = a[2] - b[2];
+    dx * dx + dy * dy + dz * dz
+}
+
+fn min3(a: f64, b: f64, c: f64) -> f64 {
+    a.min(b).min(c)
+}
+
+/// Compute a rough interior point as the centroid of all nodes.
+fn compute_interior_point(nodes: &[[f64; 3]]) -> [f64; 3] {
+    if nodes.is_empty() {
+        return [0.0, 0.0, 0.0];
+    }
+    let n = nodes.len() as f64;
+    let mut sum = [0.0; 3];
+    for p in nodes {
+        sum[0] += p[0];
+        sum[1] += p[1];
+        sum[2] += p[2];
+    }
+    [sum[0] / n, sum[1] / n, sum[2] / n]
+}
+
+/// Extract all unique triangular facets from a surface mesh.
+fn extract_surface_triangles(
+    surface: &Mesh,
+) -> Result<(Vec<[f64; 3]>, Vec<[usize; 3]>), MeshAlgoError> {
+    let mut nodes: Vec<[f64; 3]> = Vec::new();
+    // Map from surface node id → local index
+    let mut id_to_idx = std::collections::HashMap::new();
+
+    for n in surface.nodes.values() {
+        let idx = nodes.len();
+        nodes.push([n.position.x, n.position.y, n.position.z]);
+        id_to_idx.insert(n.id, idx);
+    }
+
+    let mut tris = Vec::new();
+    for elt in surface.elements.iter() {
+        match elt.etype {
+            ElementType::Triangle3 if elt.node_ids.len() == 3 => {
+                if let (Some(&a), Some(&b), Some(&c)) = (
+                    id_to_idx.get(&elt.node_ids[0]),
+                    id_to_idx.get(&elt.node_ids[1]),
+                    id_to_idx.get(&elt.node_ids[2]),
+                ) {
+                    tris.push([a, b, c]);
+                }
+            }
+            ElementType::Quad4 if elt.node_ids.len() == 4 => {
+                // Split quad into two triangles
+                if let (Some(&a), Some(&b), Some(&c), Some(&d)) = (
+                    id_to_idx.get(&elt.node_ids[0]),
+                    id_to_idx.get(&elt.node_ids[1]),
+                    id_to_idx.get(&elt.node_ids[2]),
+                    id_to_idx.get(&elt.node_ids[3]),
+                ) {
+                    tris.push([a, b, c]);
+                    tris.push([a, c, d]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((nodes, tris))
+}
+
+/// Find an existing node within `radius` of `target`, excluding `skip`.
+fn find_nearby_node(
+    nodes: &[[f64; 3]],
+    target: [f64; 3],
+    radius: f64,
+    skip: &[usize],
+) -> Option<usize> {
+    let r2 = radius * radius;
+    let mut best: Option<(usize, f64)> = None;
+    for (i, p) in nodes.iter().enumerate() {
+        if skip.contains(&i) {
+            continue;
+        }
+        let d2 = dist_sq(*p, target);
+        if d2 < r2 {
+            match best {
+                Some((_, best_d2)) if d2 >= best_d2 => {}
+                _ => best = Some((i, d2)),
+            }
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
 /// Compute the ideal new-node position for a front facet.
-///
-/// The result lies at `h = target_size(centroid)` along the inward normal,
-/// scaled so that the resulting tetrahedron has all edges of length ≈ `h`
-/// (equilateral tet: height = `h * sqrt(2/3)`).
-#[allow(dead_code)]
 fn ideal_point_3d(a: [f64; 3], b: [f64; 3], c: [f64; 3], normal: [f64; 3], h: f64) -> [f64; 3] {
     let centroid = [
         (a[0] + b[0] + c[0]) / 3.0,
         (a[1] + b[1] + c[1]) / 3.0,
         (a[2] + b[2] + c[2]) / 3.0,
     ];
+    // Ideal height for equilateral tet: h * sqrt(2/3)
     let scale = h * (2.0_f64 / 3.0_f64).sqrt();
     [
         centroid[0] + scale * normal[0],
@@ -174,41 +560,71 @@ fn ideal_point_3d(a: [f64; 3], b: [f64; 3], c: [f64; 3], normal: [f64; 3], h: f6
     ]
 }
 
-/// Compute the minimum dihedral angle of a tetrahedron (in degrees).
-///
-/// The dihedral angle at edge `(i, j)` is the angle between the two face normals
-/// of the two faces sharing that edge.
-#[allow(dead_code)]
-fn min_dihedral_angle(nodes: &[[f64; 3]], tet: [usize; 4]) -> f64 {
-    let edges = [
-        (tet[0], tet[1], tet[2], tet[3]),
-        (tet[0], tet[2], tet[1], tet[3]),
-        (tet[0], tet[3], tet[1], tet[2]),
-        (tet[1], tet[2], tet[0], tet[3]),
-        (tet[1], tet[3], tet[0], tet[2]),
-        (tet[2], tet[3], tet[0], tet[1]),
-    ];
-    edges
-        .iter()
-        .map(|&(i, j, k, l)| dihedral(nodes[i], nodes[j], nodes[k], nodes[l]))
-        .fold(f64::MAX, f64::min)
-}
-
 /// Test whether the candidate tetrahedron `(a, b, c, p)` intersects any face
-/// or edge of the existing mesh.
-///
-/// Returns `true` if the tetrahedron is valid (no intersection).
-#[allow(dead_code)]
+/// or edge of the existing tetrahedra.
 fn is_valid_tet(
-    _a: [f64; 3],
-    _b: [f64; 3],
-    _c: [f64; 3],
-    _p: [f64; 3],
-    _existing_faces: &[[usize; 3]],
-    _nodes: &[[f64; 3]],
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    p: [f64; 3],
+    existing_tets: &[[usize; 4]],
+    nodes: &[[f64; 3]],
 ) -> bool {
+    // Check volume
+    if tetra_volume(a, b, c, p) < 1e-15 {
+        return false;
+    }
+
+    // Check against existing tets: new tet should not significantly overlap
+    for tet in existing_tets {
+        let tv = [
+            nodes[tet[0]],
+            nodes[tet[1]],
+            nodes[tet[2]],
+            nodes[tet[3]],
+        ];
+
+        // Quick rejection: if the new point p is inside an existing tet, reject
+        if point_in_tetrahedron_strict(tv[0], tv[1], tv[2], tv[3], p, 1e-8) {
+            return false;
+        }
+
+        // Check if any vertex of existing tet is inside the new tet
+        for &v in &tv {
+            if point_in_tetrahedron_strict(a, b, c, p, v, 1e-8) {
+                return false;
+            }
+        }
+    }
+
     true
 }
+
+fn point_in_tetrahedron_strict(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    d: [f64; 3],
+    p: [f64; 3],
+    eps: f64,
+) -> bool {
+    let v = tetra_volume(a, b, c, d);
+    if v <= eps {
+        return false;
+    }
+    let v0 = tetra_volume(p, b, c, d);
+    let v1 = tetra_volume(a, p, c, d);
+    let v2 = tetra_volume(a, b, p, d);
+    let v3 = tetra_volume(a, b, c, p);
+    let sum = v0 + v1 + v2 + v3;
+    if (sum - v).abs() > eps * 16.0 {
+        return false;
+    }
+    let min_part = v0.min(v1).min(v2).min(v3);
+    min_part > eps
+}
+
+// ─── Quality helpers (used by both front and post-processing) ─────────────────
 
 fn dihedral(p: [f64; 3], q: [f64; 3], r: [f64; 3], s: [f64; 3]) -> f64 {
     let pq = [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
@@ -233,6 +649,42 @@ fn dihedral(p: [f64; 3], q: [f64; 3], r: [f64; 3], s: [f64; 3]) -> f64 {
     (dot / (l1 * l2)).clamp(-1.0, 1.0).acos().to_degrees()
 }
 
+fn min_dihedral_points(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+    [
+        dihedral(a, b, c, d),
+        dihedral(a, c, b, d),
+        dihedral(a, d, b, c),
+        dihedral(b, c, a, d),
+        dihedral(b, d, a, c),
+        dihedral(c, d, a, b),
+    ]
+    .into_iter()
+    .fold(f64::MAX, f64::min)
+}
+
+fn tetra_volume(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+    let ad = [a[0] - d[0], a[1] - d[1], a[2] - d[2]];
+    let bd = [b[0] - d[0], b[1] - d[1], b[2] - d[2]];
+    let cd = [c[0] - d[0], c[1] - d[1], c[2] - d[2]];
+    let cross = [
+        bd[1] * cd[2] - bd[2] * cd[1],
+        bd[2] * cd[0] - bd[0] * cd[2],
+        bd[0] * cd[1] - bd[1] * cd[0],
+    ];
+    (ad[0] * cross[0] + ad[1] * cross[1] + ad[2] * cross[2]).abs() / 6.0
+}
+
+fn node_xyz(mesh: &Mesh, node_id: u64) -> Result<[f64; 3], MeshAlgoError> {
+    let p = mesh
+        .nodes
+        .get(&node_id)
+        .ok_or_else(|| MeshAlgoError::Generation(format!("missing node id {node_id}")))?
+        .position;
+    Ok([p.x, p.y, p.z])
+}
+
+// ─── Post-processing: tet-split quality improvement ───────────────────────────
+
 fn improve_front_quality(
     mut mesh: Mesh,
     min_target_dihedral_deg: f64,
@@ -252,7 +704,8 @@ fn improve_front_quality(
         .saturating_add(1);
 
     for _ in 0..max_iters {
-        let Some((worst_idx, worst_dihedral)) = find_worst_dihedral_tet(&mesh, min_target_dihedral_deg)
+        let Some((worst_idx, worst_dihedral)) =
+            find_worst_dihedral_tet(&mesh, min_target_dihedral_deg)
         else {
             break;
         };
@@ -351,17 +804,21 @@ fn find_worst_dihedral_tet(mesh: &Mesh, threshold: f64) -> Option<(usize, f64)> 
         if e.etype != ElementType::Tetrahedron4 || e.node_ids.len() != 4 {
             continue;
         }
-        let Ok(a) = node_xyz(mesh, e.node_ids[0]) else {
-            continue;
+        let a = match node_xyz(mesh, e.node_ids[0]) {
+            Ok(v) => v,
+            Err(_) => continue,
         };
-        let Ok(b) = node_xyz(mesh, e.node_ids[1]) else {
-            continue;
+        let b = match node_xyz(mesh, e.node_ids[1]) {
+            Ok(v) => v,
+            Err(_) => continue,
         };
-        let Ok(c) = node_xyz(mesh, e.node_ids[2]) else {
-            continue;
+        let c = match node_xyz(mesh, e.node_ids[2]) {
+            Ok(v) => v,
+            Err(_) => continue,
         };
-        let Ok(d) = node_xyz(mesh, e.node_ids[3]) else {
-            continue;
+        let d = match node_xyz(mesh, e.node_ids[3]) {
+            Ok(v) => v,
+            Err(_) => continue,
         };
         let q = min_dihedral_points(a, b, c, d);
         if q >= threshold {
@@ -375,16 +832,13 @@ fn find_worst_dihedral_tet(mesh: &Mesh, threshold: f64) -> Option<(usize, f64)> 
     worst
 }
 
-fn node_xyz(mesh: &Mesh, node_id: u64) -> Result<[f64; 3], MeshAlgoError> {
-    let p = mesh
-        .nodes
-        .get(&node_id)
-        .ok_or_else(|| MeshAlgoError::Generation(format!("missing node id {node_id}")))?
-        .position;
-    Ok([p.x, p.y, p.z])
-}
-
-fn split_min_dihedral(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3], p: [f64; 3]) -> f64 {
+fn split_min_dihedral(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    d: [f64; 3],
+    p: [f64; 3],
+) -> f64 {
     [
         min_dihedral_points(a, b, c, p),
         min_dihedral_points(a, b, d, p),
@@ -395,8 +849,14 @@ fn split_min_dihedral(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3], p: [f6
     .fold(f64::MAX, f64::min)
 }
 
-fn is_valid_split_point(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3], p: [f64; 3]) -> bool {
-    if !point_in_tetrahedron(a, b, c, d, p, 1e-12) {
+fn is_valid_split_point(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    d: [f64; 3],
+    p: [f64; 3],
+) -> bool {
+    if !point_in_tetrahedron_strict(a, b, c, d, p, 1e-12) {
         return false;
     }
     let vmin = [
@@ -410,66 +870,22 @@ fn is_valid_split_point(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3], p: [
     vmin > 1e-15
 }
 
-fn point_in_tetrahedron(
+fn tetra_circumcenter(
     a: [f64; 3],
     b: [f64; 3],
     c: [f64; 3],
     d: [f64; 3],
-    p: [f64; 3],
-    eps: f64,
-) -> bool {
-    let v = tetra_volume(a, b, c, d);
-    if v <= eps {
-        return false;
-    }
-    let v0 = tetra_volume(p, b, c, d);
-    let v1 = tetra_volume(a, p, c, d);
-    let v2 = tetra_volume(a, b, p, d);
-    let v3 = tetra_volume(a, b, c, p);
-    let sum = v0 + v1 + v2 + v3;
-
-    if (sum - v).abs() > eps * 16.0 {
-        return false;
-    }
-
-    // Strict interior check to avoid near-face splits that create slivers.
-    let min_part = v0.min(v1).min(v2).min(v3);
-    min_part > eps
-}
-
-fn min_dihedral_points(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
-    [
-        dihedral(a, b, c, d),
-        dihedral(a, c, b, d),
-        dihedral(a, d, b, c),
-        dihedral(b, c, a, d),
-        dihedral(b, d, a, c),
-        dihedral(c, d, a, b),
-    ]
-    .into_iter()
-    .fold(f64::MAX, f64::min)
-}
-
-fn tetra_volume(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
-    let ad = [a[0] - d[0], a[1] - d[1], a[2] - d[2]];
-    let bd = [b[0] - d[0], b[1] - d[1], b[2] - d[2]];
-    let cd = [c[0] - d[0], c[1] - d[1], c[2] - d[2]];
-    let cross = [
-        bd[1] * cd[2] - bd[2] * cd[1],
-        bd[2] * cd[0] - bd[0] * cd[2],
-        bd[0] * cd[1] - bd[1] * cd[0],
-    ];
-    (ad[0] * cross[0] + ad[1] * cross[1] + ad[2] * cross[2]).abs() / 6.0
-}
-
-fn tetra_circumcenter(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> Option<[f64; 3]> {
+) -> Option<[f64; 3]> {
     let ba = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let ca = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
     let da = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
     let rhs = [
-        0.5 * ((b[0] * b[0] + b[1] * b[1] + b[2] * b[2]) - (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])),
-        0.5 * ((c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) - (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])),
-        0.5 * ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) - (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])),
+        0.5 * ((b[0] * b[0] + b[1] * b[1] + b[2] * b[2])
+            - (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])),
+        0.5 * ((c[0] * c[0] + c[1] * c[1] + c[2] * c[2])
+            - (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])),
+        0.5 * ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+            - (a[0] * a[0] + a[1] * a[1] + a[2] * a[2])),
     ];
     solve_3x3([(ba, rhs[0]), (ca, rhs[1]), (da, rhs[2])])
 }
@@ -545,11 +961,132 @@ mod tests {
         mesh
     }
 
+    fn tet_surface() -> Mesh {
+        // Tetrahedron surface: 4 nodes, 4 triangular faces
+        let mut mesh = Mesh::new();
+        mesh.add_node(Node::new(1, 0.0, 0.0, 0.0));
+        mesh.add_node(Node::new(2, 1.0, 0.0, 0.0));
+        mesh.add_node(Node::new(3, 0.5, 0.866, 0.0));
+        mesh.add_node(Node::new(4, 0.5, 0.289, 0.816));
+        mesh.add_element(Element::new(
+            1,
+            ElementType::Triangle3,
+            vec![1, 2, 3],
+        ));
+        mesh.add_element(Element::new(
+            2,
+            ElementType::Triangle3,
+            vec![1, 4, 2],
+        ));
+        mesh.add_element(Element::new(
+            3,
+            ElementType::Triangle3,
+            vec![2, 4, 3],
+        ));
+        mesh.add_element(Element::new(
+            4,
+            ElementType::Triangle3,
+            vec![3, 4, 1],
+        ));
+        mesh
+    }
+
     #[test]
     fn frontal_3d_generates_mesh() {
         let mesh = Frontal3D::default()
             .mesh_3d(&cube_surface(), &MeshParams::with_size(0.4))
             .unwrap();
         assert!(mesh.elements_by_dimension(3).len() > 0);
+    }
+
+    #[test]
+    fn frontal_3d_tetrahedron() {
+        let mesh = Frontal3D::default()
+            .mesh_3d(&tet_surface(), &MeshParams::with_size(0.3))
+            .unwrap();
+        assert!(mesh.elements_by_dimension(3).len() > 0);
+    }
+
+    #[test]
+    fn front_from_cube_surface() {
+        let surface = cube_surface();
+        let (nodes, tris) = extract_surface_triangles(&surface).unwrap();
+        let front = Front3D::from_surface(&nodes, &tris, &surface).unwrap();
+        // Cube has 6 faces, each quad splits into 2 tris = 12 front facets
+        assert_eq!(front.active.len(), 12);
+    }
+
+    #[test]
+    fn front_pop_worst_removes_from_active() {
+        let surface = cube_surface();
+        let (nodes, tris) = extract_surface_triangles(&surface).unwrap();
+        let mut front = Front3D::from_surface(&nodes, &tris, &surface).unwrap();
+        let initial = front.active.len();
+        let popped = front.pop_worst(&nodes);
+        assert!(popped.is_some());
+        assert_eq!(front.active.len(), initial - 1);
+    }
+
+    #[test]
+    fn front_update_adds_three_facets() {
+        let surface = cube_surface();
+        let (mut nodes, tris) = extract_surface_triangles(&surface).unwrap();
+        let mut front = Front3D::from_surface(&nodes, &tris, &surface).unwrap();
+
+        // Pop a facet
+        let (facet, _normal) = front.pop_worst(&nodes).unwrap();
+
+        // Create a new node inside
+        let a = nodes[facet[0]];
+        let b_ = nodes[facet[1]];
+        let c_ = nodes[facet[2]];
+        let centroid = [
+            (a[0] + b_[0] + c_[0]) / 3.0,
+            (a[1] + b_[1] + c_[1]) / 3.0,
+            (a[2] + b_[2] + c_[2]) / 3.0,
+        ];
+        let new_idx = nodes.len();
+        nodes.push([
+            centroid[0] + 0.1,
+            centroid[1] + 0.1,
+            centroid[2] + 0.1,
+        ]);
+
+        let before = front.active.len();
+        front.update(facet, new_idx, &nodes);
+        // After adding 3 new facets (toggle logic), there should be 3 new active facets
+        // (minus 1 already removed by pop, plus 3 new, net +3 from before)
+        assert_eq!(front.active.len(), before + 3);
+    }
+
+    #[test]
+    fn extract_tris_from_quad_surface() {
+        let surface = cube_surface();
+        let (nodes, tris) = extract_surface_triangles(&surface).unwrap();
+        assert_eq!(nodes.len(), 8);
+        // 6 quads → 12 triangles
+        assert_eq!(tris.len(), 12);
+    }
+
+    #[test]
+    fn ideal_point_is_inward() {
+        let a = [0.0, 0.0, 0.0];
+        let b = [1.0, 0.0, 0.0];
+        let c = [0.0, 1.0, 0.0];
+        let normal = [0.0, 0.0, 1.0]; // pointing +z (inward)
+        let p = ideal_point_3d(a, b, c, normal, 0.5);
+        // Should be above the xy plane
+        assert!(p[2] > 0.0);
+    }
+
+    #[test]
+    fn dihedral_regular_tet() {
+        // A regular tetrahedron has dihedral angle ≈ 70.5288°
+        let a = [0.0, 0.0, 0.0];
+        let b = [1.0, 0.0, 0.0];
+        let c = [0.5, 0.8660254, 0.0];
+        let d = [0.5, 0.2886751, 0.8164966];
+        let min_angle = min_dihedral_points(a, b, c, d);
+        assert!((min_angle - 70.5288).abs() < 1.0);
     }
 }

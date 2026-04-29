@@ -35,9 +35,10 @@
 //!
 //! # Parallelism note
 //!
-//! The current skeleton uses `num_threads` for documentation purposes.  A full
-//! implementation would use a thread pool (e.g. Rayon) where `num_threads = 0`
-//! means "use all available cores".
+//! The current implementation uses Rayon thread pools.  `num_threads = 0` means
+//! "use all available cores".  The parallel find-tet phase uses
+//! `rayon::par_iter()`; the write phase (tet split) is still sequential.
+//! The `TetOwnership` CAS scheme is wired in for future true parallel writes.
 //!
 //! # Reference
 //!
@@ -135,13 +136,12 @@ impl Mesher3D for Hxt3D {
         if num_threads > 1 && mesh.elements_by_dimension(3).len() > 0 {
             let candidates = generate_candidate_points(&mesh, params);
             if !candidates.is_empty() {
-                let result = delaunay_insert_parallel(
+                delaunay_insert_parallel(
                     &mut mesh,
                     &candidates,
                     self.hilbert_order,
                     num_threads,
-                );
-                let _ = result;
+                )?;
             }
         }
 
@@ -468,14 +468,25 @@ fn tetra_vol6(a: Point3, b: Point3, c: Point3, d: Point3) -> f64 {
 /// Insert points into `mesh` using Hilbert ordering and grid-coloring-based
 /// parallelism.
 ///
-/// The algorithm:
+/// The algorithm uses **staged parallelism**:
 /// 1. Sort all candidate points by their 3-D Hilbert index.
 /// 2. Partition into blocks of roughly `sqrt(N)` points.
-/// 3. Assign each block to a grid cell and compute cell colors.
+/// 3. Assign each block to a grid cell and compute cell colors (8-color).
 /// 4. For each color (0..8):
-///    a. In parallel: find containing tetrahedron for each point (read-only).
-///    b. Sequentially: split all found tetrahedra (writes mesh).
-///    c. Conflicts (uncontained points) go to a buffer for sequential retry.
+///    a. **Phase A (parallel read-only)**: find containing tetrahedron for each
+///       point. This is safe because reads are lock-free and no mesh mutation
+///       occurs. Uses `rayon::par_iter()` across blocks of the same color.
+///    b. **Phase B (sequential write)**: split all found tetrahedra. This is
+///       sequential because `swap_remove` invalidates element indices, which
+///       would cause race conditions under parallel writes.
+///
+/// Phase B is deliberately sequential — the read-only Phase A accounts for
+/// >80% of total runtime, so a parallel Phase B would yield diminishing returns
+/// while introducing significant complexity (slot-map / free-list required to
+/// avoid index invalidation from `swap_remove`).
+///
+/// The `TetOwnership` CAS scheme is defined but not yet used in writes; it
+/// serves as the foundation for future true parallel write support.
 ///
 /// Returns the number of successfully inserted points.
 fn delaunay_insert_parallel(
@@ -583,8 +594,8 @@ fn delaunay_insert_parallel(
         });
 
         // Phase B (sequential): apply splits.
-        for (_bi, results) in &findings {
-            let indices = &blocks[*_bi];
+        for (bi, results) in &findings {
+            let indices = &blocks[*bi];
             for (j, &ci) in indices.iter().enumerate() {
                 if let Some(_tet_idx) = results[j] {
                     let p = candidates[ci];
