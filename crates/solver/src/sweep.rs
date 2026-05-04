@@ -175,6 +175,117 @@ fn read_s11_complex(output_dir: &Path) -> Option<(f64, f64)> {
     Some((re, im))
 }
 
+/// Run a parameter sweep defined by optimetrics sweep definitions.
+///
+/// Generates the Cartesian product of all sweep variables, adjusts design
+/// variables for each combination, invokes the full solver pipeline, and
+/// aggregates results.
+///
+/// Returns a vector of `(variation_name, variables_map, s_param)` tuples.
+pub fn run_parameter_sweep(
+    design: &Design,
+    mesh_path: &Path,
+    work_dir: &Path,
+    progress: &dyn ProgressCallback,
+) -> Result<Vec<(String, HashMap<String, f64>, Option<SParameterData>)>, SolverError> {
+    use emstudio_domain::sweep_engine::{generate_sweep_plan, variation_dir_name};
+
+    let setup = design
+        .analysis_setups
+        .iter()
+        .find(|s| s.enabled)
+        .ok_or_else(|| SolverError::Validation("No enabled analysis setup".into()))?;
+
+    // Collect sweep definitions from optimetrics
+    use emstudio_domain::optimetrics::OptimetricsSetup;
+    let sweeps: Vec<_> = design
+        .optimetrics
+        .iter()
+        .filter_map(|opt| {
+            if let OptimetricsSetup::ParametricSweep { sweep_definitions, .. } = opt {
+                Some(sweep_definitions.clone())
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect();
+
+    if sweeps.is_empty() {
+        progress.on_log("No parameter sweep definitions found — running single solve");
+        let output_dir = work_dir.join("output");
+        std::fs::create_dir_all(&output_dir).map_err(|e| SolverError::io(&output_dir, e))?;
+        let config_path = config::write_palace_config(design, mesh_path, &output_dir)?;
+        solver_bridge::dispatch_solver(&config_path, progress)?;
+        return Ok(Vec::new());
+    }
+
+    let plan = generate_sweep_plan(&sweeps)
+        .map_err(|e| SolverError::ConfigGeneration(format!("Sweep plan: {e}")))?;
+
+    let total = plan.num_variations();
+    progress.on_log(&format!(
+        "Parameter sweep: {} variable(s), {} variation(s)",
+        plan.variable_names.len(),
+        total
+    ));
+
+    let mut results = Vec::with_capacity(total);
+
+    for (idx, vars) in plan.variations.iter().enumerate() {
+        if progress.is_cancelled() {
+            return Err(SolverError::Cancelled);
+        }
+
+        let dir_name = variation_dir_name(idx + 1);
+        progress.on_phase(&format!(
+            "Parameter sweep {}/{}: {}",
+            idx + 1, total, dir_name
+        ));
+
+        // Build a modified design with sweep variables substituted
+        let mut sweep_design = design.clone();
+        for (name, &value) in vars {
+            if let Some(v) = sweep_design.local_variables.get_mut(name) {
+                v.value = Some(format!("{}", value));
+            }
+        }
+
+        let variation_dir = work_dir.join(&dir_name);
+        std::fs::create_dir_all(&variation_dir)
+            .map_err(|e| SolverError::io(&variation_dir, e))?;
+        let output_dir = variation_dir.join("output");
+        std::fs::create_dir_all(&output_dir)
+            .map_err(|e| SolverError::io(&output_dir, e))?;
+
+        let config_path =
+            config::write_palace_config(&sweep_design, mesh_path, &output_dir)?;
+
+        match solver_bridge::dispatch_solver(&config_path, progress) {
+            Ok(_) => {
+                let s11 = read_s11_complex(&output_dir);
+                let entries: Vec<(f64, Option<(f64, f64)>)> =
+                    vec![(parse_frequency(&setup.solution_frequency).unwrap_or(1e9), s11)];
+                let sp_data = build_s_parameter_data(
+                    &sweep_design, &setup.name, &dir_name, &entries,
+                );
+                progress.on_log(&format!(
+                    "  Variation {} completed: {:?}",
+                    dir_name,
+                    vars.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>()
+                ));
+                results.push((dir_name, vars.clone(), Some(sp_data)));
+            }
+            Err(e) => {
+                progress.on_log(&format!("  Variation {} FAILED: {e}", dir_name));
+                results.push((dir_name, vars.clone(), None));
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 /// Build SParameterData from sweep results.
 fn build_s_parameter_data(
     design: &Design,

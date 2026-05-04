@@ -29,6 +29,62 @@ pub enum FieldComponent {
     ComponentY,
     /// Z component magnitude
     ComponentZ,
+    /// Poynting vector magnitude |E × H*| / 2
+    Poynting,
+    /// Specific Absorption Rate [W/kg]
+    SAR,
+    /// Ohmic loss density |J|²/σ [W/m³]
+    OhmicLoss,
+}
+
+/// Compute a derived field quantity at a single node.
+///
+/// `e` = (Ex_re, Ex_im, Ey_re, Ey_im, Ez_re, Ez_im)
+/// `h` = (Hx_re, Hx_im, Hy_re, Hy_im, Hz_re, Hz_im)
+pub fn compute_derived_field(
+    component: FieldComponent,
+    e: Option<(f64, f64, f64, f64, f64, f64)>,
+    h: Option<(f64, f64, f64, f64, f64, f64)>,
+    sigma: f64,
+    _rho: f64,
+) -> f64 {
+    match component {
+        FieldComponent::Poynting => {
+            let e = match e {
+                Some(e) => e,
+                None => return 0.0,
+            };
+            let h = match h {
+                Some(h) => h,
+                None => return 0.0,
+            };
+            // S = ½ Re(E × H*)
+            let sx = e.2 * h.4 + e.3 * h.5 - (e.4 * h.2 + e.5 * h.3);
+            let sy = e.4 * h.0 + e.5 * h.1 - (e.0 * h.4 + e.1 * h.5);
+            let sz = e.0 * h.2 + e.1 * h.3 - (e.2 * h.0 + e.3 * h.1);
+            0.5 * (sx.powi(2) + sy.powi(2) + sz.powi(2)).sqrt()
+        }
+        FieldComponent::SAR => {
+            let e = match e {
+                Some(e) => e,
+                None => return 0.0,
+            };
+            if sigma <= 0.0 {
+                return 0.0;
+            }
+            let e2 = e.0.powi(2) + e.1.powi(2) + e.2.powi(2) + e.3.powi(2) + e.4.powi(2) + e.5.powi(2);
+            sigma * e2 / (2.0 * _rho.max(1.0))
+        }
+        FieldComponent::OhmicLoss => {
+            let e = match e {
+                Some(e) => e,
+                None => return 0.0,
+            };
+            let e2 = e.0.powi(2) + e.1.powi(2) + e.2.powi(2) + e.3.powi(2) + e.4.powi(2) + e.5.powi(2);
+            sigma * e2
+        }
+        _ => 0.0,
+    }
 }
 
 /// Map emsfld field data onto a FieldMesh's vertex field_value.
@@ -252,6 +308,16 @@ fn extract_value(field: &FieldBlock, node_idx: usize, component: FieldComponent)
                 .get(base + 2)
                 .map(|c| c.magnitude())
                 .unwrap_or(0.0)
+        }
+        // Derived quantities (Poynting, SAR, OhmicLoss) require both E and H
+        // field data — use `compute_derived_field()` with both field blocks.
+        FieldComponent::Poynting | FieldComponent::SAR | FieldComponent::OhmicLoss => {
+            // Single-field extraction: return magnitude as fallback
+            if field.num_components >= 3 {
+                field.vector_magnitude(node_idx).unwrap_or(0.0)
+            } else {
+                field.data.get(node_idx).map(|cv| cv.magnitude()).unwrap_or(0.0)
+            }
         }
     }
 }

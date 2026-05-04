@@ -37,5 +37,6 @@ rem-driven = { workspace = true }
 rem-mom = { workspace = true }
 rem-bem = { workspace = true }
 rem-sbr = { workspace = true }
+rem-planar = { workspace = true }
 rem-result = { workspace = true }
 rem-parallel = { workspace = true }

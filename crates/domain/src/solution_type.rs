@@ -29,6 +29,10 @@ pub enum SolutionType {
     Q3D_C,
     /// Capacitance + conductance matrix (with dielectric loss).
     Q3D_CG,
+
+    // Planar EM
+    /// Planar MoM (Method of Moments) for layered-media RF passives.
+    PlanarMoM,
 }
 
 impl SolutionType {

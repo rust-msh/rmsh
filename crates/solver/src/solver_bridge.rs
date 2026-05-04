@@ -83,13 +83,27 @@ pub fn dispatch_solver(
                 })
         }
         ProblemType::BEM => {
-            Err(rem_core::RemError::NotImplemented(
-                "BEM solver dispatch not yet implemented".into(),
-            ))
+            rem_bem::run(&config)
+                .map(|()| SolverResult {
+                    converged: true,
+                    message: "BEM solve completed".into(),
+                })
+        }
+        ProblemType::Planar => {
+            rem_planar::run(&config)
+                .map(|()| SolverResult {
+                    converged: true,
+                    message: "Planar MoM solve completed".into(),
+                })
         }
         ProblemType::Transient => {
             Err(rem_core::RemError::NotImplemented(
                 "Transient solver not yet available".into(),
+            ))
+        }
+        ProblemType::FEBI => {
+            Err(rem_core::RemError::NotImplemented(
+                "FEBI solver not yet available via emstudio bridge".into(),
             ))
         }
     };

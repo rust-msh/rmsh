@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 pub mod solution_type;
 pub mod variable;
+pub mod layer_stack;
 pub mod material;
 pub mod geometry;
 pub mod geometry_engine;
@@ -37,6 +38,7 @@ pub mod vtk_export;
 // Milestone 8: Q3D features
 pub mod spice_export;
 pub mod rlcg_to_sparam;
+pub mod circuit_sim;
 
 // Milestone 9: Optimetrics
 pub mod sweep_engine;
@@ -239,6 +241,7 @@ mod tests {
             optimetrics: Vec::new(),
             reports: Vec::new(),
             solution_index: Default::default(),
+            layer_stack: None,
         };
 
         design.definitions.materials.push(MaterialDef {
@@ -300,6 +303,7 @@ mod tests {
             optimetrics: Vec::new(),
             reports: Vec::new(),
             solution_index: Default::default(),
+            layer_stack: None,
         };
         proj.designs.push(design);
 

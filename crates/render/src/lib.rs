@@ -243,9 +243,11 @@ impl SceneViewport {
     fn retessellate(&mut self, breps: &HashMap<String, BRep>) {
         if breps.is_empty() {
             self.cached_mesh = Some(Mesh {
-                vertices: Vec::new(),
+                nodes: Vec::new(),
                 indices: Vec::new(),
                 line_indices: Vec::new(),
+                normals: Vec::new(),
+                seam_line_indices: Vec::new(),
             });
             self.cached_brep = None;
             return;
@@ -254,9 +256,11 @@ impl SceneViewport {
         let meshes: Vec<Mesh> = breps.values().map(|b| Tessellator::tessellate(b)).collect();
         let mesh_refs: Vec<&Mesh> = meshes.iter().collect();
         let merged = merge_meshes(&mesh_refs).unwrap_or(Mesh {
-            vertices: Vec::new(),
+            nodes: Vec::new(),
             indices: Vec::new(),
             line_indices: Vec::new(),
+            normals: Vec::new(),
+            seam_line_indices: Vec::new(),
         });
         self.cached_mesh = Some(merged);
 

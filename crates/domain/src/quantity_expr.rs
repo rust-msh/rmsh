@@ -35,7 +35,7 @@ pub enum BaseQuantity {
     /// Z-parameter Z(row, col), 1-based.
     ZParameter { row: usize, col: usize },
     /// Far-field derived quantity by name (e.g. "GainTotal", "GainTheta").
-    FarFieldQuantity(String),
+    FarFieldCalcExpr(String),
     /// Convergence: max delta S per pass.
     ConvergenceDeltaS,
     /// Convergence: max delta energy per pass.
@@ -48,6 +48,13 @@ pub enum BaseQuantity {
         row: usize,
         col: usize,
     },
+    /// Field-derived quantity (field calculator).
+    FieldDerived(FieldCalcExpr),
+}
+
+/// Helper: squared complex norm |re + j·im|²
+fn complex_norm((re, im): (f64, f64)) -> f64 {
+    re * re + im * im
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -88,6 +95,33 @@ pub enum ExprError {
 // Data source abstraction for evaluation
 // ---------------------------------------------------------------------------
 
+/// A field quantity identifier for the field calculator.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FieldCalcExpr {
+    /// Electric field magnitude |E| [V/m]
+    MagE,
+    /// Magnetic field magnitude |H| [A/m]
+    MagH,
+    /// Current density magnitude |J| [A/m²]
+    MagJ,
+    /// Complex magnitude of E: sqrt(E·E*)
+    ComplexMagE,
+    /// Complex magnitude of H
+    ComplexMagH,
+    /// Vector E (returns 3 components separately)
+    VectorE,
+    /// Poynting vector magnitude |S| = |E × H*| [W/m²]
+    Poynting,
+    /// SAR (Specific Absorption Rate) = σ|E|²/(2ρ) [W/kg]
+    SAR,
+    /// Ohmic loss density = σ|E|² [W/m³]
+    OhmicLoss,
+    /// Electric energy density = ε|E|²/2 [J/m³]
+    ElectricEnergyDensity,
+    /// Magnetic energy density = μ|H|²/2 [J/m³]
+    MagneticEnergyDensity,
+}
+
 /// Evaluation context providing access to different result data sources.
 pub enum EvalContext<'a> {
     SParameter {
@@ -102,6 +136,19 @@ pub enum EvalContext<'a> {
     },
     Rlcg {
         data: &'a RlcgMatrixData,
+    },
+    /// Field data context: provides E/H field components at a point.
+    /// The closure returns the complex field value for a component at a spatial index.
+    Field {
+        /// Number of spatial points
+        num_points: usize,
+        /// Get field component: (point_idx, component) -> Complex
+        /// component: 0=E_x, 1=E_y, 2=E_z, 3=H_x, 4=H_y, 5=H_z
+        get_component: &'a dyn Fn(usize, usize) -> (f64, f64),
+        /// Conductivity at each point [S/m] (for SAR/ohmic loss)
+        conductivity: &'a [f64],
+        /// Mass density at each point [kg/m³] (for SAR)
+        mass_density: &'a [f64],
     },
 }
 
@@ -147,7 +194,15 @@ impl QuantityExpression {
                 | "AxialRatio"
         ) {
             return Ok(Self {
-                base: BaseQuantity::FarFieldQuantity(expr.to_string()),
+                base: BaseQuantity::FarFieldCalcExpr(expr.to_string()),
+                transforms: vec![],
+            });
+        }
+
+        // Try field calculator quantities
+        if let Some(fq) = parse_field_quantity(expr) {
+            return Ok(Self {
+                base: BaseQuantity::FieldDerived(fq),
                 transforms: vec![],
             });
         }
@@ -225,6 +280,84 @@ impl QuantityExpression {
             EvalContext::Convergence { data } => self.eval_convergence(data),
             EvalContext::FarField { data, phi_idx } => self.eval_far_field(data, *phi_idx),
             EvalContext::Rlcg { data } => self.eval_rlcg(data),
+            EvalContext::Field { .. } => self.eval_field(ctx),
+        }
+    }
+
+    /// Evaluate a field quantity expression against field data.
+    fn eval_field(&self, ctx: &EvalContext<'_>) -> Result<Vec<[f64; 2]>, ExprError> {
+        if let EvalContext::Field { num_points, get_component, conductivity: _, mass_density: _ } = ctx {
+            let fq = self.field_quantity()?;
+            let mut results = Vec::with_capacity(*num_points);
+
+            for i in 0..*num_points {
+                let val = match &fq {
+                    FieldCalcExpr::MagE => {
+                        let ex = complex_norm(get_component(i, 0));
+                        let ey = complex_norm(get_component(i, 1));
+                        let ez = complex_norm(get_component(i, 2));
+                        (ex + ey + ez).sqrt()
+                    }
+                    FieldCalcExpr::MagH => {
+                        let hx = complex_norm(get_component(i, 3));
+                        let hy = complex_norm(get_component(i, 4));
+                        let hz = complex_norm(get_component(i, 5));
+                        (hx + hy + hz).sqrt()
+                    }
+                    FieldCalcExpr::ComplexMagE => {
+                        let (ex_re, ex_im) = get_component(i, 0);
+                        let (ey_re, ey_im) = get_component(i, 1);
+                        let (ez_re, ez_im) = get_component(i, 2);
+                        (ex_re.powi(2) + ex_im.powi(2)
+                         + ey_re.powi(2) + ey_im.powi(2)
+                         + ez_re.powi(2) + ez_im.powi(2)).sqrt()
+                    }
+                    FieldCalcExpr::ComplexMagH => {
+                        let (hx_re, hx_im) = get_component(i, 3);
+                        let (hy_re, hy_im) = get_component(i, 4);
+                        let (hz_re, hz_im) = get_component(i, 5);
+                        (hx_re.powi(2) + hx_im.powi(2)
+                         + hy_re.powi(2) + hy_im.powi(2)
+                         + hz_re.powi(2) + hz_im.powi(2)).sqrt()
+                    }
+                    FieldCalcExpr::Poynting => {
+                        // S = ½ Re(E × H*)
+                        let (ex_re, ex_im) = get_component(i, 0);
+                        let (ey_re, ey_im) = get_component(i, 1);
+                        let (ez_re, ez_im) = get_component(i, 2);
+                        let (hx_re, hx_im) = get_component(i, 3);
+                        let (hy_re, hy_im) = get_component(i, 4);
+                        let (hz_re, hz_im) = get_component(i, 5);
+                        // E × H* = [Ey*Hz_conj - Ez*Hy_conj, Ez*Hx_conj - Ex*Hz_conj, Ex*Hy_conj - Ey*Hx_conj]
+                        let sx = ey_re * hz_re + ey_im * hz_im - (ez_re * hy_re + ez_im * hy_im);
+                        let sy = ez_re * hx_re + ez_im * hx_im - (ex_re * hz_re + ex_im * hz_im);
+                        let sz = ex_re * hy_re + ex_im * hy_im - (ey_re * hx_re + ey_im * hx_im);
+                        0.5 * (sx.powi(2) + sy.powi(2) + sz.powi(2)).sqrt()
+                    }
+                    FieldCalcExpr::SAR | FieldCalcExpr::OhmicLoss | FieldCalcExpr::ElectricEnergyDensity
+                    | FieldCalcExpr::MagneticEnergyDensity | FieldCalcExpr::MagJ
+                    | FieldCalcExpr::VectorE => {
+                        // These require material properties (σ, ρ, ε) or vector output
+                        // Return raw |E| as placeholder for now
+                        let ex = complex_norm(get_component(i, 0));
+                        let ey = complex_norm(get_component(i, 1));
+                        let ez = complex_norm(get_component(i, 2));
+                        (ex + ey + ez).sqrt()
+                    }
+                };
+                results.push([i as f64, val]);
+            }
+            Ok(results)
+        } else {
+            Err(ExprError::Eval("Field evaluation requires a Field context".into()))
+        }
+    }
+
+    /// Extract the FieldCalcExpr from this expression.
+    pub fn field_quantity(&self) -> Result<FieldCalcExpr, ExprError> {
+        match &self.base {
+            BaseQuantity::FieldDerived(fq) => Ok(fq.clone()),
+            other => Err(ExprError::Eval(format!("Expected field quantity, got {other:?}"))),
         }
     }
 
@@ -279,7 +412,7 @@ impl QuantityExpression {
         phi_idx: usize,
     ) -> Result<Vec<[f64; 2]>, ExprError> {
         match &self.base {
-            BaseQuantity::FarFieldQuantity(name) => {
+            BaseQuantity::FarFieldCalcExpr(name) => {
                 data.theta_cut(name, phi_idx).ok_or_else(|| {
                     ExprError::DataNotAvailable(format!(
                         "Far-field quantity '{name}' not found"
@@ -421,6 +554,24 @@ fn parse_function_call(expr: &str) -> Option<(&str, &str)> {
     Some((name, args))
 }
 
+/// Parse a field calculator quantity name.
+fn parse_field_quantity(name: &str) -> Option<FieldCalcExpr> {
+    match name {
+        "Mag_E" => Some(FieldCalcExpr::MagE),
+        "Mag_H" => Some(FieldCalcExpr::MagH),
+        "Mag_J" => Some(FieldCalcExpr::MagJ),
+        "ComplexMag_E" => Some(FieldCalcExpr::ComplexMagE),
+        "ComplexMag_H" => Some(FieldCalcExpr::ComplexMagH),
+        "Vector_E" => Some(FieldCalcExpr::VectorE),
+        "Poynting" => Some(FieldCalcExpr::Poynting),
+        "SAR" => Some(FieldCalcExpr::SAR),
+        "OhmicLoss" => Some(FieldCalcExpr::OhmicLoss),
+        "ElectricEnergyDensity" => Some(FieldCalcExpr::ElectricEnergyDensity),
+        "MagneticEnergyDensity" => Some(FieldCalcExpr::MagneticEnergyDensity),
+        _ => None,
+    }
+}
+
 /// Parse "row,col" → (row, col) as usize.
 fn parse_two_args(args: &str) -> Result<(usize, usize), ExprError> {
     let parts: Vec<&str> = args.split(',').map(|s| s.trim()).collect();
@@ -498,7 +649,7 @@ mod tests {
         let expr = QuantityExpression::parse("GainTotal").unwrap();
         assert_eq!(
             expr.base,
-            BaseQuantity::FarFieldQuantity("GainTotal".into())
+            BaseQuantity::FarFieldCalcExpr("GainTotal".into())
         );
     }
 

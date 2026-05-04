@@ -91,6 +91,7 @@ fn map_solution_type(st: &SolutionType) -> &'static str {
         SolutionType::SBRPlus => "SBR",
         SolutionType::Q3D_C | SolutionType::Q3D_CG => "Electrostatic",
         SolutionType::Q3D_DCRL | SolutionType::Q3D_ACRL => "Magnetostatic",
+        SolutionType::PlanarMoM => "Planar",
     }
 }
 
@@ -308,6 +309,42 @@ fn build_solver(design: &Design) -> Result<Value, SolverError> {
         }
         SolutionType::Q3D_DCRL | SolutionType::Q3D_ACRL => {
             solver["Magnetostatic"] = json!({ "Save": 1 });
+        }
+        SolutionType::PlanarMoM => {
+            let layer_stack = design.layer_stack.as_ref()
+                .ok_or_else(|| SolverError::ConfigGeneration(
+                    "PlanarMoM requires a LayerStack in the design".into()
+                ))?;
+
+            // Extract frequency range from setup
+            let freq = parse_frequency(&setup.solution_frequency).unwrap_or(1e9);
+
+            // Convert emstudio layer stack to Planar config layers
+            let substrate_layers: Vec<Value> = layer_stack.dielectric_layers()
+                .iter()
+                .map(|l| json!({
+                    "EpsR": l.eps_r.unwrap_or(1.0),
+                    "LossTan": l.loss_tangent.unwrap_or(0.0),
+                    "Thickness": l.thickness * 1e-3, // mm → m
+                }))
+                .collect();
+
+            // Default domain size from first conductor layer or a reasonable default
+            let lx = 0.05; // 50 mm default
+            let ly = 0.05;
+
+            solver["Planar"] = json!({
+                "Lx": lx,
+                "Ly": ly,
+                "Nx": 40,
+                "Ny": 40,
+                "FreqMin": freq,
+                "FreqMax": freq,
+                "FreqStep": 0.0,
+                "SubstrateLayers": substrate_layers,
+                "Ports": [],
+                "RefImpedance": 50.0,
+            });
         }
     }
 

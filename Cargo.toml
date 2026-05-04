@@ -50,10 +50,14 @@ tempfile = "3"
 pollster = "0.4"
 nalgebra = { version = "0.33", features = ["serde-serialize"] }
 num-complex = "0.4"
+num-traits = "0.2"
+rayon = "1.10"
+jsmpi = "0.1"
 log = "0.4"
 env_logger = "0.11"
 serde_yaml = "0.9"
 clap = { version = "4", features = ["derive"] }
+criterion = { version = "0.5", features = ["html_reports"] }
 rmetis = { path = "vendor/rem/vendor/rmetis", default-features = false }
 
 # rcad geometry kernel (git submodule at vendor/rcad)
@@ -62,6 +66,7 @@ rcad-modeling = { path = "vendor/rcad/libs/rcad-modeling" }
 rcad-algorithms = { path = "vendor/rcad/libs/rcad-algorithms" }
 rcad-render = { path = "vendor/rcad/libs/rcad-render" }
 rcad-step = { path = "vendor/rcad/libs/rcad-step" }
+rcad-scene = { path = "vendor/rcad/libs/rcad-scene" }
 
 # rmsh mesh generation (git submodule at vendor/rmsh)
 rmsh-model = { path = "vendor/rmsh/crates/model" }
@@ -84,3 +89,22 @@ rem-bem = { path = "vendor/rem/crates/bem" }
 rem-sbr = { path = "vendor/rem/crates/sbr" }
 rem-result = { path = "vendor/rem/crates/result" }
 rem-parallel = { path = "vendor/rem/crates/parallel" }
+rem-convert = { path = "vendor/rem/crates/convert" }
+rem-touchstone = { path = "vendor/rem/crates/touchstone" }
+rem-transient = { path = "vendor/rem/crates/transient" }
+rem-febi = { path = "vendor/rem/crates/febi" }
+rem-ddm = { path = "vendor/rem/crates/ddm" }
+rem-planar = { path = "vendor/rem/crates/planar" }
+rem-layered-green = { path = "vendor/rem/crates/layered_green" }
+rem-wasm = { path = "vendor/rem/crates/wasm" }
+
+# fem-rs foundation crates (needed by rem workspace inheritance)
+fem-core = { git = "https://github.com/rem-rs/fem-rs.git", rev = "7fc50a9" }
+fem-linalg = { git = "https://github.com/rem-rs/fem-rs.git", rev = "7fc50a9" }
+fem-mesh = { git = "https://github.com/rem-rs/fem-rs.git", rev = "7fc50a9" }
+fem-element = { git = "https://github.com/rem-rs/fem-rs.git", rev = "7fc50a9" }
+fem-space = { git = "https://github.com/rem-rs/fem-rs.git", rev = "7fc50a9" }
+fem-assembly = { git = "https://github.com/rem-rs/fem-rs.git", rev = "7fc50a9" }
+fem-solver = { git = "https://github.com/rem-rs/fem-rs.git", rev = "7fc50a9" }
+fem-amg = { git = "https://github.com/rem-rs/fem-rs.git", rev = "7fc50a9" }
+fem-io = { git = "https://github.com/rem-rs/fem-rs.git", rev = "7fc50a9" }

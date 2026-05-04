@@ -71,7 +71,7 @@ pub fn extract_brep_surfaces(
             let tessellated = Tessellator::tessellate(brep);
 
             let vertices: Vec<[f64; 3]> = tessellated
-                .vertices
+                .nodes
                 .iter()
                 .map(|v| [v[0] as f64, v[1] as f64, v[2] as f64])
                 .collect();

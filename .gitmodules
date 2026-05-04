@@ -3,7 +3,7 @@
 	url = https://github.com/cad-rs/rcad.git
 [submodule "vendor/rem"]
 	path = vendor/rem
-	url = https://github.com/javagg/rem2.git
+	url = https://github.com/rem-rs/rem.git
 [submodule "vendor/rmsh"]
 	path = vendor/rmsh
 	url = https://github.com/rust-msh/rmsh.git

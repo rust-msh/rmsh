@@ -15,6 +15,7 @@ use crate::output_variable::OutputVariable;
 use crate::radiation::RadiationSetup;
 use crate::report::Report;
 use crate::solution_index::SolutionIndex;
+use crate::layer_stack::LayerStack;
 use crate::solution_type::SolutionType;
 use crate::variable::Variable;
 
@@ -59,6 +60,9 @@ pub struct Design {
     pub reports: Vec<Report>,
     #[serde(default)]
     pub solution_index: SolutionIndex,
+    /// Optional PCB / package layer stack for planar EM workflows.
+    #[serde(default)]
+    pub layer_stack: Option<LayerStack>,
 }
 
 fn default_units() -> String {

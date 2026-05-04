@@ -465,7 +465,7 @@ impl GeometryEngine {
             OperationCommand::Import => {
                 let file_path = get_str(params, "file_path")?;
                 let brep = rcad_step::StepReader::read_file(file_path)
-                    .map_err(|e| GeometryError::BuildError(e))?;
+                    .map_err(|e| GeometryError::BuildError(e.to_string()))?;
                 let name = self.result_name(op, "Import");
                 Ok(Some(self.insert(name, brep, op.step, &attrs)))
             }
