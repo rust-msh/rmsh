@@ -177,7 +177,6 @@ pub struct BrepStepWriteOptions {
     pub protocol: StepProtocol,
     pub solid_color: Option<Color>,
     pub header: Option<StepHeader>,
-    pub gmsh_strict: bool,
 }
 
 impl Default for BrepStepWriteOptions {
@@ -186,7 +185,6 @@ impl Default for BrepStepWriteOptions {
             protocol: StepProtocol::Ap242,
             solid_color: None,
             header: None,
-            gmsh_strict: false,
         }
     }
 }
@@ -264,85 +262,24 @@ pub fn write_brep_step_with_options(
     brep: &BRep,
     options: &BrepStepWriteOptions,
 ) -> Result<String, StepError> {
-    let normalized_brep;
-    let brep_ref = if options.gmsh_strict {
-        normalized_brep = normalize_for_strict_step_export(brep);
-        &normalized_brep
-    } else {
-        brep
-    };
-
-    let protocol = if options.gmsh_strict {
-        StepProtocol::Ap214
-    } else {
-        options.protocol
-    };
     let colors = options.solid_color.map(|c| StepColor {
         solid_color: Some(c),
         face_colors: Vec::new(),
     });
-    let header = if options.gmsh_strict {
-        StepHeader::default()
-    } else {
-        options.header.clone().unwrap_or_default()
-    };
     let step_options = StepWriteOptions {
-        protocol,
+        protocol: options.protocol,
         colors,
         properties: Vec::new(),
         ap242_metadata: None,
-        header,
-        gmsh_strict: options.gmsh_strict,
+        header: options.header.clone().unwrap_or_default(),
         export_standalone_wire_overlay: true,
     };
 
-    let debug_selection = std::env::var("RMSH_STEP_DEBUG_SELECTION")
-        .ok()
-        .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-
-    let strict_selection = if options.gmsh_strict {
-        let selection = strict_export_selection(brep_ref);
-        // For solid BReps, selecting subsets can degrade topology emission
-        // (e.g. losing CLOSED_SHELL/MANIFOLD_SOLID_BREP in strict mode).
-        // Prefer exporting full topology directly whenever solid faces exist.
-        let total_faces: usize = brep_ref
-            .solids
-            .iter()
-            .flat_map(|s| s.shells.iter())
-            .map(|sh| sh.faces.len())
-            .sum();
-        if debug_selection {
-            let selected_faces = selection.as_ref().map(|(f, _)| f.len()).unwrap_or(0);
-            let selected_edges = selection.as_ref().map(|(_, e)| e.len()).unwrap_or(0);
-            eprintln!(
-                "[step-select] strict={} total_faces={} selection_faces={} selection_edges={} solids={} edges={}",
-                options.gmsh_strict,
-                total_faces,
-                selected_faces,
-                selected_edges,
-                brep_ref.solids.len(),
-                brep_ref.edges.len(),
-            );
-        }
-        if total_faces > 0 {
-            None
-        } else {
-            selection
-        }
-    } else {
-        None
-    };
-    let empty: &[usize] = &[];
-    let (selected_faces, selected_edges): (&[usize], &[usize]) = match &strict_selection {
-        Some((faces, edges)) => (faces.as_slice(), edges.as_slice()),
-        None => (empty, empty),
-    };
-
     Ok(StepWriter::write_string_with_options(
-        brep_ref,
+        brep,
         ExportSelection {
-            selected_faces,
-            selected_edges,
+            selected_faces: &[],
+            selected_edges: &[],
         },
         &step_options,
     ))
@@ -620,7 +557,6 @@ END-ISO-10303-21;
             protocol: rcad_step::StepProtocol::Ap242,
             solid_color: Some(rcad_kernel::appearance::Color::from_rgb8(30, 144, 255)),
             header: None,
-            gmsh_strict: false,
         };
 
         let step = write_brep_step_with_options(&brep, &options)
