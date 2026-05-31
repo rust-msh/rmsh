@@ -390,6 +390,7 @@ fn trimesh_to_brep(verts: &[glam::DVec3], tris: &[[usize; 3]]) -> BRep {
         normal: glam::DVec3::Z,
         triangles: tris.to_vec(),
         mesh_dirty: true,
+        sample_point: None,
     };
 
     BRep {
