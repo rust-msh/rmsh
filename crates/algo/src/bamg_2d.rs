@@ -228,7 +228,7 @@ impl Default for Bamg2D {
     fn default() -> Self {
         Self {
             metric_field: None,
-            max_passes: 20,
+            max_passes: 10,
             convergence_threshold: 0.01,
         }
     }
@@ -289,6 +289,7 @@ impl Mesher2D for Bamg2D {
                 break;
             }
 
+            // Single edge extraction per pass
             let edges = extract_edges(&triangles);
 
             // Classify edges by metric length
@@ -300,20 +301,29 @@ impl Mesher2D for Bamg2D {
                 }
             }
 
+            // Adaptive early exit: if few bad edges remain, converge.
+            let bad_ratio = split_candidates.len() as f64 / edges.len().max(1) as f64;
+            if bad_ratio < 0.02 {
+                break;
+            }
+
             // Phase 1: split too-long edges
+            let did_split = !split_candidates.is_empty();
             for (a, b) in &split_candidates {
                 let mid = metric_midpoint(nodes[*a], nodes[*b], field.as_ref());
                 split_edge(&mut nodes, &mut triangles, *a, *b, Some(mid));
             }
 
-            // Phase 2: metric-driven edge swaps
-            let edges = extract_edges(&triangles);
-            for &[a, b] in &edges {
-                let _ = metric_swap_edge(&nodes, &mut triangles, a, b, field.as_ref());
+            // Phase 2: metric-driven edge swaps (only if mesh was modified)
+            if did_split {
+                let edges = extract_edges(&triangles);
+                for &[a, b] in &edges {
+                    let _ = metric_swap_edge(&nodes, &mut triangles, a, b, field.as_ref());
+                }
             }
 
             // Phase 3: occasional smoothing on interior nodes
-            if _pass % 4 == 3 {
+            if _pass % 4 == 3 && did_split {
                 let neighbor_lists = build_neighbor_lists(&nodes, &triangles);
                 for i in 0..nodes.len() {
                     if !boundary_nodes.contains(&i) {
@@ -325,20 +335,6 @@ impl Mesher2D for Bamg2D {
                         );
                     }
                 }
-            }
-
-            // Convergence: all edges within tolerance
-            let edges = extract_edges(&triangles);
-            let non_unit_frac = edges
-                .iter()
-                .filter(|&&[a, b]| {
-                    let l = edge_metric_length(nodes[a], nodes[b], field.as_ref());
-                    l > split_ratio * 0.95 || l < collapse_ratio * 1.05
-                })
-                .count() as f64
-                / edges.len().max(1) as f64;
-            if non_unit_frac < self.convergence_threshold {
-                break;
             }
         }
 
