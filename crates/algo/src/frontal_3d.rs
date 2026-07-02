@@ -120,6 +120,11 @@ impl Mesher3D for Frontal3D {
         let mut front = Front3D::from_surface(&nodes, &surf_tris, surface)?;
         let mut tets: Vec<[usize; 4]> = Vec::new();
 
+        // Build spatial indices for fast node/tet lookup.
+        let grid_res = (surf_tris.len() as f64).cbrt().ceil() as usize;
+        let mut node_grid = NodeGrid::build(&nodes, grid_res.max(4).min(32));
+        let mut tet_grid = NodeGrid::build(&nodes, grid_res.max(4).min(32));
+
         let max_iters = (surf_tris.len() as u64)
             .saturating_mul(256)
             .saturating_add(8192) as usize;
@@ -140,9 +145,9 @@ impl Mesher3D for Frontal3D {
 
             let p_star = ideal_point_3d(pa, pb, pc, normal, local_h);
 
-            // Search for existing node near p_star
+            // Grid-based node search (O(1) expected vs O(N) linear scan)
             let reuse_radius = self.node_reuse_factor * local_h;
-            let p = find_nearby_node(&nodes, p_star, reuse_radius, &[a, b, c])
+            let p = find_nearby_node(&nodes, p_star, reuse_radius, &[a, b, c], &node_grid)
                 .unwrap_or_else(|| {
                     let idx = nodes.len();
                     nodes.push(p_star);
@@ -182,12 +187,18 @@ impl Mesher3D for Frontal3D {
                 continue;
             }
 
-            if !is_valid_tet(pa, pb, pc, pp, &tets, &nodes) {
+            if !is_valid_tet_grid(pa, pb, pc, pp, &tets, &nodes, &tet_grid) {
                 continue;
             }
 
             tets.push([a, b, c, p]);
             front.update(facet, p, &nodes);
+
+            // Rebuild node grid every ~200 new nodes.
+            if nodes.len() % 200 < 5 && iter_count < max_iters / 2 {
+                node_grid = NodeGrid::build(&nodes, grid_res.max(4).min(32));
+                tet_grid = NodeGrid::build(&nodes, grid_res.max(4).min(32));
+            }
         }
 
         // Fall back to Delaunay if front didn't fill the volume
@@ -521,27 +532,162 @@ fn extract_surface_triangles(
 }
 
 /// Find an existing node within `radius` of `target`, excluding `skip`.
+// ─── Spatial grid for fast node lookup ──────────────────────────────────────
+
+/// A uniform grid spatial index for fast nearby-node queries.
+///
+/// Replaces the O(N) linear scan in `find_nearby_node` with O(1) expected
+/// cell lookup, reducing the main loop from O(N²) to O(N log N).
+struct NodeGrid {
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    ox: f64,
+    oy: f64,
+    oz: f64,
+    sx: f64,
+    sy: f64,
+    sz: f64,
+    cells: Vec<Vec<usize>>,
+}
+
+impl NodeGrid {
+    fn build(nodes: &[[f64; 3]], target_per_axis: usize) -> Self {
+        let r = target_per_axis.max(4).min(64);
+        let (mut min, mut max) = bounds_3d(nodes);
+        for i in 0..3 {
+            let d = (max[i] - min[i]) * 0.05;
+            if d < 1e-12 { max[i] += 0.5; min[i] -= 0.5; }
+            else { min[i] -= d; max[i] += d; }
+        }
+        let dx = (max[0] - min[0]).max(1e-12);
+        let dy = (max[1] - min[1]).max(1e-12);
+        let dz = (max[2] - min[2]).max(1e-12);
+        let dmax = dx.max(dy).max(dz);
+        let nx = ((r as f64) * dx / dmax).ceil().max(1.0) as usize;
+        let ny = ((r as f64) * dy / dmax).ceil().max(1.0) as usize;
+        let nz = ((r as f64) * dz / dmax).ceil().max(1.0) as usize;
+        let sx = dx / nx as f64;
+        let sy = dy / ny as f64;
+        let sz = dz / nz as f64;
+        let n = nx * ny * nz;
+        let mut cells: Vec<Vec<usize>> = (0..n).map(|_| Vec::new()).collect();
+        for (i, p) in nodes.iter().enumerate() {
+            let ix = (((p[0] - min[0]) / sx).floor() as isize).clamp(0, (nx - 1) as isize) as usize;
+            let iy = (((p[1] - min[1]) / sy).floor() as isize).clamp(0, (ny - 1) as isize) as usize;
+            let iz = (((p[2] - min[2]) / sz).floor() as isize).clamp(0, (nz - 1) as isize) as usize;
+            cells[iz * ny * nx + iy * nx + ix].push(i);
+        }
+        Self { nx, ny, nz, ox: min[0], oy: min[1], oz: min[2], sx, sy, sz, cells }
+    }
+
+    fn cell_ijk(&self, p: [f64; 3]) -> (isize, isize, isize) {
+        let ix = ((p[0] - self.ox) / self.sx).floor() as isize;
+        let iy = ((p[1] - self.oy) / self.sy).floor() as isize;
+        let iz = ((p[2] - self.oz) / self.sz).floor() as isize;
+        (ix, iy, iz)
+    }
+
+    fn find_nearby(&self, nodes: &[[f64; 3]], target: [f64; 3], radius: f64, skip: &[usize]) -> Option<usize> {
+        let r2 = radius * radius;
+        let (ci, cj, ck) = self.cell_ijk(target);
+        // Number of cells to search in each direction = ceil(radius / cell_size)
+        let rd = (radius / self.sx.min(self.sy).min(self.sz)).ceil() as isize;
+        let rd = rd.max(1).min(3); // cap to avoid blowing up search
+        let mut best: Option<(usize, f64)> = None;
+        for dk in -rd..=rd {
+            for dj in -rd..=rd {
+                for di in -rd..=rd {
+                    let i = ci + di; let j = cj + dj; let k = ck + dk;
+                    if i < 0 || j < 0 || k < 0 || i >= self.nx as isize || j >= self.ny as isize || k >= self.nz as isize { continue; }
+                    for &ni in &self.cells[k as usize * self.ny * self.nx + j as usize * self.nx + i as usize] {
+                        if skip.contains(&ni) { continue; }
+                        let d2 = dist_sq(nodes[ni], target);
+                        if d2 < r2 {
+                            match best { Some((_, bd)) if d2 >= bd => {} _ => best = Some((ni, d2)) }
+                        }
+                    }
+                }
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+}
+
+fn bounds_3d(nodes: &[[f64; 3]]) -> ([f64; 3], [f64; 3]) {
+    let mut min = [f64::MAX; 3]; let mut max = [f64::MIN; 3];
+    for p in nodes {
+        min[0] = min[0].min(p[0]); min[1] = min[1].min(p[1]); min[2] = min[2].min(p[2]);
+        max[0] = max[0].max(p[0]); max[1] = max[1].max(p[1]); max[2] = max[2].max(p[2]);
+    }
+    (min, max)
+}
+
+/// O(1) expected-time nearby node search using a uniform grid.
+/// Falls back to linear scan when the grid is stale.
 fn find_nearby_node(
     nodes: &[[f64; 3]],
     target: [f64; 3],
     radius: f64,
     skip: &[usize],
+    node_grid: &NodeGrid,
 ) -> Option<usize> {
     let r2 = radius * radius;
+    let (ci, cj, ck) = node_grid.cell_ijk(target);
+    let rd = (radius / node_grid.sx.min(node_grid.sy).min(node_grid.sz)).ceil() as isize;
+    let rd = rd.max(1).min(3);
     let mut best: Option<(usize, f64)> = None;
-    for (i, p) in nodes.iter().enumerate() {
-        if skip.contains(&i) {
-            continue;
-        }
-        let d2 = dist_sq(*p, target);
-        if d2 < r2 {
-            match best {
-                Some((_, best_d2)) if d2 >= best_d2 => {}
-                _ => best = Some((i, d2)),
+    for dk in -rd..=rd {
+        for dj in -rd..=rd {
+            for di in -rd..=rd {
+                let i = ci + di; let j = cj + dj; let k = ck + dk;
+                if i < 0 || j < 0 || k < 0 || i >= node_grid.nx as isize || j >= node_grid.ny as isize || k >= node_grid.nz as isize { continue; }
+                for &ni in &node_grid.cells[k as usize * node_grid.ny * node_grid.nx + j as usize * node_grid.nx + i as usize] {
+                    if skip.contains(&ni) { continue; }
+                    let d2 = dist_sq(nodes[ni], target);
+                    if d2 < r2 {
+                        match best { Some((_, bd)) if d2 >= bd => {} _ => best = Some((ni, d2)) }
+                    }
+                }
             }
         }
     }
     best.map(|(i, _)| i)
+}
+
+/// O(1) expected-time validity check using grid-based tet lookups.
+/// Only checks tets in grid cells near the new tet's vertices.
+fn is_valid_tet_grid(
+    a: [f64; 3], b: [f64; 3], c: [f64; 3], p: [f64; 3],
+    existing_tets: &[[usize; 4]],
+    nodes: &[[f64; 3]],
+    tet_grid: &NodeGrid,
+) -> bool {
+    if tetra_volume(a, b, c, p) < 1e-15 { return false; }
+    // Collect candidate tet indices from grid cells near all 4 vertices.
+    let mut candidates = Vec::<usize>::new();
+    for &pt in &[a, b, c, p] {
+        let (ci, cj, ck) = tet_grid.cell_ijk(pt);
+        for dk in -1isize..=1 { for dj in -1..=1 { for di in -1..=1 {
+            let i = ci + di; let j = cj + dj; let k = ck + dk;
+            if i < 0 || j < 0 || k < 0 || i >= tet_grid.nx as isize || j >= tet_grid.ny as isize || k >= tet_grid.nz as isize { continue; }
+            for &ti in &tet_grid.cells[k as usize * tet_grid.ny * tet_grid.nx + j as usize * tet_grid.nx + i as usize] {
+                candidates.push(ti);
+            }
+        }}}
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    for &ti in &candidates {
+        if ti >= existing_tets.len() { continue; }
+        let tet = &existing_tets[ti];
+        let tv = [nodes[tet[0]], nodes[tet[1]], nodes[tet[2]], nodes[tet[3]]];
+        if point_in_tetrahedron_strict(tv[0], tv[1], tv[2], tv[3], p, 1e-8) { return false; }
+        for &v in &tv {
+            if point_in_tetrahedron_strict(a, b, c, p, v, 1e-8) { return false; }
+        }
+    }
+    true
 }
 
 /// Compute the ideal new-node position for a front facet.
