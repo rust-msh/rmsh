@@ -251,6 +251,7 @@ impl MeshParamState {
             min_size: self.min_size,
             max_size: self.max_size,
             optimize_passes: self.optimize_passes,
+            size_field: None,
         }
     }
 }

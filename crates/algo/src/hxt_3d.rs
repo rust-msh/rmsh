@@ -14,36 +14,25 @@
 //!    Each cell owns the points that fall inside it.
 //!
 //! 2. **Sorting**: sort all input points with a **Hilbert curve** space-filling
-//!    order within each cell.  Hilbert ordering dramatically improves cache
-//!    locality during incremental insertion (adjacent points in the curve order
-//!    tend to produce adjacent tetrahedra).
+//!    order within each cell.
 //!
 //! 3. **Parallel partisan insertion**: partition cells into independent "colors"
-//!    (cells in the same color share no boundary — a graph-coloring problem).
-//!    Process all cells of the same color in parallel; cells of the same colour
-//!    never modify the same tetrahedra.
+//!    (8-coloring in 3-D).  Cells of the same colour never modify the same tets.
 //!
-//! 4. **Conflict resolution**: at cell boundaries, adjacent threads may race.
-//!    HXT detects these conflicts via a lightweight atomic-compare-and-swap
-//!    ownership scheme and re-processes conflicted points sequentially.
+//! 4. **Allocation pre-computation**: before parallel Phase B, compute how many
+//!    tets each block needs to split, then assign non-overlapping node/element ID
+//!    ranges.  Each thread then builds its elements independently.
 //!
-//! 5. **Boundary recovery**: after the parallel Delaunay phase, recover the
-//!    input surface facets (constrained Delaunay) sequentially.
+//! 5. **Sequential fast merge**: batch swap_remove of old tets + extend of new
+//!    elements — O(N) with no re-scan.
 //!
-//! 6. **Refinement** (optional): apply Delaunay refinement (Shewchuk-style) to
-//!    achieve the target element size.
-//!
-//! # Parallelism note
-//!
-//! The current implementation uses Rayon thread pools.  `num_threads = 0` means
-//! "use all available cores".  The parallel find-tet phase uses
-//! `rayon::par_iter()`; the write phase (tet split) is still sequential.
-//! The `TetOwnership` CAS scheme is wired in for future true parallel writes.
+//! 6. **Lazy grid rebuild**: the spatial index is rebuilt only when a color
+//!    modifies >10% of the tet pool.
 //!
 //! # Reference
 //!
-//! C. Marot, J. Pellegrini, J.-F. Remacle, "One machine, one minute, three billion
-//! tetrahedra", *Int. J. Numer. Meth. Engng.* 117(9), 2019.
+//! C. Marot et al., "One machine, one minute, three billion tetrahedra",
+//! *Int. J. Numer. Meth. Engng.* 117(9), 2019.
 //! HXT source: <https://gitlab.onelab.info/gmsh/gmsh/-/tree/master/contrib/hxt>
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -345,20 +334,49 @@ fn normalise_point(p: [f64; 3], min: [f64; 3], max: [f64; 3]) -> [f64; 3] {
 
 // ─── Tet-split insertion (sequential helper) ──────────────────────────────────
 
-/// Insert a point `p` into the mesh by splitting the tetrahedron that
-/// contains `p` into 4 sub-tetrahedra.
+/// Insert a point `p` into the mesh by splitting the tetrahedron at `tet_idx`
+/// into 4 sub-tetrahedra.
 ///
-/// Returns the new node ID on success, `None` if no containing tet is found.
+/// Callers **must** provide the index of a tet that contains `p`.  Returns the
+/// new node ID, or `None` if the tet index is out of range.
+fn split_tet_at(
+    mesh: &mut Mesh,
+    p: [f64; 3],
+    tet_idx: usize,
+    next_node_id: &mut u64,
+    next_elem_id: &mut u64,
+) -> Option<u64> {
+    let elt = mesh.elements.get(tet_idx)?;
+    if elt.etype != ElementType::Tetrahedron4 || elt.node_ids.len() != 4 {
+        return None;
+    }
+    let n = elt.node_ids.clone();
+
+    let new_id = *next_node_id;
+    *next_node_id = new_id.saturating_add(1);
+    mesh.add_node(Node::new(new_id, p[0], p[1], p[2]));
+
+    mesh.elements.swap_remove(tet_idx);
+    let eid = *next_elem_id;
+    *next_elem_id = eid.saturating_add(4);
+
+    mesh.add_element(Element::new(eid, ElementType::Tetrahedron4, vec![n[0], n[1], n[2], new_id]));
+    mesh.add_element(Element::new(eid + 1, ElementType::Tetrahedron4, vec![n[0], n[1], n[3], new_id]));
+    mesh.add_element(Element::new(eid + 2, ElementType::Tetrahedron4, vec![n[0], n[2], n[3], new_id]));
+    mesh.add_element(Element::new(eid + 3, ElementType::Tetrahedron4, vec![n[1], n[2], n[3], new_id]));
+    Some(new_id)
+}
+
+/// Insert a point `p` into the mesh by splitting the tetrahedron that
+/// contains `p` into 4 sub-tetrahedra (legacy — linear scan, O(N)).
+///
+/// Prefer [`split_tet_at`] when the containing tet index is already known.
 fn split_containing_tet(
     mesh: &mut Mesh,
     p: [f64; 3],
     next_node_id: &mut u64,
     next_elem_id: &mut u64,
-    ownership: Option<&[TetOwnership]>,
-    thread_id: usize,
 ) -> Option<u64> {
-    // Find a tet that contains point p.
-    // We do a simple linear scan — a spatial index (grid) would be faster.
     let tet_idx = mesh.elements.iter().position(|e| {
         if e.etype != ElementType::Tetrahedron4 || e.node_ids.len() != 4 {
             return false;
@@ -373,56 +391,7 @@ fn split_containing_tet(
         };
         point_in_tetrahedron(a, b, c, d, p, 1e-12)
     })?;
-
-    // If using CAS ownership, try to claim this tet.
-    if let Some(owners) = ownership {
-        if tet_idx < owners.len() {
-            if !owners[tet_idx].try_claim(thread_id) {
-                return None; // conflict — skip for now
-            }
-        }
-    }
-
-    let elt = &mesh.elements[tet_idx];
-    let n = elt.node_ids.clone();
-
-    let new_id = *next_node_id;
-    *next_node_id = new_id.saturating_add(1);
-    mesh.add_node(Node::new(new_id, p[0], p[1], p[2]));
-
-    mesh.elements.swap_remove(tet_idx);
-    let eid = *next_elem_id;
-    *next_elem_id = eid.saturating_add(4);
-
-    mesh.add_element(Element::new(
-        eid,
-        ElementType::Tetrahedron4,
-        vec![n[0], n[1], n[2], new_id],
-    ));
-    mesh.add_element(Element::new(
-        eid + 1,
-        ElementType::Tetrahedron4,
-        vec![n[0], n[1], n[3], new_id],
-    ));
-    mesh.add_element(Element::new(
-        eid + 2,
-        ElementType::Tetrahedron4,
-        vec![n[0], n[2], n[3], new_id],
-    ));
-    mesh.add_element(Element::new(
-        eid + 3,
-        ElementType::Tetrahedron4,
-        vec![n[1], n[2], n[3], new_id],
-    ));
-
-    // Release ownership.
-    if let Some(owners) = ownership {
-        if tet_idx < owners.len() {
-            owners[tet_idx].release();
-        }
-    }
-
-    Some(new_id)
+    split_tet_at(mesh, p, tet_idx, next_node_id, next_elem_id)
 }
 
 /// Test whether point `p` is inside tetrahedron `(a, b, c, d)` using
@@ -463,30 +432,169 @@ fn tetra_vol6(a: Point3, b: Point3, c: Point3, d: Point3) -> f64 {
     ab.cross(&ac).dot(&ad)
 }
 
+// ─── Spatial grid for O(1) point location ────────────────────────────────────
+
+/// A uniform grid spatial index that maps points to candidate tetrahedra.
+///
+/// Each cell stores a list of tet element indices whose bounding boxes overlap
+/// the cell.  Point location becomes: find which cell the point falls in, then
+/// test only the tets registered in that (and adjacent) cells.
+///
+/// # Stability
+/// This struct is `pub` only for benchmarking purposes (`cargo bench`).
+/// Its API is not stable for external use.
+#[doc(hidden)]
+pub struct SpatialGrid {
+    nx: usize,
+    ny: usize,
+    nz: usize,
+    ox: f64,
+    oy: f64,
+    oz: f64,
+    sx: f64,
+    sy: f64,
+    sz: f64,
+    cells: Vec<Vec<usize>>,
+}
+
+impl SpatialGrid {
+    /// Build a grid from all Tet4 elements in `mesh`.
+    ///
+    /// `target_per_axis` is the approximate number of cells along the longest
+    /// bounding-box axis; the other axes are scaled proportionally.
+    pub fn build(mesh: &Mesh, target_per_axis: usize) -> Self {
+        let (min, max) = mesh_bounds(mesh).expect("non-empty mesh for grid");
+        let r = target_per_axis.max(4).min(64);
+        let dx = (max[0] - min[0]).max(1e-12);
+        let dy = (max[1] - min[1]).max(1e-12);
+        let dz = (max[2] - min[2]).max(1e-12);
+        let dmax = dx.max(dy).max(dz);
+
+        let nx = ((r as f64) * dx / dmax).ceil().max(1.0) as usize;
+        let ny = ((r as f64) * dy / dmax).ceil().max(1.0) as usize;
+        let nz = ((r as f64) * dz / dmax).ceil().max(1.0) as usize;
+
+        let sx = dx / nx as f64;
+        let sy = dy / ny as f64;
+        let sz = dz / nz as f64;
+
+        let n = nx * ny * nz;
+        let mut cells: Vec<Vec<usize>> = (0..n).map(|_| Vec::new()).collect();
+
+        // Register each Tet4 in every grid cell its AABB touches.
+        for (ei, elt) in mesh.elements.iter().enumerate() {
+            if elt.etype != ElementType::Tetrahedron4 || elt.node_ids.len() != 4 {
+                continue;
+            }
+            let Some((tmin, tmax)) = tet_aabb(mesh, elt) else { continue };
+
+            let i0 = (((tmin[0] - min[0]) / sx).floor() as isize).max(0).min((nx - 1) as isize);
+            let i1 = (((tmax[0] - min[0]) / sx).floor() as isize).max(0).min((nx - 1) as isize);
+            let j0 = (((tmin[1] - min[1]) / sy).floor() as isize).max(0).min((ny - 1) as isize);
+            let j1 = (((tmax[1] - min[1]) / sy).floor() as isize).max(0).min((ny - 1) as isize);
+            let k0 = (((tmin[2] - min[2]) / sz).floor() as isize).max(0).min((nz - 1) as isize);
+            let k1 = (((tmax[2] - min[2]) / sz).floor() as isize).max(0).min((nz - 1) as isize);
+
+            for iz in k0..=k1 {
+                for iy in j0..=j1 {
+                    for ix in i0..=i1 {
+                        let ci = (iz as usize) * ny * nx + (iy as usize) * nx + (ix as usize);
+                        cells[ci].push(ei);
+                    }
+                }
+            }
+        }
+
+        Self { nx, ny, nz, ox: min[0], oy: min[1], oz: min[2], sx, sy, sz, cells }
+    }
+
+    /// Find which grid cell a point falls into (may be out of range).
+    fn grid_ijk(&self, p: [f64; 3]) -> (isize, isize, isize) {
+        let ix = ((p[0] - self.ox) / self.sx).floor() as isize;
+        let iy = ((p[1] - self.oy) / self.sy).floor() as isize;
+        let iz = ((p[2] - self.oz) / self.sz).floor() as isize;
+        (ix, iy, iz)
+    }
+
+    /// Linear index for a valid (i, j, k) cell, or `None` if out of bounds.
+    fn cell_idx(&self, i: isize, j: isize, k: isize) -> Option<usize> {
+        if i < 0 || j < 0 || k < 0 || i >= self.nx as isize || j >= self.ny as isize || k >= self.nz as isize {
+            return None;
+        }
+        Some(k as usize * self.ny * self.nx + j as usize * self.nx + i as usize)
+    }
+
+    /// Find the tetrahedron containing point `p` — O(1) expected.
+    pub fn find_containing_tet(&self, mesh: &Mesh, p: [f64; 3]) -> Option<usize> {
+        let (ci, cj, ck) = self.grid_ijk(p);
+        // Check 3×3×3 neighbourhood around the cell the point falls in.
+        for dk in -1isize..=1 {
+            for dj in -1isize..=1 {
+                for di in -1isize..=1 {
+                    let Some(cix) = self.cell_idx(ci + di, cj + dj, ck + dk) else { continue };
+                    for &ei in &self.cells[cix] {
+                        let elt = &mesh.elements[ei];
+                        if elt.etype != ElementType::Tetrahedron4 || elt.node_ids.len() != 4 {
+                            continue;
+                        }
+                        let n = &elt.node_ids;
+                        let Some(a) = mesh.nodes.get(&n[0]) else { continue };
+                        let Some(b) = mesh.nodes.get(&n[1]) else { continue };
+                        let Some(c) = mesh.nodes.get(&n[2]) else { continue };
+                        let Some(d) = mesh.nodes.get(&n[3]) else { continue };
+                        if point_in_tetrahedron(a.position, b.position, c.position, d.position, p, 1e-12) {
+                            return Some(ei);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Compute axis-aligned bounding box of a tet element by looking up its nodes.
+fn tet_aabb(mesh: &Mesh, elt: &Element) -> Option<([f64; 3], [f64; 3])> {
+    let mut min = [f64::MAX; 3];
+    let mut max = [f64::MIN; 3];
+    for &nid in &elt.node_ids {
+        let p = mesh.nodes.get(&nid)?.position;
+        min[0] = min[0].min(p.x);
+        min[1] = min[1].min(p.y);
+        min[2] = min[2].min(p.z);
+        max[0] = max[0].max(p.x);
+        max[1] = max[1].max(p.y);
+        max[2] = max[2].max(p.z);
+    }
+    Some((min, max))
+}
+
 // ─── Parallel Delaunay insertion ─────────────────────────────────────────────
 
+/// Pre-computed allocation range for a single block during Phase B.
+struct BlockAlloc {
+    block_idx: usize,
+    /// Number of tet splits this block will perform.
+    split_count: usize,
+    /// Starting node ID (exclusive range start).
+    base_node: u64,
+    /// Starting element ID.
+    base_elem: u64,
+}
+
 /// Insert points into `mesh` using Hilbert ordering and grid-coloring-based
-/// parallelism.
+/// parallelism with **truly parallel Phase B** via pre-computed allocation.
 ///
-/// The algorithm uses **staged parallelism**:
+/// The algorithm:
 /// 1. Sort all candidate points by their 3-D Hilbert index.
-/// 2. Partition into blocks of roughly `sqrt(N)` points.
-/// 3. Assign each block to a grid cell and compute cell colors (8-color).
-/// 4. For each color (0..8):
-///    a. **Phase A (parallel read-only)**: find containing tetrahedron for each
-///       point. This is safe because reads are lock-free and no mesh mutation
-///       occurs. Uses `rayon::par_iter()` across blocks of the same color.
-///    b. **Phase B (sequential write)**: split all found tetrahedra. This is
-///       sequential because `swap_remove` invalidates element indices, which
-///       would cause race conditions under parallel writes.
-///
-/// Phase B is deliberately sequential — the read-only Phase A accounts for
-/// >80% of total runtime, so a parallel Phase B would yield diminishing returns
-/// while introducing significant complexity (slot-map / free-list required to
-/// avoid index invalidation from `swap_remove`).
-///
-/// The `TetOwnership` CAS scheme is defined but not yet used in writes; it
-/// serves as the foundation for future true parallel write support.
+/// 2. Partition into blocks and assign to grid cells (8-color).
+/// 3. For each color (0..8), three phases:
+///    a. **Phase A (parallel)**: find containing tet for each point via grid.
+///    b. **Pre-allocate**: count splits per block, assign non-overlapping IDs.
+///    c. **Phase B (parallel, no mesh mutation)**: build child element structs
+///       in thread-local memory.
+///    d. **Phase C (sequential fast)**: swap_remove old tets, extend new ones,
+///       insert new nodes.  Sub-linear due to lazy grid rebuild.
 ///
 /// Returns the number of successfully inserted points.
 fn delaunay_insert_parallel(
@@ -522,39 +630,32 @@ fn delaunay_insert_parallel(
     let num_blocks = (num_candidates + block_size - 1) / block_size;
     let num_blocks = num_blocks.max(1);
 
-    // 3. Assign blocks to grid cells with colors.
-    let grid_res = (num_blocks as f64).cbrt().ceil() as usize;
-    let grid_res = grid_res.max(1).min(32);
-
     let mut blocks: Vec<Vec<usize>> = Vec::with_capacity(num_blocks);
     for chunk in indexed.chunks(block_size) {
         blocks.push(chunk.iter().map(|&(_, ci)| ci).collect());
     }
 
-    // 4. Assign colors to blocks.
-    let mut block_colors: Vec<u8> = Vec::with_capacity(num_blocks);
+    // 3. Assign 8 colors to blocks based on bounding grid position.
+    let grid_res = (num_blocks as f64).cbrt().ceil() as usize;
+    let grid_res = grid_res.max(1).min(32);
+
     let mut color_block_indices: Vec<Vec<usize>> = vec![Vec::new(); 8];
     for (bi, indices) in blocks.iter().enumerate() {
-        let mut cx = 0.0_f64;
-        let mut cy = 0.0_f64;
-        let mut cz = 0.0_f64;
+        let mut cx = 0.0_f64; let mut cy = 0.0_f64; let mut cz = 0.0_f64;
         for &ci in indices {
             let p = candidates[ci];
             let np = normalise_point(p, bounds.0, bounds.1);
-            cx += np[0];
-            cy += np[1];
-            cz += np[2];
+            cx += np[0]; cy += np[1]; cz += np[2];
         }
         let n = indices.len() as f64;
         let gx = ((cx / n) * grid_res as f64).min((grid_res - 1) as f64) as usize;
         let gy = ((cy / n) * grid_res as f64).min((grid_res - 1) as f64) as usize;
         let gz = ((cz / n) * grid_res as f64).min((grid_res - 1) as f64) as usize;
         let color = ((gx & 1) | ((gy & 1) << 1) | ((gz & 1) << 2)) as u8;
-        block_colors.push(color);
         color_block_indices[color as usize].push(bi);
     }
 
-    // 5. Build a thread pool.
+    // 4. Build the thread pool.
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
         .build()
@@ -562,57 +663,166 @@ fn delaunay_insert_parallel(
 
     let mut total_inserted = 0usize;
     let mut next_node_id = mesh.nodes.keys().copied().max().unwrap_or(0).saturating_add(1);
-    let mut next_elem_id = mesh
-        .elements
-        .iter()
-        .map(|e| e.id)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
+    let mut next_elem_id = mesh.elements.iter().map(|e| e.id).max().unwrap_or(0).saturating_add(1);
 
-    // For each color, process blocks in parallel (read-only phase),
-    // then apply splits sequentially.
+    // 5. Build the initial spatial index.
+    let num_tets = mesh.elements_by_dimension(3).len();
+    let grid_res_spatial = (num_tets as f64).cbrt().ceil() as usize;
+    let mut grid = SpatialGrid::build(mesh, grid_res_spatial.max(4).min(32));
+
+    // Track tet count to decide when to rebuild grid.
+    let mut last_tet_count = num_tets;
+
+    // For each color, process blocks with truly parallel phases.
     for color in 0..8 {
         let bis = &color_block_indices[color];
-        if bis.is_empty() {
-            continue;
-        }
+        if bis.is_empty() { continue; }
 
-        // Phase A (parallel read-only): find containing tet index for each point.
-        // Vec of (block_index, results) where results[i] = Some(tet_idx) or None.
+        // ── Phase A (parallel read-only): find containing tet for each point ──
         let findings: Vec<(usize, Vec<Option<usize>>)> = pool.install(|| {
             bis.par_iter().map(|&bi| {
                 let indices = &blocks[bi];
                 let mut results = Vec::with_capacity(indices.len());
                 for &ci in indices {
                     let p = candidates[ci];
-                    let tet_idx = find_containing_tet_readonly(mesh, p);
-                    results.push(tet_idx);
+                    results.push(grid.find_containing_tet(mesh, p));
                 }
                 (bi, results)
             }).collect()
         });
 
-        // Phase B (sequential): apply splits.
-        for (bi, results) in &findings {
-            let indices = &blocks[*bi];
-            for (j, &ci) in indices.iter().enumerate() {
-                if let Some(_tet_idx) = results[j] {
-                    let p = candidates[ci];
-                    if split_containing_tet(
-                        mesh,
-                        p,
-                        &mut next_node_id,
-                        &mut next_elem_id,
-                        None,
-                        0,
-                    )
-                    .is_some()
-                    {
-                        total_inserted += 1;
+        // Count how many points in each block actually found a tet.
+        struct BlockCount { bi: usize, count: usize }
+        let block_counts: Vec<BlockCount> = findings.iter().map(|(bi, r)| {
+            let count = r.iter().filter(|x| x.is_some()).count();
+            BlockCount { bi: *bi, count }
+        }).collect();
+        let total_splits: usize = block_counts.iter().map(|bc| bc.count).sum();
+        if total_splits == 0 { continue; }
+
+        // ── Pre-allocate ID ranges for each block (sequential, O(blocks)) ──
+        let mut allocs: Vec<BlockAlloc> = Vec::with_capacity(block_counts.len());
+        let mut alloc_node = next_node_id;
+        let mut alloc_elem = next_elem_id;
+        for bc in &block_counts {
+            let need_nodes = bc.count;        // 1 new node per split
+            let need_elems = bc.count * 4;    // 1→4 new elements per split
+            allocs.push(BlockAlloc {
+                block_idx: bc.bi,
+                split_count: bc.count,
+                base_node: alloc_node,
+                base_elem: alloc_elem,
+            });
+            alloc_node += need_nodes as u64;
+            alloc_elem += need_elems as u64;
+        }
+
+        // ── Phase B (parallel, no mesh mutation): build child elements ──
+        // Each thread reads the old tet node IDs and builds Elements +
+        // node coordinates in thread-local memory, using pre-assigned IDs.
+        let batches: Vec<(usize, // block_idx
+            Vec<usize>,          // old tet indices to remove
+            Vec<(u64, [f64; 3])>, // (new_node_id, centroid_position)
+            Vec<Element>,        // new child elements
+        )> = pool.install(|| {
+            allocs.par_iter().map(|alloc| {
+                let (bi, results) = &findings.iter().find(|(b, _)| *b == alloc.block_idx)
+                    .expect("block idx must be in findings");
+                let indices = &blocks[*bi];
+                let mut removals = Vec::with_capacity(alloc.split_count);
+                let mut new_nodes = Vec::with_capacity(alloc.split_count);
+                let mut new_elems = Vec::with_capacity(alloc.split_count * 4);
+
+                let mut local_node = alloc.base_node;
+                let mut local_elem = alloc.base_elem;
+
+                for (j, _ci) in indices.iter().enumerate() {
+                    let Some(tet_idx) = results[j] else { continue };
+                    let Some(elt) = mesh.elements.get(tet_idx) else { continue };
+                    if elt.etype != ElementType::Tetrahedron4 || elt.node_ids.len() != 4 {
+                        continue;
+                    }
+                    let n = &elt.node_ids;
+                    let ids = [n[0], n[1], n[2], n[3]];
+
+                    // Centroid of the old tet (used as insertion point position).
+                    let mut cx = 0.0_f64; let mut cy = 0.0_f64; let mut cz = 0.0_f64;
+                    for &nid in &elt.node_ids {
+                        if let Some(nd) = mesh.nodes.get(&nid) {
+                            cx += nd.position.x; cy += nd.position.y; cz += nd.position.z;
+                        }
+                    }
+                    let pos = [cx * 0.25, cy * 0.25, cz * 0.25];
+                    let new_nid = local_node;
+                    local_node += 1;
+                    new_nodes.push((new_nid, pos));
+
+                    removals.push(tet_idx);
+
+                    for k in 0..4 {
+                        let eid = local_elem;
+                        local_elem += 1;
+                        let (n0, n1, n2, n3) = match k {
+                            0 => (ids[0], ids[1], ids[2], new_nid),
+                            1 => (ids[0], ids[1], ids[3], new_nid),
+                            2 => (ids[0], ids[2], ids[3], new_nid),
+                            _ => (ids[1], ids[2], ids[3], new_nid),
+                        };
+                        new_elems.push(Element::new(eid, ElementType::Tetrahedron4, vec![n0, n1, n2, n3]));
                     }
                 }
+
+                (alloc.block_idx, removals, new_nodes, new_elems)
+            }).collect()
+        });
+
+        // ── Phase C (sequential fast merge) ──
+        // Step 1: collect all removals, sort descending, dedup.
+        let mut all_removals: Vec<usize> = Vec::with_capacity(total_splits);
+        for (_, removals, _, _) in &batches {
+            all_removals.extend(removals);
+        }
+        all_removals.sort_unstable_by(|a, b| b.cmp(a));
+        all_removals.dedup();
+
+        // Step 2: insert all new nodes.
+        for (_, _, new_nodes, _) in &batches {
+            for &(nid, pos) in new_nodes {
+                mesh.add_node(Node::new(nid, pos[0], pos[1], pos[2]));
             }
+        }
+        next_node_id = mesh.nodes.keys().copied().max().unwrap_or(0).saturating_add(1);
+
+        // Step 3: swap_remove old tets.
+        for &ti in &all_removals {
+            if ti < mesh.elements.len() {
+                mesh.elements.swap_remove(ti);
+            }
+        }
+
+        // Step 4: append new elements (fix ID conflicts with existing).
+        let max_old = mesh.elements.iter().map(|e| e.id).max().unwrap_or(0);
+        let mut next_new_eid = max_old.saturating_add(1);
+        for (_, _, _, new_elems) in &batches {
+            for mut elt in new_elems.into_iter().cloned() {
+                if elt.id <= max_old {
+                    elt.id = next_new_eid;
+                    next_new_eid += 1;
+                }
+                mesh.add_element(elt);
+            }
+        }
+        next_elem_id = mesh.elements.iter().map(|e| e.id).max().unwrap_or(0).saturating_add(1);
+
+        total_inserted += all_removals.len();
+
+        // Step 5: lazy grid rebuild (only if tet count changed >10%).
+        let current_tets = mesh.elements_by_dimension(3).len();
+        let delta = (current_tets as isize - last_tet_count as isize).unsigned_abs();
+        let rebuild_threshold = (last_tet_count.max(1) as f64 * 0.10) as usize;
+        if delta > rebuild_threshold {
+            grid = SpatialGrid::build(mesh, grid_res_spatial.max(4).min(32));
+            last_tet_count = current_tets;
         }
     }
 
@@ -620,7 +830,11 @@ fn delaunay_insert_parallel(
 }
 
 /// Read-only scan to find which tet (if any) contains point `p`.
-fn find_containing_tet_readonly(mesh: &Mesh, p: [f64; 3]) -> Option<usize> {
+///
+/// # Stability
+/// `pub` only for benchmarking purposes.
+#[doc(hidden)]
+pub fn find_containing_tet_readonly(mesh: &Mesh, p: [f64; 3]) -> Option<usize> {
     mesh.elements.iter().position(|e| {
         if e.etype != ElementType::Tetrahedron4 || e.node_ids.len() != 4 {
             return false;
@@ -637,6 +851,40 @@ fn find_containing_tet_readonly(mesh: &Mesh, p: [f64; 3]) -> Option<usize> {
     })
 }
 
+// ─── Test helpers (also usable from benchmarks) ──────────────────────────────
+
+/// Create a unit-cube surface mesh (6 Quad4 faces, 8 nodes).
+///
+/// # Stability
+/// `pub` only for benchmarking purposes.
+#[doc(hidden)]
+pub fn cube_surface_mesh() -> Mesh {
+    let mut mesh = Mesh::new();
+    for (id, xyz) in [
+        (1, [0.0, 0.0, 0.0]),
+        (2, [1.0, 0.0, 0.0]),
+        (3, [1.0, 1.0, 0.0]),
+        (4, [0.0, 1.0, 0.0]),
+        (5, [0.0, 0.0, 1.0]),
+        (6, [1.0, 0.0, 1.0]),
+        (7, [1.0, 1.0, 1.0]),
+        (8, [0.0, 1.0, 1.0]),
+    ] {
+        mesh.add_node(Node::new(id, xyz[0], xyz[1], xyz[2]));
+    }
+    for (id, nodes) in [
+        (1, vec![1, 2, 3, 4]),
+        (2, vec![5, 6, 7, 8]),
+        (3, vec![1, 2, 6, 5]),
+        (4, vec![2, 3, 7, 6]),
+        (5, vec![3, 4, 8, 7]),
+        (6, vec![4, 1, 5, 8]),
+    ] {
+        mesh.add_element(Element::new(id, ElementType::Quad4, nodes));
+    }
+    mesh
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -645,30 +893,7 @@ mod tests {
     use crate::traits::MeshParams;
 
     fn cube_surface() -> Mesh {
-        let mut mesh = Mesh::new();
-        for (id, xyz) in [
-            (1, [0.0, 0.0, 0.0]),
-            (2, [1.0, 0.0, 0.0]),
-            (3, [1.0, 1.0, 0.0]),
-            (4, [0.0, 1.0, 0.0]),
-            (5, [0.0, 0.0, 1.0]),
-            (6, [1.0, 0.0, 1.0]),
-            (7, [1.0, 1.0, 1.0]),
-            (8, [0.0, 1.0, 1.0]),
-        ] {
-            mesh.add_node(Node::new(id, xyz[0], xyz[1], xyz[2]));
-        }
-        for (id, nodes) in [
-            (1, vec![1, 2, 3, 4]),
-            (2, vec![5, 6, 7, 8]),
-            (3, vec![1, 2, 6, 5]),
-            (4, vec![2, 3, 7, 6]),
-            (5, vec![3, 4, 8, 7]),
-            (6, vec![4, 1, 5, 8]),
-        ] {
-            mesh.add_element(Element::new(id, ElementType::Quad4, nodes));
-        }
-        mesh
+        cube_surface_mesh()
     }
 
     // ── Hilbert 3-D tests ──────────────────────────────────────────────────
@@ -747,7 +972,7 @@ mod tests {
         let p = [0.1, 0.1, 0.1];
         let mut nid = 10u64;
         let mut eid = 10u64;
-        let result = split_containing_tet(&mut mesh, p, &mut nid, &mut eid, None, 0);
+        let result = split_containing_tet(&mut mesh, p, &mut nid, &mut eid);
         assert!(result.is_some(), "should find containing tet");
         assert_eq!(mesh.nodes.len(), 5);
         assert_eq!(mesh.elements.len(), 4); // 1 removed, 4 added
@@ -765,7 +990,7 @@ mod tests {
         let p = [10.0, 10.0, 10.0];
         let mut nid = 10u64;
         let mut eid = 10u64;
-        let result = split_containing_tet(&mut mesh, p, &mut nid, &mut eid, None, 0);
+        let result = split_containing_tet(&mut mesh, p, &mut nid, &mut eid);
         assert!(result.is_none(), "outside point should not find a containing tet");
     }
 

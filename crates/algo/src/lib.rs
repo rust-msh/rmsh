@@ -1,14 +1,30 @@
 pub use rmsh_io::{MshError, parse_msh};
 
+// ─── Exact geometric predicates (Shewchuk adaptive arithmetic) ────────────────
+
+/// Robust orient3d / insphere / orient2d / incircle predicates.
+pub mod exact_pred;
+pub use exact_pred::*;
+
 // ─── Existing algorithms ──────────────────────────────────────────────────────
 
 pub mod triangulate2d;
-pub use triangulate2d::{MeshError, Polygon2D, mesh_polygon, triangulate_points};
+pub use delaunay_2d::{Delaunay2DError, Polygon2D, mesh_polygon};
+pub use triangulate2d::{triangulate_points};
 
 pub(crate) mod planar_meshing;
 
 pub mod tetrahedralize3d;
 pub use tetrahedralize3d::{CentroidStarMesher3D, Mesh3DError, tetrahedralize_closed_surface};
+
+// ─── Size field system (Gmsh Field equivalent) ────────────────────────────────
+
+pub mod size_field;
+pub use size_field::{
+    BoxField, ConstantField, DistanceField, FieldError, FieldLookup, FieldManager,
+    MathEvalField, MaxField, MinField, RestrictField, SizeField, SizeAsMetric2D, SizeAsMetric3D,
+    ThresholdField,
+};
 
 // ─── Abstract traits ──────────────────────────────────────────────────────────
 
@@ -63,6 +79,13 @@ pub use frontal_3d::Frontal3D;
 /// HXT: high-performance parallel Delaunay tetrahedralization (Gmsh algo 10).
 pub mod hxt_3d;
 pub use hxt_3d::Hxt3D;
+// Re-export for benchmarks (not stable API)
+#[doc(hidden)]
+pub use hxt_3d::{SpatialGrid, cube_surface_mesh, find_containing_tet_readonly};
+
+/// BCC lattice isosurface stuffing — initial tetrahedral mesh.
+pub mod isosurface_stuffing;
+pub use isosurface_stuffing::BccMesher;
 
 /// MMG3D: anisotropic surface and volume remeshing (Gmsh algo 7).
 pub mod mmg_remesh;
@@ -77,3 +100,19 @@ pub use laplacian_smooth::{LaplacianSmooth, LaplacianVariant};
 /// Mesh quality optimizer: edge swaps, node insertion/collapse, smoothing.
 pub mod mesh_optimize;
 pub use mesh_optimize::{MeshQualityOptimizer, OptimizeConfig, QualityMetric};
+
+/// P1 → P2 element promotion (edge-midpoint insertion).
+pub mod promote;
+pub use promote::{p2_node_count, p2_type, promote_to_p2};
+
+/// Transfinite interpolation for structured quad/hex meshing.
+pub mod transfinite;
+pub use transfinite::*;
+
+/// 3-D boundary recovery — flip-based edge/face recovery for constrained Delaunay.
+pub mod boundary_recovery;
+pub use boundary_recovery::*;
+
+/// Boundary layer mesh extrusion (prism/hex layer generation).
+pub mod boundary_layer;
+pub use boundary_layer::*;

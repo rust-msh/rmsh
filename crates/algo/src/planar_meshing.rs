@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use rmsh_model::{Element, ElementType, Mesh, Node};
 
 use crate::traits::{Domain2D, MeshAlgoError};
-use crate::triangulate2d::{Polygon2D, triangulate_points};
+use crate::delaunay_2d::Polygon2D;
+use crate::triangulate2d::triangulate_points;
 
 pub(crate) fn validate_domain(domain: &Domain2D, mesh_size: f64) -> Result<(), MeshAlgoError> {
     if !mesh_size.is_finite() || mesh_size <= 0.0 {

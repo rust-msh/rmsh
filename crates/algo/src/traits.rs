@@ -24,7 +24,10 @@
 //! ```
 
 use rmsh_model::Mesh;
+use std::sync::Arc;
 use thiserror::Error;
+
+use crate::size_field::FieldManager;
 
 // ─── Error Type ───────────────────────────────────────────────────────────────
 
@@ -53,26 +56,25 @@ pub enum MeshAlgoError {
 /// Parameters shared by all mesh generation algorithms.
 ///
 /// All size constraints are expressed in the same length unit as the input geometry.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MeshParams {
-    /// Target element edge length (characteristic length *h*).
-    ///
-    /// Controls the coarseness / density of the output mesh.
     pub element_size: f64,
-
-    /// Minimum allowed element edge length.
-    ///
-    /// Elements smaller than this are not normally produced. Defaults to `element_size / 10`.
     pub min_size: f64,
-
-    /// Maximum allowed element edge length.
-    ///
-    /// Edges longer than this are subdivided. Defaults to `element_size * 2`.
     pub max_size: f64,
-
-    /// Number of mesh-quality optimization passes executed *after* the initial
-    /// mesh is generated. Set to `0` to skip optimization entirely.
     pub optimize_passes: u32,
+    pub size_field: Option<Arc<FieldManager>>,
+}
+
+impl std::fmt::Debug for MeshParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeshParams")
+            .field("element_size", &self.element_size)
+            .field("min_size", &self.min_size)
+            .field("max_size", &self.max_size)
+            .field("optimize_passes", &self.optimize_passes)
+            .field("size_field", &self.size_field.as_ref().map(|_| "Some(FieldManager)"))
+            .finish()
+    }
 }
 
 impl MeshParams {
@@ -83,6 +85,20 @@ impl MeshParams {
             min_size: element_size / 10.0,
             max_size: element_size * 2.0,
             optimize_passes: 3,
+            size_field: None,
+        }
+    }
+
+    /// Query the local characteristic length at `(x, y, z)`.
+    ///
+    /// Returns the background field value when set, clamped to `[min_size, max_size]`.
+    /// Falls back to `element_size` when no field is configured.
+    pub fn element_size_at(&self, x: f64, y: f64, z: f64) -> f64 {
+        match &self.size_field {
+            Some(mgr) => mgr.evaluate(x, y, z)
+                .map(|lc| lc.clamp(self.min_size, self.max_size))
+                .unwrap_or(self.element_size),
+            None => self.element_size,
         }
     }
 }

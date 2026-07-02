@@ -622,12 +622,19 @@ fn gmsh_type_id(element_type: ElementType) -> Result<i32, MshError> {
     match element_type {
         ElementType::Point1 => Ok(15),
         ElementType::Line2 => Ok(1),
+        ElementType::Line3 => Ok(8),
         ElementType::Triangle3 => Ok(2),
+        ElementType::Triangle6 => Ok(9),
         ElementType::Quad4 => Ok(3),
+        ElementType::Quad9 => Ok(10),
         ElementType::Tetrahedron4 => Ok(4),
+        ElementType::Tetrahedron10 => Ok(11),
         ElementType::Hexahedron8 => Ok(5),
+        ElementType::Hexahedron27 => Ok(12),
         ElementType::Prism6 => Ok(6),
+        ElementType::Prism18 => Ok(13),
         ElementType::Pyramid5 => Ok(7),
+        ElementType::Pyramid14 => Ok(14),
         ElementType::Unknown(_) => Err(MshError::UnsupportedElementType(element_type)),
     }
 }

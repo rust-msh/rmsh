@@ -6,5 +6,19 @@ edition.workspace = true
 [dependencies]
 rmsh-io = { workspace = true }
 rmsh-model = { workspace = true }
+robust = { workspace = true }
+nalgebra = { workspace = true }
 thiserror = { workspace = true }
 rayon = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+rmsh-io = { workspace = true }
+
+[[bench]]
+name = "point_location"
+harness = false
+
+[[bench]]
+name = "meshing"
+harness = false

@@ -57,6 +57,9 @@ eframe = { version = "0.33", default-features = false }
 log = "0.4"
 env_logger = "0.11"
 
+# Predicates — Shewchuk exact arithmetic
+robust = "1.2"
+
 # Error handling
 anyhow = "1"
 thiserror = "2"

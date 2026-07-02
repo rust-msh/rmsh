@@ -305,6 +305,7 @@ mod tests {
             min_size: 0.0,
             max_size: 0.0,
             optimize_passes: 0,
+            size_field: None,
         };
 
         let err = mesher

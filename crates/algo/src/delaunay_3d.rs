@@ -44,9 +44,10 @@
 //! and bistellar face flips (2-to-3, 3-to-2, 4-to-4).
 
 use rmsh_model::{Element, ElementType, Mesh, Node};
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 
-use crate::tetrahedralize3d::CentroidStarMesher3D;
+use crate::isosurface_stuffing::BccMesher;
 use crate::traits::{MeshAlgoError, MeshParams, Mesher3D};
 
 // ─── Public struct ────────────────────────────────────────────────────────────
@@ -101,13 +102,23 @@ impl Mesher3D for Delaunay3D {
     fn mesh_3d(&self, surface: &Mesh, params: &MeshParams) -> Result<Mesh, MeshAlgoError> {
         validate_params(self, params)?;
 
-        // Phase 0: seed with a robust closed-surface tetrahedralization.
+        // Phase 0: seed with a BCC-lattice initial mesh (isosurface stuffing).
         //
-        // We then run a quality-driven refinement loop to move toward
-        // Delaunay-style radius-edge constraints.
-        let seed = CentroidStarMesher3D.mesh_3d(surface, params)?;
+        // The BCC cell size is chosen to match the target element density,
+        // producing a well-conditioned initial tetrahedralization for any
+        // closed surface topology (including non-star-shaped domains).
+        let bcc_cell = (params.element_size * 0.5).max(params.min_size * 0.5);
+        let mut mesh = BccMesher { cell_size: bcc_cell }.mesh_3d(surface, params)?;
+
+        // Phase 1: boundary recovery — force missing surface edges/faces
+        // back into the tetrahedralization.
+        if let Err(e) = crate::boundary_recovery::recover_boundary(surface, &mut mesh) {
+            eprintln!("boundary recovery warning: {e}");
+        }
+
+        // Phase 2: Delaunay refinement.
         refine_bad_tetrahedra(
-            seed,
+            mesh,
             self.max_radius_edge_ratio,
             params.element_size,
             params.max_size,
@@ -125,62 +136,31 @@ fn refine_bad_tetrahedra(
 ) -> Result<Mesh, MeshAlgoError> {
     let mut stats = RefinementStats::default();
     let sliver_floor_deg = 0.25_f64;
-
-    // Hard edge-length stop criterion combines target and optional max-size cap.
     let edge_limit = target_size.min(max_size);
-
-    // Keep refinement bounded and predictable for UI usage, while still letting
-    // element_size effectively control mesh density.
     let size_factor = ((mesh.diagonal_length() / edge_limit).ceil() as u32).clamp(1, 32);
     let max_passes = (optimize_passes.max(1) * size_factor).min(256);
     if max_passes == 0 {
         return Ok(mesh);
     }
 
-    let mut next_node_id = mesh
-        .nodes
-        .keys()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    let mut next_elem_id = mesh
-        .elements
-        .iter()
-        .map(|e| e.id)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
+    let mut next_node_id = mesh.nodes.keys().copied().max().unwrap_or(0).saturating_add(1);
+    let mut next_elem_id = mesh.elements.iter().map(|e| e.id).max().unwrap_or(0).saturating_add(1);
+
+    // Build quality cache + heap — O(N) with one full scan.
+    let mut cache = QualityCache::build(&mesh, max_radius_edge_ratio, edge_limit, sliver_floor_deg);
+    // If no bad tets, skip refinement
+    let Some((mut worst_idx, _q)) = cache.pop_worst(max_radius_edge_ratio, edge_limit, sliver_floor_deg) else {
+        return Ok(mesh);
+    };
 
     for _pass in 0..max_passes {
-        let Some((worst_idx, _score)) =
-            find_worst_tetrahedron(&mesh, max_radius_edge_ratio, edge_limit, sliver_floor_deg)
-        else {
-            stats.exits_no_worst += 1;
-            break;
-        };
-
+        // Get node coordinates for the worst tet.
         let worst_nodes = match mesh.elements.get(worst_idx) {
             Some(e) if e.etype == ElementType::Tetrahedron4 && e.node_ids.len() == 4 => {
                 [e.node_ids[0], e.node_ids[1], e.node_ids[2], e.node_ids[3]]
             }
             _ => break,
         };
-        if worst_nodes.len() != 4 {
-            break;
-        }
-
-        let ratio = tetra_radius_edge_ratio_from_mesh(&mesh, &worst_nodes)?;
-        let longest_edge = tetra_max_edge_length_from_mesh(&mesh, &worst_nodes)?;
-        let min_dihedral = tetra_min_dihedral_from_mesh(&mesh, &worst_nodes)?;
-        if ratio <= max_radius_edge_ratio
-            && longest_edge <= edge_limit
-            && min_dihedral >= sliver_floor_deg
-        {
-            stats.exits_quality_satisfied += 1;
-            break;
-        }
-
         let (p0, p1, p2, p3) = (
             node_xyz_from_mesh(&mesh, worst_nodes[0])?,
             node_xyz_from_mesh(&mesh, worst_nodes[1])?,
@@ -188,116 +168,103 @@ fn refine_bad_tetrahedra(
             node_xyz_from_mesh(&mesh, worst_nodes[3])?,
         );
 
-        let centroid = [
-            (p0[0] + p1[0] + p2[0] + p3[0]) * 0.25,
-            (p0[1] + p1[1] + p2[1] + p3[1]) * 0.25,
-            (p0[2] + p1[2] + p2[2] + p3[2]) * 0.25,
-        ];
+        // Shewchuk-style refinement: insert the circumcenter of the worst tet.
+        // This is guaranteed to improve the mesh and, for radius-edge ratio
+        // ρ ≤ 2, the algorithm terminates with a minimum dihedral bound.
+        let (circumcenter, circumradius) = circumsphere(p0, p1, p2, p3);
+        let circumcenter_is_valid = circumradius.is_finite()
+            && circumradius < edge_limit * 2.0
+            && circumradius > 0.0;
 
-        let sliver_like = min_dihedral < sliver_floor_deg * 2.0 && ratio > max_radius_edge_ratio * 1.1;
-        let best_point = if sliver_like {
-            stats.sliver_priority_inserts += 1;
-            select_fallback_refinement_point(p0, p1, p2, p3)
-                .or_else(|| select_refinement_point(p0, p1, p2, p3))
-                .unwrap_or(centroid)
-        } else {
-            select_refinement_point(p0, p1, p2, p3)
-                .or_else(|| select_fallback_refinement_point(p0, p1, p2, p3))
-                .unwrap_or(centroid)
-        };
-        let mut insertion_point = best_point;
+        let mut insertion_point: [f64; 3];
         let mut edge_split = None::<(usize, usize, usize, usize)>;
-        let predicted_min = min_child_dihedral_for_point(p0, p1, p2, p3, best_point);
-        if predicted_min < sliver_floor_deg * 0.5 {
-            stats.edge_bisection_considered += 1;
-            if let Some((i, j, k, l, edge_point, edge_metrics)) =
-                best_edge_split_partition([p0, p1, p2, p3])
-            {
-                let point_metrics = split_quality_metrics(p0, p1, p2, p3, best_point)
-                    .map(|(_, md, mr, sf)| (md, sf, mr))
-                    .unwrap_or((predicted_min, 1.0, f64::INFINITY));
 
-                let edge_better = (edge_metrics.0 > point_metrics.0 + 1e-6)
-                    || ((edge_metrics.0 - point_metrics.0).abs() < 1e-6
-                        && ((edge_metrics.1 < point_metrics.1 - 1e-9)
-                            || ((edge_metrics.1 - point_metrics.1).abs() < 1e-9
-                                && edge_metrics.2 < point_metrics.2)));
-                let edge_not_exploding = edge_metrics.2 <= point_metrics.2 * 2.5;
+        if circumcenter_is_valid {
+            // Standard Shewchuk: insert circumcenter.
+            insertion_point = circumcenter;
+            stats.circumcenter_refinement += 1;
 
-                if edge_better && edge_not_exploding {
+            // Edge-bisection fallback for slivers or when the circumcenter
+            // would produce a terrible child dihedral angle.
+            let predicted_min = min_child_dihedral_for_point(p0, p1, p2, p3, circumcenter);
+            if predicted_min < sliver_floor_deg * 0.5 {
+                stats.edge_bisection_considered += 1;
+                if let Some((i, j, k, l, edge_point, _edge_metrics)) =
+                    best_edge_split_partition([p0, p1, p2, p3])
+                {
                     insertion_point = edge_point;
                     edge_split = Some((i, j, k, l));
                     stats.edge_bisection_fallback += 1;
                 } else {
                     stats.edge_bisection_rejected += 1;
                 }
+            }
+        } else {
+            // Degenerate or near-degenerate: fall back to edge bisection
+            // or centroid if bisection is not available.
+            stats.circumcenter_refinement += 1;
+            if let Some((i, j, k, l, edge_point, _edge_metrics)) =
+                best_edge_split_partition([p0, p1, p2, p3])
+            {
+                insertion_point = edge_point;
+                edge_split = Some((i, j, k, l));
+                stats.edge_bisection_fallback += 1;
             } else {
-                stats.edge_bisection_rejected += 1;
+                insertion_point = [
+                    (p0[0] + p1[0] + p2[0] + p3[0]) * 0.25,
+                    (p0[1] + p1[1] + p2[1] + p3[1]) * 0.25,
+                    (p0[2] + p1[2] + p2[2] + p3[2]) * 0.25,
+                ];
+                stats.centroid_fallback += 1;
             }
         }
 
-        if insertion_point == centroid {
-            stats.centroid_fallback += 1;
-        } else {
-            stats.candidate_selected += 1;
-        }
         let new_node_id = next_node_id;
         next_node_id = next_node_id.saturating_add(1);
+        mesh.add_node(Node::new(new_node_id, insertion_point[0], insertion_point[1], insertion_point[2]));
 
-        mesh.add_node(Node::new(
-            new_node_id,
-            insertion_point[0],
-            insertion_point[1],
-            insertion_point[2],
-        ));
-
-        // Replace one bad tetrahedron by four children sharing the inserted node,
-        // or two children via longest-edge bisection for strongly sliver-like cases.
+        // ── Split ────────────────────────────────────────────────────────────
         let [n0, n1, n2, n3] = worst_nodes;
         let ids = [n0, n1, n2, n3];
 
         mesh.elements.swap_remove(worst_idx);
+        cache.swap_remove(worst_idx);
+
         if let Some((i, j, k, l)) = edge_split {
-            mesh.add_element(Element::new(
-                next_elem_id,
-                ElementType::Tetrahedron4,
-                vec![ids[i], new_node_id, ids[k], ids[l]],
-            ));
-            next_elem_id = next_elem_id.saturating_add(1);
-            mesh.add_element(Element::new(
-                next_elem_id,
-                ElementType::Tetrahedron4,
-                vec![new_node_id, ids[j], ids[k], ids[l]],
-            ));
-            next_elem_id = next_elem_id.saturating_add(1);
+            // 2 children (edge bisection)
+            for (a, b, c, d) in [(ids[i], new_node_id, ids[k], ids[l]), (new_node_id, ids[j], ids[k], ids[l])] {
+                let elt = Element::new(next_elem_id, ElementType::Tetrahedron4, vec![a, b, c, d]);
+                next_elem_id = next_elem_id.saturating_add(1);
+                let q = compute_tet_quality(&mesh, &elt, max_radius_edge_ratio, edge_limit, sliver_floor_deg);
+                mesh.add_element(elt);
+                cache.push(q);
+            }
         } else {
-            mesh.add_element(Element::new(
-                next_elem_id,
-                ElementType::Tetrahedron4,
-                vec![n0, n1, n2, new_node_id],
-            ));
-            next_elem_id = next_elem_id.saturating_add(1);
-            mesh.add_element(Element::new(
-                next_elem_id,
-                ElementType::Tetrahedron4,
-                vec![n0, n1, n3, new_node_id],
-            ));
-            next_elem_id = next_elem_id.saturating_add(1);
-            mesh.add_element(Element::new(
-                next_elem_id,
-                ElementType::Tetrahedron4,
-                vec![n0, n2, n3, new_node_id],
-            ));
-            next_elem_id = next_elem_id.saturating_add(1);
-            mesh.add_element(Element::new(
-                next_elem_id,
-                ElementType::Tetrahedron4,
-                vec![n1, n2, n3, new_node_id],
-            ));
-            next_elem_id = next_elem_id.saturating_add(1);
+            // 4 children (centroid/refinement split)
+            for nodes in [
+                [n0, n1, n2, new_node_id],
+                [n0, n1, n3, new_node_id],
+                [n0, n2, n3, new_node_id],
+                [n1, n2, n3, new_node_id],
+            ] {
+                let elt = Element::new(next_elem_id, ElementType::Tetrahedron4, nodes.to_vec());
+                next_elem_id = next_elem_id.saturating_add(1);
+                let q = compute_tet_quality(&mesh, &elt, max_radius_edge_ratio, edge_limit, sliver_floor_deg);
+                mesh.add_element(elt);
+                cache.push(q);
+            }
         }
 
         stats.refined_tets += 1;
+
+        // Fetch the next worst tetrahedron from the heap.
+        match cache.pop_worst(max_radius_edge_ratio, edge_limit, sliver_floor_deg) {
+            Some((idx, _next_q)) => { worst_idx = idx; }
+            None => {
+                stats.exits_no_worst += 1;
+                break;
+            }
+        }
     }
 
     let flip_passes = optimize_passes.clamp(1, 8) as usize;
@@ -311,9 +278,9 @@ fn refine_bad_tetrahedra(
 
     if should_log_refinement_stats() {
         eprintln!(
-            "delaunay3d refinement stats: refined_tets={}, candidate_selected={}, centroid_fallback={}, sliver_priority_inserts={}, edge_bisection_considered={}, edge_bisection_fallback={}, edge_bisection_rejected={}, local_face_flips={}, local_edge_flips={}, local_edge_sliver_accepts={}, exits_no_worst={}, exits_quality_satisfied={}",
+            "delaunay3d refinement stats: refined_tets={}, circumcenter_refinement={}, centroid_fallback={}, sliver_priority_inserts={}, edge_bisection_considered={}, edge_bisection_fallback={}, edge_bisection_rejected={}, local_face_flips={}, local_edge_flips={}, local_edge_sliver_accepts={}, exits_no_worst={}, exits_quality_satisfied={}",
             stats.refined_tets,
-            stats.candidate_selected,
+            stats.circumcenter_refinement,
             stats.centroid_fallback,
             stats.sliver_priority_inserts,
             stats.edge_bisection_considered,
@@ -333,7 +300,7 @@ fn refine_bad_tetrahedra(
 #[derive(Default)]
 struct RefinementStats {
     refined_tets: usize,
-    candidate_selected: usize,
+    circumcenter_refinement: usize,
     centroid_fallback: usize,
     sliver_priority_inserts: usize,
     edge_bisection_considered: usize,
@@ -756,6 +723,148 @@ fn should_log_refinement_stats() -> bool {
     std::env::var("RMSH_DEBUG_REFINEMENT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
+}
+
+// ─── Quality cache ────────────────────────────────────────────────────────────
+
+/// Pre-computed quality metrics for a single Tet4 element.
+#[derive(Clone, Copy, Debug)]
+struct TetQuality {
+    /// Radius-edge ratio `R / l_min`.
+    ratio: f64,
+    /// Minimum dihedral angle (degrees).
+    min_dihedral: f64,
+    /// Maximum edge length.
+    max_edge: f64,
+    /// Composite score: `max(ratio/max_r, size/edge_limit, dihedral_penalty)`.
+    /// Higher = worse = should be refined first.
+    score: f64,
+}
+
+/// Heap entry: higher `score` gets popped first (max-heap).
+#[derive(Clone, Copy, Debug)]
+struct HeapEntry(f64, usize);
+
+impl Eq for HeapEntry {}
+impl PartialEq for HeapEntry {
+    fn eq(&self, other: &Self) -> bool { self.0 == other.0 && self.1 == other.1 }
+}
+impl Ord for HeapEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.partial_cmp(&other.0).unwrap_or(Ordering::Equal)
+            .then_with(|| other.1.cmp(&self.1)) // lower idx = higher priority (matches original linear scan)
+    }
+}
+impl PartialOrd for HeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+
+/// A parallel array + max-heap that caches quality metrics for all Tet4
+/// elements and provides O(1) amortised access to the worst tetrahedron.
+///
+/// Kept in sync with `mesh.elements` — call [`swap_remove`](Self::swap_remove)
+/// whenever the mesh does `swap_remove` on its elements.
+struct QualityCache {
+    /// Parallel to `mesh.elements[i]` — quality for the tet at that index.
+    /// Non-tet elements have a sentinel with `score = 0.0`.
+    qualities: Vec<TetQuality>,
+    /// Max-heap of `(score, elem_idx)`.  Stale entries are tolerated and
+    /// filtered on pop.
+    heap: BinaryHeap<HeapEntry>,
+}
+
+impl QualityCache {
+    /// Build the cache from all Tet4 elements in `mesh`.
+    fn build(mesh: &Mesh, max_radius_edge_ratio: f64, edge_limit: f64, sliver_floor_deg: f64) -> Self {
+        let mut qualities = Vec::with_capacity(mesh.elements.len());
+        let mut heap = BinaryHeap::with_capacity(mesh.elements.len());
+
+        for (idx, elt) in mesh.elements.iter().enumerate() {
+            let q = compute_tet_quality(mesh, elt, max_radius_edge_ratio, edge_limit, sliver_floor_deg);
+            qualities.push(q);
+            if q.score > 0.0 {
+                heap.push(HeapEntry(q.score, idx));
+            }
+        }
+
+        Self { qualities, heap }
+    }
+
+    /// Pop the worst tetrahedron (highest score).  Returns `None` if empty
+    /// or if all remaining entries are good-quality.
+    fn pop_worst(&mut self, max_radius_edge_ratio: f64, edge_limit: f64, sliver_floor_deg: f64) -> Option<(usize, TetQuality)> {
+        while let Some(entry) = self.heap.pop() {
+            if entry.1 >= self.qualities.len() {
+                continue; // stale — index out of range
+            }
+            let q = self.qualities[entry.1];
+            if (q.score - entry.0).abs() > 1e-12 {
+                continue; // stale — score changed
+            }
+            if q.ratio <= max_radius_edge_ratio && q.max_edge <= edge_limit && q.min_dihedral >= sliver_floor_deg
+            {
+                return None; // worst remaining is already good enough
+            }
+            return Some((entry.1, q));
+        }
+        None
+    }
+
+    /// Mirror of `Vec::swap_remove`: swaps the last entry into `idx` and
+    /// pops it.  The element that moved gets a fresh heap entry.
+    fn swap_remove(&mut self, idx: usize) {
+        self.qualities.swap_remove(idx);
+        // If the moved element is still in range, push its quality to the heap.
+        if idx < self.qualities.len() {
+            let q = self.qualities[idx];
+            if q.score > 0.0 {
+                self.heap.push(HeapEntry(q.score, idx));
+            }
+        }
+    }
+
+    /// Push quality for a newly added Tet4 element (appended at the end).
+    fn push(&mut self, q: TetQuality) {
+        let idx = self.qualities.len();
+        self.qualities.push(q);
+        if q.score > 0.0 {
+            self.heap.push(HeapEntry(q.score, idx));
+        }
+    }
+
+}
+
+/// Compute quality metrics for a single element (or a sentinel if not a Tet4).
+fn compute_tet_quality(
+    mesh: &Mesh,
+    elt: &Element,
+    max_radius_edge_ratio: f64,
+    edge_limit: f64,
+    sliver_floor_deg: f64,
+) -> TetQuality {
+    if elt.etype != ElementType::Tetrahedron4 || elt.node_ids.len() != 4 {
+        return TetQuality { ratio: 0.0, min_dihedral: 180.0, max_edge: 0.0, score: 0.0 };
+    }
+
+    let n = &elt.node_ids;
+    let (Ok(r), Ok(lmax), Ok(dmin)) = (
+        tetra_radius_edge_ratio_from_mesh(mesh, n),
+        tetra_max_edge_length_from_mesh(mesh, n),
+        tetra_min_dihedral_from_mesh(mesh, n),
+    ) else {
+        return TetQuality { ratio: 0.0, min_dihedral: 180.0, max_edge: 0.0, score: 0.0 };
+    };
+
+    let quality_pressure = r / max_radius_edge_ratio;
+    let size_pressure = lmax / edge_limit;
+    let dihedral_pressure = if dmin < sliver_floor_deg {
+        1.0 + (sliver_floor_deg - dmin) / sliver_floor_deg
+    } else {
+        0.0
+    };
+    let score = quality_pressure.max(size_pressure).max(dihedral_pressure);
+
+    TetQuality { ratio: r, min_dihedral: dmin, max_edge: lmax, score }
 }
 
 fn find_worst_tetrahedron(
@@ -1437,20 +1546,11 @@ fn circumsphere(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> ([f64; 3]
 
 /// Test whether point `p` lies strictly inside the circumsphere of `(a,b,c,d)`.
 ///
-/// Uses the in-sphere predicate.  Returns `> 0` if inside, `< 0` if outside,
-/// `0` on the sphere (degenerate).
+/// Uses the adaptive-exact Shewchuk in-sphere predicate.  Returns `> 0` if
+/// inside, `< 0` if outside, `0` on the sphere (degenerate).
 #[allow(dead_code)]
 fn in_sphere_test(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3], p: [f64; 3]) -> f64 {
-    // Sign convention here is "radius - distance":
-    // > 0 => inside, 0 => on sphere, < 0 => outside.
-    let (center, radius) = circumsphere(a, b, c, d);
-    if !radius.is_finite() {
-        return 0.0;
-    }
-    let dx = p[0] - center[0];
-    let dy = p[1] - center[1];
-    let dz = p[2] - center[2];
-    radius - (dx * dx + dy * dy + dz * dz).sqrt()
+    crate::exact_pred::in_sphere(a, b, c, d, p)
 }
 
 /// Perform a 3-D bistellar flip on the set of tetrahedra sharing an edge or face.
@@ -1517,11 +1617,12 @@ fn bistellar_flip_2_to_3(
     let face @ [a, b, c] = [common[0], common[1], common[2]];
     let (d1, d2) = (d1.unwrap(), d2.unwrap());
 
-    // The new edge (d1, d2) must intersect the shared face for a valid flip.
     // Check that d1 and d2 are on opposite sides of face (a,b,c).
-    let v = tetra_volume_3d(nodes[a], nodes[b], nodes[c], nodes[d1]);
-    let w = tetra_volume_3d(nodes[a], nodes[b], nodes[c], nodes[d2]);
-    if v.signum() == w.signum() || v.abs() < 1e-20 || w.abs() < 1e-20 {
+    // Uses orient3d for exact sign — avoids misclassification when points
+    // are nearly coplanar with the face.
+    let v = crate::exact_pred::orient3d(nodes[a], nodes[b], nodes[c], nodes[d1]);
+    let w = crate::exact_pred::orient3d(nodes[a], nodes[b], nodes[c], nodes[d2]);
+    if v.is_sign_negative() == w.is_sign_negative() || v.abs() < 1e-20 || w.abs() < 1e-20 {
         return Ok(());
     }
 
@@ -1611,9 +1712,9 @@ fn bistellar_flip_3_to_2(
     let [c1, c2, c3] = [opp[0], opp[1], opp[2]];
 
     // Two new tets: (a, c1, c2, c3) and (b, c1, c2, c3)
-    // Ensure both have positive volume
-    let v1 = tetra_volume_3d(nodes[a], nodes[c1], nodes[c2], nodes[c3]);
-    let v2 = tetra_volume_3d(nodes[b], nodes[c1], nodes[c2], nodes[c3]);
+    // Ensure both have positive volume using exact orient3d.
+    let v1 = crate::exact_pred::orient3d(nodes[a], nodes[c1], nodes[c2], nodes[c3]);
+    let v2 = crate::exact_pred::orient3d(nodes[b], nodes[c1], nodes[c2], nodes[c3]);
     if v1.abs() < 1e-15 || v2.abs() < 1e-15 {
         return Ok(());
     }
@@ -1763,14 +1864,16 @@ fn bistellar_flip_4_to_4(
         [p, q, u, r2],
     ];
 
-    // Fix orientation: each tet must have positive volume
+    // Fix orientation: each tet must have positive volume (via exact orient3d).
     for tet in &mut new_tets {
-        let vol = tetra_volume_3d(nodes[tet[0]], nodes[tet[1]], nodes[tet[2]], nodes[tet[3]]);
-        if vol <= -1e-15 {
+        let vol = crate::exact_pred::orient3d(
+            nodes[tet[0]], nodes[tet[1]], nodes[tet[2]], nodes[tet[3]],
+        );
+        if vol < -1e-15 {
             // Odd permutation fixes sign: swap last two vertices
             tet.swap(2, 3);
-            let vol2 = tetra_volume_3d(nodes[tet[0]], nodes[tet[1]], nodes[tet[2]], nodes[tet[3]]);
-            if vol2 < 1e-15 {
+            let vol2 = crate::exact_pred::orient3d(nodes[tet[0]], nodes[tet[1]], nodes[tet[2]], nodes[tet[3]]);
+            if vol2.abs() < 1e-15 {
                 return Ok(());
             }
         } else if vol < 1e-15 {
@@ -1969,6 +2072,7 @@ mod tests {
             min_size: 0.0,
             max_size: 0.0,
             optimize_passes: 0,
+            size_field: None,
         };
 
         let err = algo

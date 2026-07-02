@@ -1,25 +1,50 @@
 use serde::{Deserialize, Serialize};
 
 /// Supported finite element types.
+///
+/// Both first-order (P1) and second-order (P2) types are represented as named
+/// variants.  Gmsh type IDs not listed here fall through to [`Unknown`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ElementType {
-    /// 2-node line
-    Line2,
-    /// 3-node triangle
-    Triangle3,
-    /// 4-node quadrilateral
-    Quad4,
-    /// 4-node tetrahedron
-    Tetrahedron4,
-    /// 8-node hexahedron
-    Hexahedron8,
-    /// 6-node prism (wedge)
-    Prism6,
-    /// 5-node pyramid
-    Pyramid5,
+    // ── 0-D: Point ──────────────────────────────────────────────────────────
     /// 1-node point
     Point1,
-    /// Unknown / unsupported type
+
+    // ── 1-D: Line / Edge ────────────────────────────────────────────────────
+    /// 2-node line (P1)
+    Line2,
+    /// 3-node line with edge midpoint (P2)
+    Line3,
+
+    // ── 2-D: Surface elements ───────────────────────────────────────────────
+    /// 3-node triangle (P1)
+    Triangle3,
+    /// 6-node triangle with edge midpoints (P2)
+    Triangle6,
+    /// 4-node quadrilateral (P1)
+    Quad4,
+    /// 9-node quadrilateral with edge midpoints + centre (P2)
+    Quad9,
+
+    // ── 3-D: Volume elements ────────────────────────────────────────────────
+    /// 4-node tetrahedron (P1)
+    Tetrahedron4,
+    /// 10-node tetrahedron with edge midpoints (P2)
+    Tetrahedron10,
+    /// 8-node hexahedron (P1)
+    Hexahedron8,
+    /// 27-node hexahedron with edge midpoints + face centres + interior (P2)
+    Hexahedron27,
+    /// 6-node prism / wedge (P1)
+    Prism6,
+    /// 18-node prism with edge midpoints + face centres (P2)
+    Prism18,
+    /// 5-node pyramid (P1)
+    Pyramid5,
+    /// 14-node pyramid with edge midpoints + face centre (P2)
+    Pyramid14,
+
+    /// Unknown / unsupported type (holds raw Gmsh type ID).
     Unknown(i32),
 }
 
@@ -134,19 +159,92 @@ const PYRAMID5_FACES: &[&[usize]] = &[
     &[0, 3, 4],
 ];
 
+// ─── Reference-element node positions (for P1→P2 promotion) ────────────────
+
+/// Line3: corner node 0, corner node 1, midpoint
+const REF_LINE3: &[(f64, f64, f64)] = &[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.5, 0.0, 0.0)];
+
+/// Triangle6: corners (0,1,2) then edge midpoints (3,4,5) opposite vertices (2,0,1).
+const REF_TRI6: &[(f64, f64, f64)] = &[
+    (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0),
+    (0.5, 0.0, 0.0), (0.5, 0.5, 0.0), (0.0, 0.5, 0.0),
+];
+
+/// Quad9: corners (0-3) then edge midpoints (4-7) then centre (8).
+const REF_QUAD9: &[(f64, f64, f64)] = &[
+    (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0),
+    (0.5, 0.0, 0.0), (1.0, 0.5, 0.0), (0.5, 1.0, 0.0), (0.0, 0.5, 0.0),
+    (0.5, 0.5, 0.0),
+];
+
+/// Tetrahedron10: corners (0-3) then edge-midpoints (4-9) in order matching
+/// TET4_EDGES (0-1, 1-2, 2-0, 0-3, 1-3, 2-3).
+const REF_TET10: &[(f64, f64, f64)] = &[
+    (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0),
+    (0.5, 0.0, 0.0), (0.5, 0.5, 0.0), (0.0, 0.5, 0.0),
+    (0.0, 0.0, 0.5), (0.5, 0.0, 0.5), (0.0, 0.5, 0.5),
+];
+
+/// Hexahedron27: corners (0-7), edge midpoints (8-19) in HEX8_EDGES order,
+/// face centres (20-25), interior (26).
+const REF_HEX27: &[(f64, f64, f64)] = &[
+    // corners 0-7
+    (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0),
+    (0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, 1.0),
+    // edge midpoints 8-19 (HEX8_EDGES order)
+    (0.5, 0.0, 0.0), (1.0, 0.5, 0.0), (0.5, 1.0, 0.0), (0.0, 0.5, 0.0),
+    (0.5, 0.0, 1.0), (1.0, 0.5, 1.0), (0.5, 1.0, 1.0), (0.0, 0.5, 1.0),
+    (0.0, 0.0, 0.5), (1.0, 0.0, 0.5), (1.0, 1.0, 0.5), (0.0, 1.0, 0.5),
+    // face centres 20-25 (HEX8_FACES order)
+    (0.5, 0.5, 0.0), (0.5, 0.5, 1.0),
+    (0.5, 0.0, 0.5), (0.5, 1.0, 0.5),
+    (0.0, 0.5, 0.5), (1.0, 0.5, 0.5),
+    // interior 26
+    (0.5, 0.5, 0.5),
+];
+
 impl ElementType {
     /// Convert from Gmsh element type ID (MSH v4 format).
     pub fn from_gmsh_type_id(id: i32) -> Self {
         match id {
             15 => ElementType::Point1,
             1 => ElementType::Line2,
+            8 => ElementType::Line3,
             2 => ElementType::Triangle3,
+            9 => ElementType::Triangle6,
             3 => ElementType::Quad4,
+            10 => ElementType::Quad9,
             4 => ElementType::Tetrahedron4,
+            11 => ElementType::Tetrahedron10,
             5 => ElementType::Hexahedron8,
+            12 => ElementType::Hexahedron27,
             6 => ElementType::Prism6,
+            13 => ElementType::Prism18,
             7 => ElementType::Pyramid5,
+            14 => ElementType::Pyramid14,
             _ => ElementType::Unknown(id),
+        }
+    }
+
+    /// Convert to Gmsh element type ID (MSH v4 format).
+    pub fn to_gmsh_type_id(&self) -> i32 {
+        match self {
+            ElementType::Point1 => 15,
+            ElementType::Line2 => 1,
+            ElementType::Line3 => 8,
+            ElementType::Triangle3 => 2,
+            ElementType::Triangle6 => 9,
+            ElementType::Quad4 => 3,
+            ElementType::Quad9 => 10,
+            ElementType::Tetrahedron4 => 4,
+            ElementType::Tetrahedron10 => 11,
+            ElementType::Hexahedron8 => 5,
+            ElementType::Hexahedron27 => 12,
+            ElementType::Prism6 => 6,
+            ElementType::Prism18 => 13,
+            ElementType::Pyramid5 => 7,
+            ElementType::Pyramid14 => 14,
+            ElementType::Unknown(id) => *id,
         }
     }
 
@@ -155,12 +253,19 @@ impl ElementType {
         match self {
             ElementType::Point1 => 1,
             ElementType::Line2 => 2,
+            ElementType::Line3 => 3,
             ElementType::Triangle3 => 3,
+            ElementType::Triangle6 => 6,
             ElementType::Quad4 => 4,
+            ElementType::Quad9 => 9,
             ElementType::Tetrahedron4 => 4,
+            ElementType::Tetrahedron10 => 10,
             ElementType::Hexahedron8 => 8,
+            ElementType::Hexahedron27 => 27,
             ElementType::Prism6 => 6,
+            ElementType::Prism18 => 18,
             ElementType::Pyramid5 => 5,
+            ElementType::Pyramid14 => 14,
             ElementType::Unknown(_) => 0,
         }
     }
@@ -169,24 +274,29 @@ impl ElementType {
     pub fn dimension(&self) -> u8 {
         match self {
             ElementType::Point1 => 0,
-            ElementType::Line2 => 1,
-            ElementType::Triangle3 | ElementType::Quad4 => 2,
+            ElementType::Line2 | ElementType::Line3 => 1,
+            ElementType::Triangle3 | ElementType::Triangle6 | ElementType::Quad4 | ElementType::Quad9 => 2,
             ElementType::Tetrahedron4
+            | ElementType::Tetrahedron10
             | ElementType::Hexahedron8
+            | ElementType::Hexahedron27
             | ElementType::Prism6
-            | ElementType::Pyramid5 => 3,
+            | ElementType::Prism18
+            | ElementType::Pyramid5
+            | ElementType::Pyramid14 => 3,
             ElementType::Unknown(id) => gmsh_dimension_from_type_id(*id),
         }
     }
 
     /// Return the faces of a volume element as arrays of local node indices.
     /// Each face is a slice of node indices (3 for triangular faces, 4 for quad faces).
+    /// Same topology for P1 and P2 variants — returns corner-node patterns.
     pub fn faces(&self) -> &[&[usize]] {
         match self {
-            ElementType::Tetrahedron4 => TET4_FACES,
-            ElementType::Hexahedron8 => HEX8_FACES,
-            ElementType::Prism6 => PRISM6_FACES,
-            ElementType::Pyramid5 => PYRAMID5_FACES,
+            ElementType::Tetrahedron4 | ElementType::Tetrahedron10 => TET4_FACES,
+            ElementType::Hexahedron8 | ElementType::Hexahedron27 => HEX8_FACES,
+            ElementType::Prism6 | ElementType::Prism18 => PRISM6_FACES,
+            ElementType::Pyramid5 | ElementType::Pyramid14 => PYRAMID5_FACES,
             ElementType::Unknown(id) => match family_from_gmsh_type_id(*id) {
                 Some(ElementFamily::Tetrahedron) => TET4_FACES,
                 Some(ElementFamily::Hexahedron) => HEX8_FACES,
@@ -199,15 +309,16 @@ impl ElementType {
     }
 
     /// Return the edges of an element as pairs of local node indices.
+    /// Same topology for P1 and P2 variants — returns corner-node pairs.
     pub fn edges(&self) -> &[[usize; 2]] {
         match self {
-            ElementType::Line2 => LINE2_EDGES,
-            ElementType::Triangle3 => TRI3_EDGES,
-            ElementType::Quad4 => QUAD4_EDGES,
-            ElementType::Tetrahedron4 => TET4_EDGES,
-            ElementType::Hexahedron8 => HEX8_EDGES,
-            ElementType::Prism6 => PRISM6_EDGES,
-            ElementType::Pyramid5 => PYRAMID5_EDGES,
+            ElementType::Line2 | ElementType::Line3 => LINE2_EDGES,
+            ElementType::Triangle3 | ElementType::Triangle6 => TRI3_EDGES,
+            ElementType::Quad4 | ElementType::Quad9 => QUAD4_EDGES,
+            ElementType::Tetrahedron4 | ElementType::Tetrahedron10 => TET4_EDGES,
+            ElementType::Hexahedron8 | ElementType::Hexahedron27 => HEX8_EDGES,
+            ElementType::Prism6 | ElementType::Prism18 => PRISM6_EDGES,
+            ElementType::Pyramid5 | ElementType::Pyramid14 => PYRAMID5_EDGES,
             ElementType::Unknown(id) => match family_from_gmsh_type_id(*id) {
                 Some(ElementFamily::Line) => LINE2_EDGES,
                 Some(ElementFamily::Triangle) => TRI3_EDGES,
@@ -219,6 +330,22 @@ impl ElementType {
                 _ => &[],
             },
             _ => &[],
+        }
+    }
+
+    /// Reference-element node positions suitable for computing edge midpoints.
+    ///
+    /// Returns `Some(slice)` for known types with the parametric position of
+    /// each node on the reference element.  Used when promoting P1→P2 to
+    /// determine which nodes are edge midpoints vs corner nodes.
+    pub fn reference_node_positions(&self) -> Option<&'static [(f64, f64, f64)]> {
+        match self {
+            ElementType::Line3 => Some(&REF_LINE3),
+            ElementType::Triangle6 => Some(&REF_TRI6),
+            ElementType::Quad9 => Some(&REF_QUAD9),
+            ElementType::Tetrahedron10 => Some(&REF_TET10),
+            ElementType::Hexahedron27 => Some(&REF_HEX27),
+            _ => None,
         }
     }
 }
@@ -286,16 +413,23 @@ mod tests {
 
         // 1-Dimensional (Curve/Edge)
         assert_eq!(ElementType::Line2.dimension(), 1);
+        assert_eq!(ElementType::Line3.dimension(), 1);
 
         // 2-Dimensional (Surface/Face)
         assert_eq!(ElementType::Triangle3.dimension(), 2);
+        assert_eq!(ElementType::Triangle6.dimension(), 2);
         assert_eq!(ElementType::Quad4.dimension(), 2);
+        assert_eq!(ElementType::Quad9.dimension(), 2);
 
         // 3-Dimensional (Volume/Region)
         assert_eq!(ElementType::Tetrahedron4.dimension(), 3);
+        assert_eq!(ElementType::Tetrahedron10.dimension(), 3);
         assert_eq!(ElementType::Hexahedron8.dimension(), 3);
+        assert_eq!(ElementType::Hexahedron27.dimension(), 3);
         assert_eq!(ElementType::Prism6.dimension(), 3);
+        assert_eq!(ElementType::Prism18.dimension(), 3);
         assert_eq!(ElementType::Pyramid5.dimension(), 3);
+        assert_eq!(ElementType::Pyramid14.dimension(), 3);
 
         // Unknown types should infer dimension from Gmsh type ID
         // Gmsh type IDs: 15=point, 1–8,26–28=line, 2–3,9–10,16,20–25,36–51=face, 4–7,11–14,17–19,29–31,90–93,118–119=volume
@@ -313,32 +447,46 @@ mod tests {
         assert_eq!(ElementType::Point1.node_count(), 1);
         assert_eq!(ElementType::Point1.dimension(), 0);
 
-        // Line: 2 nodes
+        // Line: 2 nodes (P1) and 3 nodes (P2)
         assert_eq!(ElementType::Line2.node_count(), 2);
         assert_eq!(ElementType::Line2.dimension(), 1);
+        assert_eq!(ElementType::Line3.node_count(), 3);
+        assert_eq!(ElementType::Line3.dimension(), 1);
 
-        // Triangle: 3 nodes
+        // Triangle: 3 (P1) and 6 (P2)
         assert_eq!(ElementType::Triangle3.node_count(), 3);
         assert_eq!(ElementType::Triangle3.dimension(), 2);
+        assert_eq!(ElementType::Triangle6.node_count(), 6);
+        assert_eq!(ElementType::Triangle6.dimension(), 2);
 
-        // Quad: 4 nodes
+        // Quad: 4 (P1) and 9 (P2)
         assert_eq!(ElementType::Quad4.node_count(), 4);
         assert_eq!(ElementType::Quad4.dimension(), 2);
+        assert_eq!(ElementType::Quad9.node_count(), 9);
+        assert_eq!(ElementType::Quad9.dimension(), 2);
 
-        // Tet: 4 nodes
+        // Tet: 4 (P1) and 10 (P2)
         assert_eq!(ElementType::Tetrahedron4.node_count(), 4);
         assert_eq!(ElementType::Tetrahedron4.dimension(), 3);
+        assert_eq!(ElementType::Tetrahedron10.node_count(), 10);
+        assert_eq!(ElementType::Tetrahedron10.dimension(), 3);
 
-        // Hex: 8 nodes
+        // Hex: 8 (P1) and 27 (P2)
         assert_eq!(ElementType::Hexahedron8.node_count(), 8);
         assert_eq!(ElementType::Hexahedron8.dimension(), 3);
+        assert_eq!(ElementType::Hexahedron27.node_count(), 27);
+        assert_eq!(ElementType::Hexahedron27.dimension(), 3);
 
-        // Prism: 6 nodes
+        // Prism: 6 (P1) and 18 (P2)
         assert_eq!(ElementType::Prism6.node_count(), 6);
         assert_eq!(ElementType::Prism6.dimension(), 3);
+        assert_eq!(ElementType::Prism18.node_count(), 18);
+        assert_eq!(ElementType::Prism18.dimension(), 3);
 
-        // Pyramid: 5 nodes
+        // Pyramid: 5 (P1) and 14 (P2)
         assert_eq!(ElementType::Pyramid5.node_count(), 5);
         assert_eq!(ElementType::Pyramid5.dimension(), 3);
+        assert_eq!(ElementType::Pyramid14.node_count(), 14);
+        assert_eq!(ElementType::Pyramid14.dimension(), 3);
     }
 }
