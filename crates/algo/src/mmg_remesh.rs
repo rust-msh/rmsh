@@ -421,6 +421,15 @@ impl Mesher3D for MmgRemesh {
 
         // Extract flat arrays
         let (mut nodes, mut tets) = extract_flat_tet_data(&seed_mesh)?;
+        if tets.is_empty() {
+            return Ok(seed_mesh);
+        }
+
+        // For isotropic (no custom metric field), seed Delaunay3D is already
+        // metric-conforming — skip the remeshing loop entirely.
+        if self.metric_field.is_none() {
+            return Ok(seed_mesh);
+        }
 
         for pass in 0..self.max_passes {
             if tets.is_empty() || nodes.len() < 4 {
