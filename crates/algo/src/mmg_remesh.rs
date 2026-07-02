@@ -421,21 +421,24 @@ impl Mesher3D for MmgRemesh {
 
         // Extract flat arrays
         let (mut nodes, mut tets) = extract_flat_tet_data(&seed_mesh)?;
-        if tets.is_empty() {
-            return Ok(seed_mesh);
-        }
 
-        let l_min = self.l_min;
-        let l_max = self.l_max;
-
-        for _pass in 0..self.max_passes {
+        for pass in 0..self.max_passes {
             if tets.is_empty() || nodes.len() < 4 {
                 break;
             }
 
             let edges = extract_edges_3d(&tets);
             let (too_long, too_short, _good) =
-                classify_edges(&nodes, &edges, field.as_ref(), l_min, l_max);
+                classify_edges(&nodes, &edges, field.as_ref(), self.l_min, self.l_max);
+
+            // Adaptive early exit: when <5% of edges are bad and no long edges remain.
+            let bad_ratio = (too_long.len() + too_short.len()) as f64 / edges.len().max(1) as f64;
+            if pass > 0 && bad_ratio < 0.05 && too_long.is_empty() {
+                break;
+            }
+
+            let mut did_split = false;
+            let mut did_collapse = false;
 
             // Phase 1: split too-long edges
             for &edge_idx in &too_long {
@@ -446,6 +449,7 @@ impl Mesher3D for MmgRemesh {
                     (nodes[a][2] + nodes[b][2]) * 0.5,
                 ];
                 split_edge_3d(&mut nodes, &mut tets, a, b, mid);
+                did_split = true;
             }
 
             // Phase 2: collapse too-short interior edges (limited)
@@ -458,18 +462,17 @@ impl Mesher3D for MmgRemesh {
                         short_edges.push((a, b));
                     }
                 }
-                // Limit collapses to 10% of edges per pass
                 let max_collapses = (edges.len() as f64 * 0.1).ceil() as usize;
                 for &(a, b) in short_edges.iter().take(max_collapses) {
                     if a < nodes.len() && b < nodes.len() {
-                        let _ = collapse_edge_3d(
+                        if collapse_edge_3d(
                             &mut nodes, &mut tets, a, b, field.as_ref(),
-                        );
+                        ).is_ok() { did_collapse = true; }
                     }
                 }
             }
 
-            // Phase 3: edge swaps via TetMesh bistellar flips
+            // Phase 3: edge swaps via TetMesh (improves quality even without splits)
             {
                 let mut tm = build_tetmesh_from_arrays(&nodes, &tets);
                 let _ = optimize_tetmesh_flips(&mut tm, 2);
@@ -478,8 +481,8 @@ impl Mesher3D for MmgRemesh {
                 tets = new_tets;
             }
 
-            // Phase 4: metric Laplacian relocation of interior nodes (every 2 passes)
-            if _pass % 2 == 1 {
+            // Phase 4: metric Laplacian relocation (every 2 passes)
+            if pass % 2 == 1 {
                 let boundary_set = build_boundary_node_set_3d(&tets);
                 let neighbor_lists = build_neighbor_lists_3d(&nodes, &tets);
                 for i in 0..nodes.len() {
@@ -494,11 +497,9 @@ impl Mesher3D for MmgRemesh {
                 }
             }
 
-            // Convergence check
-            let edges = extract_edges_3d(&tets);
-            let (too_long, too_short, _) =
-                classify_edges(&nodes, &edges, field.as_ref(), l_min * 0.9, l_max * 1.1);
-            if too_long.is_empty() && too_short.is_empty() {
+            // Convergence: if no splits/collapses happened and no bad edges
+            // were found, the mesh has converged to the metric.
+            if !did_split && !did_collapse && too_long.is_empty() && too_short.is_empty() {
                 break;
             }
         }
