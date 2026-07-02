@@ -2492,6 +2492,139 @@ fn model_mesh_get_elements_impl(
     Ok((element_types, element_tags, node_tags))
 }
 
+/// `model_mesh_get_element_qualities(tags, type)` → Vec<f64>
+///
+/// Returns quality metrics for the requested elements.
+/// `type` is one of: "minAngle" (tri/tet), "scaledJacobian", "aspectRatio", "radiusEdgeRatio".
+/// Returns one quality value per element tag.
+#[pyfunction]
+#[pyo3(name = "model_mesh_get_element_qualities", signature = (*args, **kwargs))]
+fn model_mesh_get_element_qualities_impl(
+    args: &Bound<'_, PyTuple>,
+    kwargs: Option<&Bound<'_, PyDict>>,
+) -> PyResult<Vec<f64>> {
+    let elem_tags: Vec<u64> = extract_required(args, kwargs, 0, &["tags"], "list")?;
+    let quality_type: String = extract_required(args, kwargs, 1, &["type"], "str")?;
+
+    let state = STATE
+        .lock()
+        .map_err(|_| pyo3::exceptions::PyRuntimeError::new_err("rmsh state lock poisoned"))?;
+    ensure_initialized(&state)?;
+    let mesh = state.current_mesh.as_ref().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("no mesh loaded")
+    })?;
+
+    // Build a lookup for element tags
+    let tag_to_idx: std::collections::HashMap<u64, usize> = mesh
+        .elements
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.id, i))
+        .collect();
+
+    let mut results = Vec::with_capacity(elem_tags.len());
+    for tag in &elem_tags {
+        let Some(&ei) = tag_to_idx.get(tag) else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                format!("element tag {tag} not found")));
+        };
+        let elt = &mesh.elements[ei];
+        let quality = compute_element_quality_impl(mesh, elt, &quality_type)?;
+        results.push(quality);
+    }
+    Ok(results)
+}
+
+/// Helper: compute a single quality metric for an element.
+fn compute_element_quality_impl(
+    mesh: &Mesh,
+    elt: &Element,
+    quality_type: &str,
+) -> PyResult<f64> {
+    let node_xyz = |id: u64| -> PyResult<[f64; 3]> {
+        let n = mesh.nodes.get(&id).ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("missing node {id}"))
+        })?;
+        Ok([n.position.x, n.position.y, n.position.z])
+    };
+
+    match elt.node_ids.len() {
+        3 => {
+            let a = node_xyz(elt.node_ids[0])?;
+            let b = node_xyz(elt.node_ids[1])?;
+            let c = node_xyz(elt.node_ids[2])?;
+            Ok(compute_tri_quality(a, b, c, quality_type))
+        }
+        4 if elt.etype == ElementType::Tetrahedron4 => {
+            let a = node_xyz(elt.node_ids[0])?;
+            let b = node_xyz(elt.node_ids[1])?;
+            let c = node_xyz(elt.node_ids[2])?;
+            let d = node_xyz(elt.node_ids[3])?;
+            Ok(compute_tet_quality(a, b, c, d, quality_type))
+        }
+        _ => Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            format!("quality for element type {:?} with {} nodes", elt.etype, elt.node_ids.len()))),
+    }
+}
+
+fn compute_tri_quality(a: [f64; 3], b: [f64; 3], c: [f64; 3], qtype: &str) -> f64 {
+    let ab = [b[0]-a[0], b[1]-a[1]]; let ac = [c[0]-a[0], c[1]-a[1]];
+    let ba = [-ab[0], -ab[1]]; let bc = [c[0]-b[0], c[1]-b[1]];
+    let ca = [-ac[0], -ac[1]]; let cb = [-bc[0], -bc[1]];
+    let ang = |u: [f64;2], v: [f64;2]| -> f64 {
+        let d = ((u[0]*u[0]+u[1]*u[1]).sqrt() * (v[0]*v[0]+v[1]*v[1]).sqrt()).max(1e-15);
+        ((u[0]*v[0]+u[1]*v[1]) / d).clamp(-1.0,1.0).acos().to_degrees()
+    };
+    match qtype {
+        "minAngle" => ang(ab,ac).min(ang(ba,bc)).min(ang(ca,cb)),
+        "scaledJacobian" => {
+            let cross = (ab[0]*ac[1] - ab[1]*ac[0]).abs();
+            let l1 = (ab[0]*ab[0]+ab[1]*ab[1]).sqrt().max(1e-15);
+            let l2 = (ac[0]*ac[0]+ac[1]*ac[1]).sqrt().max(1e-15);
+            cross / (l1 * l2)
+        }
+        "aspectRatio" => {
+            let dl = |x: [f64;2], y: [f64;2]| ((y[0]-x[0]).powi(2)+(y[1]-x[1]).powi(2)).sqrt();
+            let d01=dl([a[0],a[1]],[b[0],b[1]]); let d12=dl([b[0],b[1]],[c[0],c[1]]);
+            let d20=dl([c[0],c[1]],[a[0],a[1]]);
+            d01.max(d12).max(d20) / d01.min(d12).min(d20).max(1e-30)
+        }
+        _ => 0.0,
+    }
+}
+
+fn compute_tet_quality(a: [f64;3], b: [f64;3], c: [f64;3], d: [f64;3], qtype: &str) -> f64 {
+    let sub = |x:[f64;3],y:[f64;3]| [x[0]-y[0],x[1]-y[1],x[2]-y[2]];
+    let dot = |x:[f64;3],y:[f64;3]| x[0]*y[0]+x[1]*y[1]+x[2]*y[2];
+    let len = |x:[f64;3]| dot(x,x).sqrt();
+    let cross = |x:[f64;3],y:[f64;3]| [x[1]*y[2]-x[2]*y[1], x[2]*y[0]-x[0]*y[2], x[0]*y[1]-x[1]*y[0]];
+    match qtype {
+        "minAngle" => {
+            let dih = |p,q,r,s| { let n1=cross(sub(q,p),sub(r,p)); let n2=cross(sub(q,p),sub(s,p));
+                (dot(n1,n2)/(len(n1)*len(n2)).max(1e-15)).clamp(-1.0,1.0).acos().to_degrees() };
+            dih(a,b,c,d).min(dih(a,c,b,d)).min(dih(a,d,b,c)).min(dih(b,c,a,d)).min(dih(b,d,a,c)).min(dih(c,d,a,b))
+        }
+        "radiusEdgeRatio" => {
+            let edges = [len(sub(a,b)),len(sub(a,c)),len(sub(a,d)),len(sub(b,c)),len(sub(b,d)),len(sub(c,d))];
+            let min_e = edges.iter().copied().fold(f64::MAX, f64::min).max(1e-15);
+            let ba=sub(b,a);let ca=sub(c,a);let da=sub(d,a);
+            let rhs = [0.5*(dot(b,b)-dot(a,a)),0.5*(dot(c,c)-dot(a,a)),0.5*(dot(d,d)-dot(a,a))];
+            // 3×3 solver
+            let mut m = [[ba[0],ba[1],ba[2],rhs[0]],[ca[0],ca[1],ca[2],rhs[1]],[da[0],da[1],da[2],rhs[2]]];
+            for col in 0..3 {
+                let mut pv=col; for r in (col+1)..3 { if m[r][col].abs()>m[pv][col].abs(){pv=r} }
+                if m[pv][col].abs()<1e-15 { continue; }
+                m.swap(pv,col); let inv=1.0/m[col][col];
+                for j in col..4 { m[col][j]*=inv }
+                for r in 0..3 { if r==col{continue} let f=m[r][col]; for j in col..4{m[r][j]-=f*m[col][j]} }
+            }
+            let cc = Some([m[0][3],m[1][3],m[2][3]]);
+            match cc { Some(center) => len(sub(center,a)) / min_e, None => 1e6 }
+        }
+        _ => 0.0,
+    }
+}
+
 #[pyfunction]
 #[pyo3(name = "model_mesh_clear", signature = (*args, **kwargs))]
 fn model_mesh_clear_impl(
@@ -3996,6 +4129,7 @@ fn _rmsh(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(pyo3::wrap_pyfunction!(model_mesh_set_order_impl, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(model_mesh_get_nodes_impl, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(model_mesh_get_elements_impl, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(model_mesh_get_element_qualities_impl, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(model_mesh_clear_impl, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(model_mesh_optimize_impl, m)?)?;
     m.add_function(pyo3::wrap_pyfunction!(model_mesh_refine_impl, m)?)?;
