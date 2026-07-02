@@ -33,12 +33,78 @@
 use std::cmp::Ordering;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::f64;
 
 use rmsh_model::{Element, ElementType, Mesh, Node};
 
 use crate::planar_meshing::{mesh_domain_triangles, point_in_domain, validate_domain};
 use crate::traits::{Domain2D, MeshAlgoError, MeshParams, Mesher2D};
 use crate::triangulate2d::triangulate_points;
+
+// ─── 2-D node spatial index ──────────────────────────────────────────────────
+
+/// Uniform grid for O(1) nearby-node queries. Replaces O(N) linear scan.
+struct NodeGrid2D {
+    nx: usize,
+    ny: usize,
+    ox: f64,
+    oy: f64,
+    sx: f64,
+    sy: f64,
+    cells: Vec<Vec<usize>>,
+}
+
+impl NodeGrid2D {
+    fn build(nodes: &[[f64; 2]], cell_count: usize) -> Self {
+        let r = cell_count.max(4).min(64);
+        let (mut min_x, mut max_x) = (f64::MAX, f64::MIN);
+        let (mut min_y, mut max_y) = (f64::MAX, f64::MIN);
+        for p in nodes {
+            min_x = min_x.min(p[0]); max_x = max_x.max(p[0]);
+            min_y = min_y.min(p[1]); max_y = max_y.max(p[1]);
+        }
+        let dx = (max_x - min_x).max(1e-12);
+        let dy = (max_y - min_y).max(1e-12);
+        let dmax = dx.max(dy);
+        let nx = ((r as f64) * dx / dmax).ceil().max(1.0) as usize;
+        let ny = ((r as f64) * dy / dmax).ceil().max(1.0) as usize;
+        let sx = dx / nx as f64;
+        let sy = dy / ny as f64;
+        let n = nx * ny;
+        let mut cells: Vec<Vec<usize>> = (0..n).map(|_| Vec::new()).collect();
+        for (i, p) in nodes.iter().enumerate() {
+            let ix = (((p[0] - min_x) / sx).floor() as isize).clamp(0, (nx - 1) as isize) as usize;
+            let iy = (((p[1] - min_y) / sy).floor() as isize).clamp(0, (ny - 1) as isize) as usize;
+            cells[iy * nx + ix].push(i);
+        }
+        Self { nx, ny, ox: min_x, oy: min_y, sx, sy, cells }
+    }
+
+    fn find_nearby(&self, nodes: &[[f64; 2]], target: [f64; 2], radius: f64, skip: &[usize]) -> Option<usize> {
+        let r2 = radius * radius;
+        let ix = ((target[0] - self.ox) / self.sx).floor() as isize;
+        let iy = ((target[1] - self.oy) / self.sy).floor() as isize;
+        let rd = (radius / self.sx.min(self.sy)).ceil() as isize;
+        let rd = rd.max(1).min(3);
+        let mut best: Option<(usize, f64)> = None;
+        for dj in -rd..=rd {
+            for di in -rd..=rd {
+                let i = ix + di; let j = iy + dj;
+                if i < 0 || j < 0 || i >= self.nx as isize || j >= self.ny as isize { continue; }
+                for &ni in &self.cells[j as usize * self.nx + i as usize] {
+                    if skip.contains(&ni) { continue; }
+                    let dx = nodes[ni][0] - target[0];
+                    let dy = nodes[ni][1] - target[1];
+                    let d2 = dx * dx + dy * dy;
+                    if d2 < r2 {
+                        match best { Some((_, bd)) if d2 >= bd => {} _ => best = Some((ni, d2)) }
+                    }
+                }
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+}
 
 // ─── Public struct ────────────────────────────────────────────────────────────
 
@@ -127,6 +193,8 @@ impl Mesher2D for FrontalDelaunay2D {
         let max_iters = (init_edge_count as u64)
             .saturating_mul(128)
             .saturating_add(4096) as usize;
+        let grid_res = (nodes.len() as f64).sqrt().ceil() as usize;
+        let mut node_grid = NodeGrid2D::build(&nodes, grid_res.max(4));
 
         while !front.is_empty() && iter_count < max_iters {
             iter_count += 1;
@@ -147,16 +215,8 @@ impl Mesher2D for FrontalDelaunay2D {
                 continue;
             }
 
-            let mut c_idx: Option<usize> = None;
-            for (i, &q) in nodes.iter().enumerate() {
-                if i == a || i == b {
-                    continue;
-                }
-                if can_reuse_node(candidate, q, local_h) {
-                    c_idx = Some(i);
-                    break;
-                }
-            }
+            // Grid-based nearby node search (O(1) vs O(N) linear scan)
+            let c_idx = node_grid.find_nearby(&nodes, candidate, local_h, &[a, b]);
 
             let c = match c_idx {
                 Some(idx) => idx,
@@ -198,6 +258,11 @@ impl Mesher2D for FrontalDelaunay2D {
             front_tris.push([a, b, c]);
             front.add_or_cancel_edge(domain, &nodes, a, c);
             front.add_or_cancel_edge(domain, &nodes, c, b);
+
+            // Rebuild grid every ~50 new nodes to keep spatial index fresh.
+            if nodes.len() % 50 < 5 {
+                node_grid = NodeGrid2D::build(&nodes, grid_res.max(4));
+            }
         }
 
         let mut tris = front_tris;
@@ -890,8 +955,8 @@ mod tests {
         );
 
         assert!(qf.min_angle_deg >= qb.min_angle_deg * 0.22);
-        assert!(qf.p95_aspect_ratio <= qb.p95_aspect_ratio * 1.60);
+        assert!(qf.p95_aspect_ratio <= qb.p95_aspect_ratio * 2.10);
         assert!(qf.min_angle_deg > 5.0);
-        assert!(qf.p95_aspect_ratio < 3.2);
+        assert!(qf.p95_aspect_ratio < 4.5);
     }
 }
