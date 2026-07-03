@@ -51,6 +51,20 @@ trunk serve
 cargo test --workspace
 ```
 
+## STEP → MSH command-line tool
+
+```sh
+# Convert a STEP file to a tetrahedral mesh (MSH v2)
+cargo run -p step_to_msh -- input.step output.msh --size 0.5
+
+# Specify algorithm and MSH version
+cargo run -p step_to_msh -- input.step output.msh --size 0.3 --algo hxt --msh-version 4
+
+# Available algorithms: delaunay, frontal, hxt (default), mmg
+```
+
+Output can be opened in Gmsh or rmsh-viewer for visual inspection.
+
 ## Python bindings
 
 ```sh
