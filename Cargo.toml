@@ -36,12 +36,12 @@ rmsh-algo = { path = "crates/algo" }
 rmsh-renderer = { path = "crates/renderer" }
 
 # RCAD (git crate)
-rcad-kernel = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
-rcad-modeling = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
-rcad-algorithms = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
-rcad-step = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
-rcad-render = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
-rcad-scene = { git = "https://github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
+rcad-kernel = { git = "https://github.com/cad-rs/rcad", rev = "d9473ac9e5886329ba3acf21f32399b1ab3f6b0d" }
+rcad-modeling = { git = "https://github.com/cad-rs/rcad", rev = "d9473ac9e5886329ba3acf21f32399b1ab3f6b0d" }
+rcad-algorithms = { git = "https://github.com/cad-rs/rcad", rev = "d9473ac9e5886329ba3acf21f32399b1ab3f6b0d" }
+rcad-step = { git = "https://github.com/cad-rs/rcad", rev = "d9473ac9e5886329ba3acf21f32399b1ab3f6b0d" }
+rcad-render = { git = "https://github.com/cad-rs/rcad", rev = "d9473ac9e5886329ba3acf21f32399b1ab3f6b0d" }
+rcad-scene = { git = "https://github.com/cad-rs/rcad", rev = "d9473ac9e5886329ba3acf21f32399b1ab3f6b0d" }
 
 # Math
 nalgebra = { version = "0.33", features = ["serde-serialize"] }

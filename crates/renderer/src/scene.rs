@@ -281,6 +281,8 @@ fn surface_wireframe_to_brep(surface: &SurfaceData, wireframe: &WireframeData) -
         normal: glam::DVec3::Z,
         triangles,
         mesh_dirty: true,
+        sample_point: None,
+        surface_idx: Some(0),
     };
 
     BRep {

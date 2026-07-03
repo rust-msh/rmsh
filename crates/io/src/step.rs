@@ -1,4 +1,4 @@
-//! STEP (.step / .stp) import and export via `rcad-step`.
+﻿//! STEP (.step / .stp) import and export via `rcad-step`.
 //!
 //! The heavy lifting (BRep parsing, triangle extraction, STEP serialisation)
 //! lives in `rcad-step`.  This module is a thin adapter that converts between
@@ -177,6 +177,7 @@ pub struct BrepStepWriteOptions {
     pub protocol: StepProtocol,
     pub solid_color: Option<Color>,
     pub header: Option<StepHeader>,
+    pub gmsh_strict: bool,
 }
 
 impl Default for BrepStepWriteOptions {
@@ -185,6 +186,7 @@ impl Default for BrepStepWriteOptions {
             protocol: StepProtocol::Ap242,
             solid_color: None,
             header: None,
+            gmsh_strict: false,
         }
     }
 }
@@ -285,7 +287,7 @@ pub fn write_brep_step_with_options(
     ))
 }
 
-// ── Mesh ↔ trimesh conversions ─────────────────────────────────────────────────
+// ── Mesh �?trimesh conversions ─────────────────────────────────────────────────
 
 fn trimesh_to_mesh(verts: Vec<glam::DVec3>, tris: Vec<[usize; 3]>) -> Mesh {
     let mut mesh = Mesh::new();
@@ -390,6 +392,8 @@ fn trimesh_to_brep(verts: &[glam::DVec3], tris: &[[usize; 3]]) -> BRep {
         normal: glam::DVec3::Z,
         triangles: tris.to_vec(),
         mesh_dirty: true,
+        sample_point: None,
+        surface_idx: None,
     };
 
     BRep {
@@ -557,6 +561,7 @@ END-ISO-10303-21;
             protocol: rcad_step::StepProtocol::Ap242,
             solid_color: Some(rcad_kernel::appearance::Color::from_rgb8(30, 144, 255)),
             header: None,
+            gmsh_strict: false,
         };
 
         let step = write_brep_step_with_options(&brep, &options)
@@ -596,6 +601,10 @@ END-ISO-10303-21;
                     normal: glam::DVec3::Z,
                     triangles: vec![[0, 1, 2]],
                     mesh_dirty: false,
+                    sample_point: None,
+                    surface_idx: None,
+                    sample_point: None,
+                    surface_idx: None,
                 }],
             }],
         }];
@@ -645,6 +654,10 @@ END-ISO-10303-21;
                     normal: glam::DVec3::Z,
                     triangles: vec![[0, 1, 2]],
                     mesh_dirty: false,
+                    sample_point: None,
+                    surface_idx: None,
+                    sample_point: None,
+                    surface_idx: None,
                 }],
             }],
         }];
@@ -682,6 +695,10 @@ END-ISO-10303-21;
                     normal: glam::DVec3::Z,
                     triangles: vec![[0, 1, 1]],
                     mesh_dirty: false,
+                    sample_point: None,
+                    surface_idx: None,
+                    sample_point: None,
+                    surface_idx: None,
                 }],
             }],
         }];
