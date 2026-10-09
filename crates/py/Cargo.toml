@@ -16,7 +16,7 @@ rmsh-io.workspace = true
 rmsh-algo.workspace = true
 rcad-kernel.workspace = true
 rcad-modeling.workspace = true
-rcad-algorithms.workspace = true
+rcad-algo = { workspace = true }
 rcad-step.workspace = true
 glam.workspace = true
 rmsh-viewer = { path = "../viewer" }

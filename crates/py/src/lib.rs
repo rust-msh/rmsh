@@ -15,7 +15,7 @@ use rcad_kernel::geom::{
 };
 use rcad_kernel::topology::{Wire, WireEdge};
 use rcad_kernel::{BRep, Edge, Face, GeomStore, PCurve, Shell, Solid, Vertex};
-use rcad_algorithms::{
+use rcad_algo::{
     BooleanOpType, SimplifyOptions, boolean_op_simplified, split_objects_with_tools,
     brep_repair::{
         make_connected_iterative_with_growth_cap,
@@ -23,7 +23,7 @@ use rcad_algorithms::{
         repair,
     },
 };
-use rcad_algorithms::healing::{ShapeProcessConfig, run_shape_process};
+use rcad_algo::healing::{ShapeProcessConfig, run_shape_process};
 use rcad_modeling::builder::{
     cylinder_brep, make_edge, make_face, make_vertex, make_wire,
     cone_brep, torus_brep,
@@ -675,7 +675,7 @@ fn next_or_requested_tag(state: &mut RuntimeState, requested: i32) -> i32 {
 }
 
 fn explode_brep_by_connected_components(brep: &BRep) -> Vec<BRep> {
-    let components = rcad_algorithms::find_connected_components(brep);
+    let components = rcad_algo::find_connected_components(brep);
     if components.len() <= 1 {
         return vec![brep.clone()];
     }
@@ -708,7 +708,7 @@ fn explode_brep_by_connected_components(brep: &BRep) -> Vec<BRep> {
             continue;
         }
 
-        if let Ok(solid) = rcad_algorithms::shape_build::BuildSolid::build_solid_from_faces(&faces, 1e-7) {
+        if let Ok(solid) = rcad_algo::shape_build::BuildSolid::build_solid_from_faces(&faces, 1e-7) {
             let mut part = brep.clone();
             part.solids = vec![solid];
             out.push(part);

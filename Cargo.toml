@@ -33,13 +33,15 @@ rmsh-io = { path = "crates/io" }
 rmsh-algo = { path = "crates/algo" }
 rmsh-renderer = { path = "crates/renderer" }
 
-# RCAD (git crate)
-rcad-kernel = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
-rcad-modeling = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
-rcad-algorithms = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
-rcad-step = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
-rcad-render = { git = "ssh://git@github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
-rcad-scene = { git = "https://github.com/cad-rs/rcad", rev = "03821db82e984e0bcc23b28e712a578e216b264a" }
+# RCAD — the open-source rcad this project is built on, consumed from the
+# local monorepo checkout (the published standalone repo predates the
+# monorepo merge; the old rcad-algorithms package is now rcad-algo).
+rcad-kernel = { path = "../rcad/libs/rcad-kernel" }
+rcad-modeling = { path = "../rcad/libs/rcad-modeling" }
+rcad-algo = { path = "../rcad/libs/rcad-algo" }
+rcad-step = { path = "../rcad/libs/rcad-step" }
+rcad-render = { path = "../rcad/libs/rcad-render" }
+rcad-scene = { path = "../rcad/libs/rcad-scene" }
 
 # Math
 nalgebra = { version = "0.33", features = ["serde-serialize"] }
