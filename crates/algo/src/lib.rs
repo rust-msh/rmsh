@@ -116,3 +116,12 @@ pub use boundary_layer_2d::{BoundaryLayer2D, BoundaryLayerError, cumulative_heig
 /// provenance and v1 scope).
 pub mod boundary_layer_3d;
 pub use boundary_layer_3d::{BoundaryLayer3D, BoundaryLayer3DError, insert_boundary_layers_3d};
+
+/// Multi-material / partitioned volumes (P4): material classification and
+/// cavity subtraction over closed surface meshes (v1 — see the module docs
+/// for the interface-conformity limitation and the 3-D CDT upgrade path).
+pub mod multi_material;
+pub use multi_material::{
+    MATERIAL_TAG_OUTER, MultiMaterialError, region_volumes, tetrahedralize_multi_material,
+    tetrahedralize_region,
+};
