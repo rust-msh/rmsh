@@ -38,13 +38,13 @@ rcad → rmsh）。分层裁定（布尔不进 rmsh、曲率/特征查询挂 tra
 
 ### P0 — 地基与宪章（进行中）
 - [x] msh 读写归属裁定：pro 侧门面退役（pro 仓 `620205eaa`）
-- [ ] renderer/viewer 退役（旧简单 BRep 债 + GUI 不在 v1 范围，宪章声明后按 Rule 4 删除）
-- [ ] algo 内嵌测试 STEP 债清偿（tetrahedralize3d 改 msh 夹具；58c5882 载明的迁移债）
-- [ ] 全测试面绿：`cargo test --workspace`（退役后）+ 质量回归保持 3/3
+- [x] renderer/viewer 退役（`27d0f9f`，Rule 4 删除；py 移出构建留作 P6 种子）
+- [x] algo 内嵌测试 STEP 债清偿（`27d0f9f`，改 msh 夹具 + 解析器节点数守卫真缺陷修复）
+- [x] 全测试面绿：`cargo test --workspace` 127/0/1（`27d0f9f`）
 - 验收：零编译债、零跳测
 
 ### P1 — I/O 对齐 meshio 基线
-- [ ] MSH v2/v4 **二进制**读写（IEEE-754、int/long 字段宽、endianness）
+- [x] MSH v2/v4 **二进制**读写（`7d89357`：v2 分块契约 + v4.1 头 ASCII/载荷二进制 + 端序魔数校验，LE-only 大端点名拒）
 - [ ] 高阶单元（2–3 阶全类型号）读写
 - [ ] Physical groups / 周期 / 分区语义
 - 验收：**Gmsh 互操作往返**——Gmsh 写 → rmsh 读 → rmsh 写 → Gmsh 读，字段级对账；
