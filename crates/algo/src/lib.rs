@@ -7,6 +7,13 @@ pub use triangulate2d::{MeshError, Polygon2D, mesh_polygon, triangulate_points};
 
 pub(crate) mod planar_meshing;
 
+/// Constrained Delaunay triangulation with incremental insertion (internal
+/// machinery of the 2-D meshers).
+pub(crate) mod cdt_2d;
+
+/// 2-D quality optimization: Gmsh-style relocation + swap passes (internal).
+pub(crate) mod mesh_quality_2d;
+
 pub mod tetrahedralize3d;
 pub use tetrahedralize3d::{CentroidStarMesher3D, Mesh3DError, tetrahedralize_closed_surface};
 
@@ -93,3 +100,9 @@ pub use laplacian_smooth::{LaplacianSmooth, LaplacianVariant};
 /// Mesh quality optimizer: edge swaps, node insertion/collapse, smoothing.
 pub mod mesh_optimize;
 pub use mesh_optimize::{MeshQualityOptimizer, OptimizeConfig, QualityMetric};
+
+// ─── 2-D boundary layers (P3c) ────────────────────────────────────────────────
+
+/// 2-D boundary layers: structured quad/tri rows grown inward from a domain
+/// boundary with local collision clamping (Gmsh boundary-layer architecture,
+/// re-implemented; see the module docs for provenance and v1 scope).

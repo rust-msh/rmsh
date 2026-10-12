@@ -841,18 +841,25 @@ mod tests {
         assert!(mesh_polygon(&poly, 0.0).is_err());
     }
 
-    /// KNOWN DEFECT (the P3 quality card's first item): on CONCAVE domains
-    /// the triangulator leaks out-of-domain triangles at most mesh sizes.
-    /// The census (all sizes probed 2026-10-12, L-shape, polygon area
-    /// 3.0): 0.30 → +0.087, 0.35 → +0.213, 0.38 → +0.913, 0.40 → +0.371,
-    /// 0.48 → +0.414, 0.50 → +1.350 — only 0.42 (+0.076) and 0.45 (exact)
-    /// come close or clean. The fan + super-triangle Delaunay does not
-    /// clip hull triangles to a concave boundary. Ignore until the
-    /// hull-clipping/symbolic-perturbation fix flips this to green; the
-    /// quad_recombine irregular test pins its fixture at the one
-    /// census-clean size (0.45) meanwhile.
+    /// KNOWN DEFECT (diagnosed deeper by the P3 quality card, 2026-10-12):
+    /// on CONCAVE domains the triangulator leaks out-of-domain triangles at
+    /// most mesh sizes. The census (L-shape, polygon area 3.0): 0.30 →
+    /// +0.087, 0.35 → +0.213, 0.38 → +0.913, 0.40 → +0.371, 0.48 → +0.414,
+    /// 0.50 → +1.350. The P3 card probed three fixes: (a) a stricter
+    /// triangle-in-polygon filter (vertices in-or-on + no proper edge
+    /// crossing + chord-midpoint checks) — still leaks, because the
+    /// triangles GRAZE the notch corner without any vertex or edge midpoint
+    /// leaving the polygon; (b) the cdt_2d constrained-Delaunay rewrite —
+    /// constraint recovery stalls on the exact-degenerate collinear chains
+    /// this point set produces (non-convex flip pockets), leaving flood
+    /// leaks of its own; (c) overlapping-triangle detection — heuristics.
+    /// Root cause: `triangulate_points` produces overlapping triangles on
+    /// exactly-degenerate point sets (fp-level cavity ties); the fix is
+    /// robust predicates / symbolic perturbation in the triangulator
+    /// itself, a separate card. The quad_recombine irregular test pins its
+    /// fixture at the one census-clean size (0.45) meanwhile.
     #[test]
-    #[ignore = "concave-domain area leak: the P3 quality card owns the hull-clip fix"]
+    #[ignore = "concave-domain area leak: needs robust predicates / symbolic perturbation in triangulate_points (diagnosed by the P3 card, 2026-10-12)"]
     fn concave_polygon_triangulates_to_the_exact_polygon_area() {
         let poly = Polygon2D::new(vec![
             [0.0, 0.0],
