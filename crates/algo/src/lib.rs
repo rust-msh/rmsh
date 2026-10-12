@@ -108,3 +108,11 @@ pub use mesh_optimize::{MeshQualityOptimizer, OptimizeConfig, QualityMetric};
 /// re-implemented; see the module docs for provenance and v1 scope).
 pub mod boundary_layer_2d;
 pub use boundary_layer_2d::{BoundaryLayer2D, BoundaryLayerError, cumulative_height, insert_boundary_layers};
+
+/// 3-D boundary layers (P4): structured prism columns grown inward from a
+/// closed triangle surface with per-vertex ray-cap collision clamping, the
+/// remaining cavity filled by the centroid-star tetrahedralizer (Gmsh
+/// boundary-layer architecture, re-implemented; see the module docs for
+/// provenance and v1 scope).
+pub mod boundary_layer_3d;
+pub use boundary_layer_3d::{BoundaryLayer3D, BoundaryLayer3DError, insert_boundary_layers_3d};
