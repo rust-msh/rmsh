@@ -45,13 +45,12 @@ rcad → rmsh）。分层裁定（布尔不进 rmsh、曲率/特征查询挂 tra
 
 ### P1 — I/O 对齐 meshio 基线
 - [x] MSH v2/v4 **二进制**读写（`7d89357`：v2 分块契约 + v4.1 头 ASCII/载荷二进制 + 端序魔数校验，LE-only 大端点名拒）
-- [ ] 高阶单元（2–3 阶全类型号）读写
-- [ ] Physical groups / 周期 / 分区语义
-- 验收：**Gmsh 互操作往返**——Gmsh 写 → rmsh 读 → rmsh 写 → Gmsh 读，字段级对账；
-  百万节点级文件秒级
+- [x] 高阶单元（2–3 阶全类型号）读写（`a5dbb6c`：70 id 全表实证钉死——本地 Gmsh 4.14 块头逐族探针，任务书 10 处错误被实证推翻；Unknown 往返 + 计数守卫收紧）
+- [x] Physical groups / 周期语义（`a5dbb6c`：$Periodic 四路径全接线，布局按真 Gmsh 夹具钉死；分区（$Partitioned）延后单列）
+- 验收：**Gmsh 互操作往返——已达成**（本地 Gmsh 4.14 闭环：rmsh 读真夹具逐字段精确；Gmsh 读 16 个 rmsh 产物零错、计数精确；百万节点规模压测待跑）
 
 ### P2 — 几何接口与自适应地基（依赖倒置首卡）
-- [ ] `GeometrySource` trait：最近点 / 法向 / 曲率 / 特征尺寸查询
+- [x] `GeometrySource` trait（`ce2fcac`：closest_hit + principal_curvatures v1 面；特征尺寸随特征捕捉卡）
 - [ ] rcad 侧适配（rmsh-adaptor crate 或单体内核侧）实现 trait + **BRep 细分桥收编**
 - [ ] 尺寸场框架：合成（min/max/intersect）、限梯度、背景网格
 - [ ] 曲率场 + 距离场两个几何派生源
