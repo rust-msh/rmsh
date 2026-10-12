@@ -3,8 +3,9 @@ mod msh;
 mod step;
 
 pub use msh::{
-    MshError, load_msh_from_bytes, load_msh_from_path, parse_msh, save_msh_v2_to_path,
-    save_msh_v4_to_path, write_msh_v2, write_msh_v4,
+    MshError, load_msh_from_bytes, load_msh_from_path, parse_msh, save_msh_v2_binary_to_path,
+    save_msh_v2_to_path, save_msh_v4_binary_to_path, save_msh_v4_to_path, write_msh_v2,
+    write_msh_v2_binary, write_msh_v4, write_msh_v4_binary,
 };
 #[cfg(feature = "step")]
 pub use step::{
