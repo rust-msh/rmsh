@@ -231,9 +231,9 @@ mod tests {
 
     use super::*;
     use crate::traits::{MeshParams, Mesher3D};
-    use rmsh_io::{load_msh_from_bytes, load_step_from_bytes, write_msh_v2, write_msh_v4};
+    use rmsh_io::{load_msh_from_bytes, load_msh_from_path, write_msh_v2, write_msh_v4};
 
-    fn step_file_path(name: &str) -> PathBuf {
+    fn testdata_path(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
@@ -639,12 +639,15 @@ mod tests {
     }
 
     #[test]
-    fn step_mesh_can_be_saved_as_gmsh_v2_and_v4_after_3d_meshing() {
-        let step_path = step_file_path("my_cube.step");
-        let step_bytes = std::fs::read(&step_path)
-            .unwrap_or_else(|e| panic!("failed to read {}: {}", step_path.display(), e));
-
-        let surface_mesh = load_step_from_bytes(&step_bytes).expect("STEP should parse");
+    fn msh_surface_mesh_can_be_saved_as_gmsh_v2_and_v4_after_3d_meshing() {
+        // The fixture is the product's own format (Gmsh MSH v2.2 ASCII, the
+        // outward-oriented unit cube): the retired rmsh STEP reader's
+        // last in-repo consumer was this test, and the meshing product
+        // reads MSH — the STEP hand-off belongs to the upstream rcad
+        // toolchain, not to rmsh's own test fixtures.
+        let msh_path = testdata_path("simple_cube.msh");
+        let surface_mesh =
+            load_msh_from_path(&msh_path).expect("the cube surface fixture should parse");
         let volume_mesh = tetrahedralize_closed_surface(&surface_mesh)
             .expect("3D meshing should succeed for cube surface");
 

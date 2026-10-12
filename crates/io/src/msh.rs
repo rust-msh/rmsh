@@ -411,7 +411,24 @@ fn parse_elements_v2<R: BufRead>(
             })
             .collect::<Result<_, _>>()?;
 
+        // The declared element type fixes the node count: a mismatch would
+        // silently build a structurally corrupt element (e.g. a 2-node
+        // Triangle3) that only detonates downstream in the meshing stack.
         let etype = ElementType::from_gmsh_type_id(element_type_id);
+        let expected = etype.node_count();
+        if expected != 0 && node_ids.len() != expected {
+            return Err(MshError::Parse {
+                line: *line_num,
+                message: format!(
+                    "Element {} declares type {} ({} node(s)) but lists {} node id(s)",
+                    elem_tag,
+                    element_type_id,
+                    expected,
+                    node_ids.len()
+                ),
+            });
+        }
+
         let mut elem = Element::new(elem_tag, etype, node_ids);
         elem.physical_tag = physical_tag;
         mesh.add_element(elem);

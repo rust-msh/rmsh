@@ -4,18 +4,12 @@ members = [
     "crates/geo",
     "crates/io",
     "crates/algo",
-    "crates/renderer",
-    "crates/viewer",
-    "crates/py",
 ]
 default-members = [
     "crates/model",
     "crates/geo",
     "crates/io",
     "crates/algo",
-    "crates/renderer",
-    "crates/viewer",
-    "crates/py",
 ]
 resolver = "2"
 
