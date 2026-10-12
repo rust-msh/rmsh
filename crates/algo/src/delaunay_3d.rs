@@ -44,6 +44,7 @@
 use rmsh_model::{Element, ElementType, Mesh, Node};
 use std::collections::HashMap;
 
+use crate::mesh_optimize::segment_pierces_triangle;
 use crate::tetrahedralize3d::CentroidStarMesher3D;
 use crate::traits::{MeshAlgoError, MeshParams, Mesher3D};
 
@@ -300,7 +301,10 @@ fn refine_bad_tetrahedra(
 
     let flip_passes = optimize_passes.clamp(1, 8) as usize;
     let mut tet_mesh = crate::tet_mesh::TetMesh::from_mesh(&mesh);
-    let (face_flips, edge_flips, edge_sliver_flips) =
+    // The 4th counter is the number of flip candidates rejected by the
+    // bistellar validity gate (segment must pierce the opposite face/triangle);
+    // rejected candidates are skipped, never applied.
+    let (face_flips, edge_flips, edge_sliver_flips, _flip_validity_skips) =
         crate::tet_mesh::optimize_tetmesh_flips(&mut tet_mesh, flip_passes);
     stats.local_face_flips += face_flips;
     stats.local_edge_flips += edge_flips;
@@ -420,6 +424,25 @@ fn optimize_local_face_flips(
                 [o0, o1, face[1], face[2]],
                 [o0, o1, face[2], face[0]],
             ];
+
+            // Bistellar 2-3 validity: the new edge (o0, o1) must strictly
+            // pierce the interior of the removed shared face, so the three
+            // replacement tets decompose exactly the old pair's region. Same
+            // gate as mesh_optimize::edge_swap_pass.
+            let pierces = (|| {
+                Some(segment_pierces_triangle(
+                    node_xyz_from_mesh(mesh, o0).ok()?,
+                    node_xyz_from_mesh(mesh, o1).ok()?,
+                    [
+                        node_xyz_from_mesh(mesh, face[0]).ok()?,
+                        node_xyz_from_mesh(mesh, face[1]).ok()?,
+                        node_xyz_from_mesh(mesh, face[2]).ok()?,
+                    ],
+                ))
+            })();
+            if pierces != Some(true) {
+                continue;
+            }
 
             let Some((old_d, old_s, old_r)) = aggregate_tet_quality(mesh, &old_tets) else {
                 continue;
@@ -552,6 +575,25 @@ fn optimize_local_face_flips(
                 got.sort_unstable();
                 need.sort_unstable();
                 if got != need {
+                    continue;
+                }
+
+                // Bistellar 3-2 validity: the removed edge must pierce the
+                // interior of the opposite triangle, so the replacement pair
+                // decomposes exactly the three ring tets' region. Same gate
+                // as mesh_optimize::edge_removal_pass_3_2.
+                let pierces = (|| {
+                    Some(segment_pierces_triangle(
+                        node_xyz_from_mesh(mesh, u).ok()?,
+                        node_xyz_from_mesh(mesh, v).ok()?,
+                        [
+                            node_xyz_from_mesh(mesh, a).ok()?,
+                            node_xyz_from_mesh(mesh, b).ok()?,
+                            node_xyz_from_mesh(mesh, c).ok()?,
+                        ],
+                    ))
+                })();
+                if pierces != Some(true) {
                     continue;
                 }
 
@@ -1792,18 +1834,27 @@ mod tests {
     #[test]
     fn local_flip_pass_activates_on_edge_fan() {
         // Build three tetrahedra sharing edge (1,2):
-        // [1,2,3,4], [1,2,4,5], [1,2,3,5]
+        // [1,2,3,4], [1,2,4,5], [1,2,5,3]
         // which can be replaced by two tetrahedra [3,4,5,1], [3,4,5,2].
+        //
+        // Corrected fixture (was nodes 3=(0.5,0.001,0), 4=(0.5,0,0.001) with
+        // elements [1,2,3,4],[1,2,4,5],[1,2,3,5]): there the segment (1,2)
+        // crosses the plane of triangle (3,4,5) at (0.5,0,0), OUTSIDE the
+        // triangle, so the 3-2 flip is bistellar-INVALID (union volume
+        // changes); the old test only passed because the flip path was
+        // unguarded. Nodes 3 and 4 now sit on the negative side so the
+        // crossing point is strictly inside the triangle and the flip is a
+        // valid bistellar move. Mirrors tet_mesh::make_three_tet_edge_fan.
         let mut mesh = Mesh::new();
         mesh.add_node(Node::new(1, 0.0, 0.0, 0.0));
         mesh.add_node(Node::new(2, 1.0, 0.0, 0.0));
-        mesh.add_node(Node::new(3, 0.5, 0.001, 0.0));
-        mesh.add_node(Node::new(4, 0.5, 0.0, 0.001));
+        mesh.add_node(Node::new(3, 0.5, -0.002, -0.001));
+        mesh.add_node(Node::new(4, 0.5, -0.001, -0.002));
         mesh.add_node(Node::new(5, 0.5, 0.8, 0.8));
 
         mesh.add_element(Element::new(1, ElementType::Tetrahedron4, vec![1, 2, 3, 4]));
         mesh.add_element(Element::new(2, ElementType::Tetrahedron4, vec![1, 2, 4, 5]));
-        mesh.add_element(Element::new(3, ElementType::Tetrahedron4, vec![1, 2, 3, 5]));
+        mesh.add_element(Element::new(3, ElementType::Tetrahedron4, vec![1, 2, 5, 3]));
 
         let before_tets = mesh.elements_by_dimension(3).len();
         let mut next_elem_id = 10_u64;
@@ -1817,6 +1868,53 @@ mod tests {
         );
         assert_eq!(before_tets, 3);
         assert_ne!(after_tets, before_tets);
+    }
+
+    #[test]
+    fn local_flip_pass_skips_non_piercing_fan() {
+        // The INVALID sibling configuration (the pre-fix fan coordinates):
+        // segment (1,2) misses the interior of opposite triangle (3,4,5), so
+        // the 3-2 flip on that edge must be skipped by the bistellar validity
+        // gate and the union volume must stay invariant.
+        let mut mesh = Mesh::new();
+        mesh.add_node(Node::new(1, 0.0, 0.0, 0.0));
+        mesh.add_node(Node::new(2, 1.0, 0.0, 0.0));
+        mesh.add_node(Node::new(3, 0.5, 0.001, 0.0));
+        mesh.add_node(Node::new(4, 0.5, 0.0, 0.001));
+        mesh.add_node(Node::new(5, 0.5, 0.8, 0.8));
+
+        mesh.add_element(Element::new(1, ElementType::Tetrahedron4, vec![1, 2, 3, 4]));
+        mesh.add_element(Element::new(2, ElementType::Tetrahedron4, vec![1, 2, 4, 5]));
+        mesh.add_element(Element::new(3, ElementType::Tetrahedron4, vec![1, 2, 3, 5]));
+
+        let total_volume = |mesh: &Mesh| -> f64 {
+            mesh.elements
+                .iter()
+                .filter(|e| e.etype == ElementType::Tetrahedron4 && e.node_ids.len() == 4)
+                .map(|e| {
+                    tetra_volume(
+                        node_xyz_from_mesh(mesh, e.node_ids[0]).expect("node"),
+                        node_xyz_from_mesh(mesh, e.node_ids[1]).expect("node"),
+                        node_xyz_from_mesh(mesh, e.node_ids[2]).expect("node"),
+                        node_xyz_from_mesh(mesh, e.node_ids[3]).expect("node"),
+                    )
+                })
+                .sum()
+        };
+        let before_volume = total_volume(&mesh);
+
+        let mut next_elem_id = 10_u64;
+        let (face_flips, edge_flips, _edge_sliver_flips) =
+            optimize_local_face_flips(&mut mesh, &mut next_elem_id, 2).expect("flip pass");
+
+        assert_eq!(edge_flips, 0, "invalid 3-2 flip must not be applied");
+        let after_volume = total_volume(&mesh);
+        let drift = (after_volume - before_volume).abs();
+        assert!(
+            drift <= 1e-12 * before_volume,
+            "invalid flip corrupted the union volume: before={before_volume:e}, \
+             after={after_volume:e}, drift={drift:e}, face_flips={face_flips}"
+        );
     }
 
     #[test]

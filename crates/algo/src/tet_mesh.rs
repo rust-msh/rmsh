@@ -11,6 +11,7 @@ use rmsh_model::{Element, ElementType, Mesh, Node};
 use crate::delaunay_3d::{
     is_better_quality, min_dihedral_points, radius_edge_ratio_points, tetra_volume,
 };
+use crate::mesh_optimize::segment_pierces_triangle;
 
 // ─── Structs ─────────────────────────────────────────────────────────────────
 
@@ -285,13 +286,23 @@ fn apply_3to2_flip(tm: &mut TetMesh, remove: &[u32], new_tets: [[u32; 4]; 2]) {
 ///
 /// Runs up to `max_passes` iterations of 2-to-3 face flips and 3-to-2 edge
 /// flips, selecting the best candidate per pass using strict and sliver-relaxed
-/// quality acceptance criteria.
+/// quality acceptance criteria. Every candidate additionally passes the
+/// bistellar validity gate ([`segment_pierces_triangle`]): a 2-3 flip's new
+/// edge must strictly pierce the removed shared face, and a 3-2 flip's removed
+/// edge must strictly pierce the opposite triangle — otherwise the replacement
+/// tets do not decompose the same region (union volume overlap or gap), so the
+/// flip is skipped however good its per-tet quality looks.
 ///
-/// Returns `(face_flip_count, edge_flip_count, edge_sliver_flip_count)`.
-pub fn optimize_tetmesh_flips(tm: &mut TetMesh, max_passes: usize) -> (usize, usize, usize) {
+/// Returns `(face_flip_count, edge_flip_count, edge_sliver_flip_count,
+/// validity_skip_count)`.
+pub fn optimize_tetmesh_flips(
+    tm: &mut TetMesh,
+    max_passes: usize,
+) -> (usize, usize, usize, usize) {
     let mut accepted_face = 0usize;
     let mut accepted_edge = 0usize;
     let mut accepted_edge_sliver = 0usize;
+    let mut skipped_invalid = 0usize;
 
     for _pass in 0..max_passes {
         tm.build_neighbors();
@@ -320,6 +331,24 @@ pub fn optimize_tetmesh_flips(tm: &mut TetMesh, max_passes: usize) -> (usize, us
 
                 // Face vertices (the 3 nodes opposite spine_a / opposite fi).
                 let fv = tm.face_nodes(ti as usize, fi as usize);
+
+                // Bistellar 2-3 validity: the new edge (spine_a, spine_b)
+                // must strictly pierce the interior of the removed shared
+                // face, so the three replacement tets decompose exactly the
+                // old pair's region. Same gate as
+                // mesh_optimize::edge_swap_pass.
+                if !segment_pierces_triangle(
+                    tm.nodes[spine_a as usize],
+                    tm.nodes[spine_b as usize],
+                    [
+                        tm.nodes[fv[0] as usize],
+                        tm.nodes[fv[1] as usize],
+                        tm.nodes[fv[2] as usize],
+                    ],
+                ) {
+                    skipped_invalid += 1;
+                    continue;
+                }
 
                 let new_tets = [
                     [spine_a, spine_b, fv[0], fv[1]],
@@ -436,6 +465,25 @@ pub fn optimize_tetmesh_flips(tm: &mut TetMesh, max_passes: usize) -> (usize, us
                 continue;
             }
 
+            // Bistellar 3-2 validity: the removed edge must pierce the
+            // interior of the opposite triangle, so the replacement pair
+            // decomposes exactly the three ring tets' region. Without this
+            // gate the flip changes the union volume (overlap or gap) even
+            // when every replacement tet looks high-quality. Same gate as
+            // mesh_optimize::edge_removal_pass_3_2.
+            if !segment_pierces_triangle(
+                tm.nodes[_edge[0] as usize],
+                tm.nodes[_edge[1] as usize],
+                [
+                    tm.nodes[a as usize],
+                    tm.nodes[b as usize],
+                    tm.nodes[c as usize],
+                ],
+            ) {
+                skipped_invalid += 1;
+                continue;
+            }
+
             let new_tets = [[a, b, c, _edge[0]], [a, b, c, _edge[1]]];
 
             let Some((old_d, old_s, old_r)) = tetmesh_aggregate_quality(tm, &old_tets) else {
@@ -537,7 +585,12 @@ pub fn optimize_tetmesh_flips(tm: &mut TetMesh, max_passes: usize) -> (usize, us
         }
     }
 
-    (accepted_face, accepted_edge, accepted_edge_sliver)
+    (
+        accepted_face,
+        accepted_edge,
+        accepted_edge_sliver,
+        skipped_invalid,
+    )
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -563,7 +616,35 @@ mod tests {
 
     fn make_three_tet_edge_fan() -> Mesh {
         // Three tets sharing edge (1,2):
-        // [1,2,3,4], [1,2,4,5], [1,2,3,5]
+        // [1,2,3,4], [1,2,4,5], [1,2,5,3]
+        //
+        // Corrected fixture (was [1,2,3,4],[1,2,4,5],[1,2,3,5] with nodes
+        // 3=(0.5,0.001,0), 4=(0.5,0,0.001)): the old coordinates put the
+        // crossing of segment (1,2) with the plane of triangle (3,4,5) at
+        // (0.5, 0, 0), which lies OUTSIDE the triangle (its edge (3,4) is the
+        // line y+z=0.001 in the y-z plane). The 3-2 flip on that fan is
+        // bistellar-INVALID — it changed the union volume (lost 3.33e-7) —
+        // and was only "passing" because the flip was unguarded. Nodes 3 and
+        // 4 are now on the negative side of both y and z so the crossing
+        // point is strictly inside triangle (3,4,5) and the flip is a valid
+        // bistellar move (union volume exactly preserved). The invalid
+        // variant lives on as make_three_tet_edge_fan_non_piercing.
+        let mut mesh = Mesh::new();
+        mesh.add_node(Node::new(1, 0.0, 0.0, 0.0));
+        mesh.add_node(Node::new(2, 1.0, 0.0, 0.0));
+        mesh.add_node(Node::new(3, 0.5, -0.002, -0.001));
+        mesh.add_node(Node::new(4, 0.5, -0.001, -0.002));
+        mesh.add_node(Node::new(5, 0.5, 0.8, 0.8));
+        mesh.add_element(Element::new(1, ElementType::Tetrahedron4, vec![1, 2, 3, 4]));
+        mesh.add_element(Element::new(2, ElementType::Tetrahedron4, vec![1, 2, 4, 5]));
+        mesh.add_element(Element::new(3, ElementType::Tetrahedron4, vec![1, 2, 5, 3]));
+        mesh
+    }
+
+    /// The pre-fix `make_three_tet_edge_fan` coordinates, kept as the
+    /// canonical INVALID 3-2 configuration: segment (1,2) misses the interior
+    /// of opposite triangle (3,4,5), so the flip must be skipped.
+    fn make_three_tet_edge_fan_non_piercing() -> Mesh {
         let mut mesh = Mesh::new();
         mesh.add_node(Node::new(1, 0.0, 0.0, 0.0));
         mesh.add_node(Node::new(2, 1.0, 0.0, 0.0));
@@ -781,8 +862,9 @@ mod tests {
         let mesh = make_three_tet_edge_fan();
         let mut tm = TetMesh::from_mesh(&mesh);
         let before = tm.tet_count();
+        let before_volume = total_abs_volume(&tm);
 
-        let (face_flips, edge_flips, _sliver) = optimize_tetmesh_flips(&mut tm, 4);
+        let (face_flips, edge_flips, _sliver, _skipped) = optimize_tetmesh_flips(&mut tm, 4);
         let after = tm.tet_count();
 
         assert!(
@@ -791,6 +873,15 @@ mod tests {
         );
         assert_eq!(before, 3);
         assert_ne!(after, before, "tet count should change after flip");
+        // The fan is a valid (piercing) 3-2 configuration: whatever flip the
+        // pass accepts, the union volume must be exactly preserved.
+        let after_volume = total_abs_volume(&tm);
+        let drift = (after_volume - before_volume).abs();
+        assert!(
+            drift <= 1e-12 * before_volume,
+            "valid flip must preserve union volume: before={before_volume:e}, \
+             after={after_volume:e}, drift={drift:e}"
+        );
     }
 
     #[test]
@@ -817,10 +908,136 @@ mod tests {
             node_ids: vec![],
             tets: vec![],
         };
-        let (f, e, s) = optimize_tetmesh_flips(&mut tm, 4);
+        let (f, e, s, k) = optimize_tetmesh_flips(&mut tm, 4);
         assert_eq!(f, 0);
         assert_eq!(e, 0);
         assert_eq!(s, 0);
+        assert_eq!(k, 0);
+    }
+
+    /// Sum of absolute tet volumes. Equals the union volume exactly when all
+    /// tet interiors are disjoint (true for every fixture used here, both
+    /// before and after each flip), so any overlap or gap introduced by a
+    /// flip changes this sum.
+    fn total_abs_volume(tm: &TetMesh) -> f64 {
+        tm.tets
+            .iter()
+            .map(|t| {
+                tetra_volume(
+                    tm.nodes[t.nodes[0] as usize],
+                    tm.nodes[t.nodes[1] as usize],
+                    tm.nodes[t.nodes[2] as usize],
+                    tm.nodes[t.nodes[3] as usize],
+                )
+            })
+            .sum()
+    }
+
+    #[test]
+    fn non_piercing_edge_fan_union_volume_is_invariant() {
+        // The classic 3-tet fan around edge (1,2) with opposite triangle
+        // (3,4,5) in the plane x = 0.5. The segment (1,2) crosses that plane
+        // at (0.5, 0, 0), which lies OUTSIDE triangle (3,4,5): in the y-z
+        // plane the edge (3,4) is the line y + z = 0.001 and the crossing
+        // point (0, 0) has y + z = 0. The bistellar 3-2 validity condition
+        // (removed edge must pierce the interior of the opposite triangle,
+        // see mesh_optimize::segment_pierces_triangle) therefore FAILS.
+        // RED (pre-fix) evidence: the unguarded flip fired, edge_flips=1,
+        // tets 3 -> 2, and the union volume dropped from 2.6683333333334e-4
+        // to 2.665e-4 (drift 3.3333333334e-7, about 0.125% of the mesh
+        // vanished). The guarded pass must skip the flip and report the skip.
+        let mesh = make_three_tet_edge_fan_non_piercing();
+        let mut tm = TetMesh::from_mesh(&mesh);
+        let before_volume = total_abs_volume(&tm);
+        let before_tets = tm.tet_count();
+
+        let (face_flips, edge_flips, _sliver, skipped) = optimize_tetmesh_flips(&mut tm, 4);
+
+        assert_eq!(edge_flips, 0, "invalid 3-2 flip must not be applied");
+        assert!(
+            skipped >= 1,
+            "the invalid 3-2 candidate must be reported as skipped (skipped={skipped})"
+        );
+        // Note: a VALID 2-3 flip may still fire on this mesh (the face
+        // (1,2,5) with apices (3,4) is a piercing configuration), so the tet
+        // count may legitimately change; the corruption-free contract is the
+        // union-volume invariance asserted below.
+        let after_volume = total_abs_volume(&tm);
+        let drift = (after_volume - before_volume).abs();
+        assert!(
+            drift <= 1e-12 * before_volume,
+            "invalid 3-2 flip corrupted the union volume: before={before_volume:e}, \
+             after={after_volume:e}, drift={drift:e}, face_flips={face_flips}, \
+             edge_flips={edge_flips}, tets {} -> {}",
+            before_tets,
+            tm.tet_count()
+        );
+    }
+
+    #[test]
+    fn non_piercing_face_pair_union_volume_is_invariant() {
+        // Sibling defect on the 2-to-3 path: two tets sharing face (3,4,5)
+        // whose apices (1,2) do NOT pierce the shared face interior (same
+        // geometry as the fan above, seen from the other decomposition).
+        // The 2-3 flip replaces the pair with the 3-tet fan around edge
+        // (1,2); without the piercing gate the flip corrupts the union in
+        // the same way.
+        let mut mesh = Mesh::new();
+        mesh.add_node(Node::new(1, 0.0, 0.0, 0.0));
+        mesh.add_node(Node::new(2, 1.0, 0.0, 0.0));
+        mesh.add_node(Node::new(3, 0.5, 0.001, 0.0));
+        mesh.add_node(Node::new(4, 0.5, 0.0, 0.001));
+        mesh.add_node(Node::new(5, 0.5, 0.8, 0.8));
+        mesh.add_element(Element::new(1, ElementType::Tetrahedron4, vec![1, 3, 4, 5]));
+        mesh.add_element(Element::new(2, ElementType::Tetrahedron4, vec![2, 3, 4, 5]));
+
+        let mut tm = TetMesh::from_mesh(&mesh);
+        let before_volume = total_abs_volume(&tm);
+        let before_tets = tm.tet_count();
+
+        let (face_flips, edge_flips, _sliver, _skipped) = optimize_tetmesh_flips(&mut tm, 4);
+
+        let after_volume = total_abs_volume(&tm);
+        let drift = (after_volume - before_volume).abs();
+        assert!(
+            drift <= 1e-12 * before_volume,
+            "invalid 2-3 flip corrupted the union volume: before={before_volume:e}, \
+             after={after_volume:e}, drift={drift:e}, face_flips={face_flips}, \
+             edge_flips={edge_flips}, tets {} -> {}",
+            before_tets,
+            tm.tet_count()
+        );
+    }
+
+    #[test]
+    fn segment_pierces_triangle_gate_pins() {
+        // Geometry pins for the shared bistellar validity gate, on exactly
+        // the fixture coordinates used by the flip tests.
+        let pa = [0.0, 0.0, 0.0];
+        let pb = [1.0, 0.0, 0.0];
+        // Non-piercing fan: triangle (3,4,5) in plane x = 0.5; the segment
+        // crosses at (0.5, 0, 0), outside the triangle.
+        let tri_miss = [
+            [0.5, 0.001, 0.0],
+            [0.5, 0.0, 0.001],
+            [0.5, 0.8, 0.8],
+        ];
+        assert!(!segment_pierces_triangle(pa, pb, tri_miss));
+        // Corrected fan: crossing point strictly inside the triangle.
+        let tri_hit = [
+            [0.5, -0.002, -0.001],
+            [0.5, -0.001, -0.002],
+            [0.5, 0.8, 0.8],
+        ];
+        assert!(segment_pierces_triangle(pa, pb, tri_hit));
+        // 2-3 sibling case: both apices on the SAME side of the face plane
+        // (segment endpoint on the plane counts as grazing, not piercing).
+        let above_a = [0.5, 0.2, 0.4];
+        let above_b = [0.5, 0.3, 0.5];
+        assert!(!segment_pierces_triangle(above_a, above_b, tri_hit));
+        // Endpoint exactly on the triangle plane: no strict piercing.
+        let on_plane = [0.5, 0.1, 0.2];
+        assert!(!segment_pierces_triangle(pa, on_plane, tri_hit));
     }
 
     #[test]
@@ -833,10 +1050,11 @@ mod tests {
         mesh.add_element(Element::new(1, ElementType::Tetrahedron4, vec![1, 2, 3, 4]));
 
         let mut tm = TetMesh::from_mesh(&mesh);
-        let (f, e, s) = optimize_tetmesh_flips(&mut tm, 4);
+        let (f, e, s, k) = optimize_tetmesh_flips(&mut tm, 4);
         assert_eq!(f, 0);
         assert_eq!(e, 0);
         assert_eq!(s, 0);
+        assert_eq!(k, 0);
         assert_eq!(tm.tet_count(), 1);
     }
 }

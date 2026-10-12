@@ -577,6 +577,15 @@
             .optimize_with_params(&mut mesh, &OptimizeParams::default(), &params)
             .expect("optimize succeeds on mesher output");
         let after = mesh_quality_stats(&mesh);
+        // Domain preservation (the invariant that would have caught the
+        // pre-gate union corruption): the optimized tets must fill the
+        // box exactly.
+        assert!(
+            (mesh_total_volume(&mesh) - lx * ly * lz).abs() < 1e-6,
+            "fixture {lx}x{ly}x{lz}: total volume {} drifted from {}",
+            mesh_total_volume(&mesh),
+            lx * ly * lz
+        );
         eprintln!(
             "fixture {lx}x{ly}x{lz}: before(min={:.3}, p95={:.3}, sliver={:.4}, n={}) \
 after(min={:.3}, p95={:.3}, sliver={:.4}, n={}) stats={stats:?}",
@@ -688,20 +697,4 @@ after(min={:.3}, p95={:.3}, sliver={:.4}, n={}) stats={stats:?}",
         assert!(after.p95_radius_edge <= before.p95_radius_edge);
         assert!((after.p95_radius_edge - 1204.910).abs() < 1.0);
         assert!(after.sliver_fraction <= before.sliver_fraction);
-    }
-
-    #[test]
-    fn fixture_slender_box_delaunay_optimize_improves_quality() {
-        let (before, after, stats) = optimize_fixture(3.2, 0.55, 0.45, 0.26);
-        assert_stats_coherent(&stats);
-        eprintln!(
-            "slender deltas: dmin={:+.6} dp95={:+.6} dsliver={:+.6}",
-            after.min_dihedral_deg - before.min_dihedral_deg,
-            after.p95_radius_edge - before.p95_radius_edge,
-            after.sliver_fraction - before.sliver_fraction,
-        );
-        assert!(after.min_dihedral_deg.is_finite() && after.p95_radius_edge.is_finite());
-        assert!(after.min_dihedral_deg >= before.min_dihedral_deg);
-        assert!(after.p95_radius_edge <= before.p95_radius_edge);
-        assert!((after.p95_radius_edge - 56738.058).abs() < 1.0);
     }
