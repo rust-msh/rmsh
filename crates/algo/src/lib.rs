@@ -106,3 +106,5 @@ pub use mesh_optimize::{MeshQualityOptimizer, OptimizeConfig, QualityMetric};
 /// 2-D boundary layers: structured quad/tri rows grown inward from a domain
 /// boundary with local collision clamping (Gmsh boundary-layer architecture,
 /// re-implemented; see the module docs for provenance and v1 scope).
+pub mod boundary_layer_2d;
+pub use boundary_layer_2d::{BoundaryLayer2D, BoundaryLayerError, cumulative_height, insert_boundary_layers};
