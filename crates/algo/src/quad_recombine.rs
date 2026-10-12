@@ -554,55 +554,58 @@ mod tests {
             a.iter().filter(|x| b.contains(x)).count() == 2
         };
 
-        for out in &output.elements {
-            match out.etype {
-                ElementType::Triangle3 => {
-                    let key: HashSet<u64> = out.node_ids.iter().copied().collect();
-                    let mut found = None;
-                    for (i, t) in in_tris.iter().enumerate() {
-                        if !used[i] && t.iter().copied().collect::<HashSet<u64>>() == key {
-                            found = Some(i);
-                            break;
-                        }
+        // Quads claim their source pairs FIRST. In a valid triangulation a
+        // quad's source pair is unique (both diagonals triangulated at once
+        // is impossible), so quad-first claiming cannot starve a later quad
+        // — and a first-fit pass that interleaves quads and triangles CAN:
+        // an early quad's index-order pair may be the exact triangle a
+        // later output's reconstruction needs (observed on the L-shape
+        // after the triangulate2d hardening changed the mesh shape).
+        for out in output.elements.iter().filter(|e| e.etype == ElementType::Quad4) {
+            let key: HashSet<u64> = out.node_ids.iter().copied().collect();
+            let mut pair = None;
+            'outer: for i in 0..n {
+                if used[i] {
+                    continue;
+                }
+                for j in (i + 1)..n {
+                    if used[j] {
+                        continue;
                     }
-                    match found {
-                        Some(i) => {
-                            used[i] = true;
-                            mapping.push((out.id as usize, None));
-                        }
-                        None => return Err(format!("triangle {} matches no unused input", out.id)),
+                    if share_edge(&in_tris[i], &in_tris[j])
+                        && in_tris[i].iter().chain(in_tris[j].iter()).copied().collect::<HashSet<u64>>()
+                            == key
+                    {
+                        pair = Some((i, j));
+                        break 'outer;
                     }
                 }
-                ElementType::Quad4 => {
-                    let qset: HashSet<u64> = out.node_ids.iter().copied().collect();
-                    let mut pair = None;
-                    'outer: for i in 0..n {
-                        if used[i] {
-                            continue;
-                        }
-                        for j in (i + 1)..n {
-                            if used[j] {
-                                continue;
-                            }
-                            if share_edge(&in_tris[i], &in_tris[j])
-                                && in_tris[i].iter().chain(in_tris[j].iter()).copied().collect::<HashSet<u64>>()
-                                    == qset
-                            {
-                                pair = Some((i, j));
-                                break 'outer;
-                            }
-                        }
-                    }
-                    match pair {
-                        Some((i, j)) => {
-                            used[i] = true;
-                            used[j] = true;
-                            mapping.push((out.id as usize, Some((i, j))));
-                        }
-                        None => return Err(format!("quad {} matches no unused input pair", out.id)),
-                    }
+            }
+            match pair {
+                Some((i, j)) => {
+                    used[i] = true;
+                    used[j] = true;
+                    mapping.push((out.id as usize, Some((i, j))));
                 }
-                other => return Err(format!("unexpected output element type {other:?}")),
+                None => return Err(format!("quad {} matches no unused input pair", out.id)),
+            }
+        }
+
+        for out in output.elements.iter().filter(|e| e.etype == ElementType::Triangle3) {
+            let key: HashSet<u64> = out.node_ids.iter().copied().collect();
+            let mut found = None;
+            for (i, t) in in_tris.iter().enumerate() {
+                if !used[i] && t.iter().copied().collect::<HashSet<u64>>() == key {
+                    found = Some(i);
+                    break;
+                }
+            }
+            match found {
+                Some(i) => {
+                    used[i] = true;
+                    mapping.push((out.id as usize, None));
+                }
+                None => return Err(format!("triangle {} matches no unused input", out.id)),
             }
         }
 
@@ -731,7 +734,12 @@ mod tests {
             [1.0, 2.0],
             [0.0, 2.0],
         ]);
-        let input = mesh_polygon(&poly, 0.4).expect("triangulation succeeds");
+        // 0.45 is the CENSUS-CLEAN size (see the triangulate2d
+        // concave-area-drift marker test): the L shape is CONCAVE and the
+        // triangulator currently leaks out-of-domain triangles at most
+        // mesh sizes (drift up to +1.35 at 0.5) — the known defect the
+        // quality card owns. 0.45 triangulates exactly (area 3.000000).
+        let input = mesh_polygon(&poly, 0.45).expect("triangulation succeeds");
         assert!(input.elements.len() >= 20, "got a real mesh to work with");
 
         let output = recombine_triangles(&input).expect("recombination succeeds");
@@ -769,10 +777,17 @@ mod tests {
             "irregular L-shape: {} triangles -> {n_quads} quads + {n_tris} triangles (matching rate {rate:.3})",
             input.elements.len()
         );
-        // Measured pin: the deterministic pipeline pairs ALL 44 triangles
-        // (matching rate 1.000) on this mesh.
-        assert_eq!(n_quads, 22, "measured matching rate pin");
-        assert_eq!(n_tris, 0);
+        // Measured pin as a BAND, not an exact count: the exact triangle
+        // count of this mesh is mesh_polygon's implementation detail (the
+        // P3a triangulate2d hardening moved it 44 -> 47 triangles), so the
+        // pin asserts the recombination QUALITY invariants — a strong
+        // majority paired on this mesh, whatever the upstream
+        // triangulation's exact shape. The exact-count pin lives on the
+        // structured grid test, where the pipeline is deterministic.
+        assert!(
+            rate >= 0.9,
+            "the L-shape pairs to a strong majority: rate {rate:.3}"
+        );
 
         assert_perimeter_ordered(&input, &output);
     }
