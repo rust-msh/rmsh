@@ -7,3 +7,7 @@ edition.workspace = true
 rmsh-io = { workspace = true }
 rmsh-model = { workspace = true }
 thiserror = { workspace = true }
+# The geometry-source abstraction (geometry_source.rs) is meshing-facing and
+# aligns with the rcad kernel's math type so adapters convert nothing; the
+# core model/geo crates keep nalgebra and are untouched.
+glam = { workspace = true }

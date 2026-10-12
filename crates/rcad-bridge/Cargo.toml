@@ -1,0 +1,21 @@
+[package]
+name = "rmsh-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rmsh-algo = { workspace = true }
+rmsh-model = { workspace = true }
+rcad-kernel = { workspace = true }
+glam = { workspace = true }
+
+[dev-dependencies]
+# The open-source tessellation path the tests use to mount triangulations on
+# the BRep before walking it: the bridge itself reads triangulations, it
+# never meshes.
+rcad-mesh = { workspace = true }
+rcad-modeling = { workspace = true }
+# The writer-consumability pin (the produced mesh round-trips through the
+# rmsh MSH writer).
+rmsh-io = { workspace = true }

@@ -21,6 +21,14 @@ pub use traits::{
     Domain2D, MeshAlgoError, MeshOptimizer, MeshParams, Mesher2D, Mesher3D, OptimizeParams,
 };
 
+// ─── Geometry-source abstraction (dependency inversion, P2) ───────────────────
+
+/// The meshing-oriented geometry abstraction: closest-point / normal /
+/// curvature queries, defined here (zero-rcad) and implemented by rcad
+/// adapters on the consuming side (see the `rmsh-bridge` crate).
+pub mod geometry_source;
+pub use geometry_source::{GeometryHit, GeometrySource};
+
 // ─── 2-D surface meshing algorithms ──────────────────────────────────────────
 
 /// MeshAdapt 2-D: local edge-split/collapse/swap refinement (Gmsh algo 1).

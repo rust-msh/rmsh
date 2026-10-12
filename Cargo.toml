@@ -4,12 +4,14 @@ members = [
     "crates/geo",
     "crates/io",
     "crates/algo",
+    "crates/rcad-bridge",
 ]
 default-members = [
     "crates/model",
     "crates/geo",
     "crates/io",
     "crates/algo",
+    "crates/rcad-bridge",
 ]
 resolver = "2"
 
@@ -25,6 +27,7 @@ rmsh-model = { path = "crates/model" }
 rmsh-geo = { path = "crates/geo" }
 rmsh-io = { path = "crates/io" }
 rmsh-algo = { path = "crates/algo" }
+rmsh-bridge = { path = "crates/rcad-bridge" }
 rmsh-renderer = { path = "crates/renderer" }
 
 # RCAD — the open-source rcad this project is built on, consumed from the
@@ -36,6 +39,7 @@ rcad-algo = { path = "../rcad/libs/rcad-algo" }
 rcad-step = { path = "../rcad/libs/rcad-step" }
 rcad-render = { path = "../rcad/libs/rcad-render" }
 rcad-scene = { path = "../rcad/libs/rcad-scene" }
+rcad-mesh = { path = "../rcad/libs/rcad-mesh" }
 
 # Math
 nalgebra = { version = "0.33", features = ["serde-serialize"] }
