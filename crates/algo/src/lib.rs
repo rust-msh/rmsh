@@ -29,6 +29,18 @@ pub use traits::{
 pub mod geometry_source;
 pub use geometry_source::{GeometryHit, GeometrySource};
 
+// ─── Size-field framework (adaptive sizing, P2) ───────────────────────────────
+
+/// The size-field framework: uniform / analytic-closure / curvature-derived /
+/// distance-derived element-size fields, min-max composition, and gradient
+/// limiting over a background lattice (the sizing ground for adaptive
+/// meshing, P3+).
+pub mod size_field;
+pub use size_field::{
+    Composition, ComposedField, CurvatureField, DistanceField, FieldFn, GradientLimitedField,
+    SizeField, SizeFieldError, UniformField,
+};
+
 // ─── 2-D surface meshing algorithms ──────────────────────────────────────────
 
 /// MeshAdapt 2-D: local edge-split/collapse/swap refinement (Gmsh algo 1).
