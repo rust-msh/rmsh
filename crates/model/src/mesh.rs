@@ -5,6 +5,25 @@ use serde::{Deserialize, Serialize};
 use crate::element::Element;
 use crate::node::Node;
 
+/// A periodic constraint between a slave entity and a master entity, as
+/// stored in the MSH `$Periodic` section. The affine vector carries the
+/// transform values verbatim (Gmsh writes 16 values per link; the count can
+/// be zero when no transform is stored) and is never interpreted here.
+/// Correspondence pairs are `(slave_node, master_node)` in file order.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PeriodicLink {
+    /// Topological dimension of the constrained entity.
+    pub entity_dim: u8,
+    /// Master entity tag.
+    pub master: i32,
+    /// Slave entity tag (the constrained side; Gmsh writes it first).
+    pub slave: i32,
+    /// Affine transform values, verbatim.
+    pub affine: Vec<f64>,
+    /// `(slave node, master node)` correspondence pairs.
+    pub correspondence: Vec<(u64, u64)>,
+}
+
 /// A finite element mesh containing nodes and elements.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Mesh {
@@ -14,6 +33,10 @@ pub struct Mesh {
     pub elements: Vec<Element>,
     /// Physical group names: (dimension, tag) -> name.
     pub physical_names: HashMap<(i32, i32), String>,
+    /// Periodic links. Empty unless the file carried a `$Periodic` section
+    /// (the serde default keeps older serialized meshes loading unchanged).
+    #[serde(default)]
+    pub periodic: Vec<PeriodicLink>,
 }
 
 impl Mesh {

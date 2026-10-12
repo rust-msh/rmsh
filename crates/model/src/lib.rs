@@ -3,8 +3,8 @@ pub mod mesh;
 pub mod node;
 pub mod topology;
 
-pub use element::{Element, ElementType};
-pub use mesh::Mesh;
+pub use element::{Element, ElementType, gmsh_node_count};
+pub use mesh::{Mesh, PeriodicLink};
 pub use node::Node;
 pub use topology::{GEdge, GFace, GModel, GRegion, GSelection, GVertex};
 

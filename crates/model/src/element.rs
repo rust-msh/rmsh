@@ -39,22 +39,117 @@ fn family_from_gmsh_type_id(id: i32) -> Option<ElementFamily> {
     match id {
         // Point
         15 => Some(ElementFamily::Point),
-        // Line (1st+high order)
-        1 | 8 | 26 | 27 | 28 => Some(ElementFamily::Line),
-        // Triangle (1st+high order)
-        2 | 9 | 20 | 21 | 22 | 23 | 24 | 25 => Some(ElementFamily::Triangle),
-        // Quadrilateral (1st+high order)
-        3 | 10 | 16 | 36 | 37 | 38 | 47 | 48 | 49 | 50 | 51 => Some(ElementFamily::Quadrilateral),
-        // Tetrahedron (1st+high order)
+        // Line (orders 1-10; 62-66 are the order 6-10 edges)
+        1 | 8 | 26 | 27 | 28 | 62 | 63 | 64 | 65 | 66 => Some(ElementFamily::Line),
+        // Triangle (complete + Gmsh incomplete variants, orders 1-10)
+        2 | 9 | 20..=25 | 32 | 33 | 42..=46 | 52..=56 => Some(ElementFamily::Triangle),
+        // Quadrilateral (complete + Gmsh incomplete variants, orders 1-10)
+        3 | 10 | 16 | 36..=41 | 47..=51 | 57..=61 => Some(ElementFamily::Quadrilateral),
+        // Tetrahedron (orders 1-5)
         4 | 11 | 29 | 30 | 31 => Some(ElementFamily::Tetrahedron),
-        // Hexahedron (1st+high order)
+        // Hexahedron (8/27 complete, 20 incomplete, 64/125 for orders 3-4)
         5 | 12 | 17 | 92 | 93 => Some(ElementFamily::Hexahedron),
-        // Prism (1st+high order)
+        // Prism (6/18 complete, 15 incomplete, 40/75 for orders 3-4)
         6 | 13 | 18 | 90 | 91 => Some(ElementFamily::Prism),
-        // Pyramid (1st+high order)
+        // Pyramid (5/14 complete, 13 incomplete, 30/55 for orders 3-4)
         7 | 14 | 19 | 118 | 119 => Some(ElementFamily::Pyramid),
         _ => None,
     }
+}
+
+/// Gmsh MSH element type number -> node count, for every type whose count
+/// could be verified. Two evidence sources:
+/// - types 1-31, 92 and 93 appear explicitly in the official Gmsh manual's
+///   MSH file format table;
+/// - every other entry was read back empirically from meshes written by the
+///   real Gmsh 4.14 (high-order probes of every family; counts extracted
+///   from the v4.1 block headers, `dim tag type count` plus one line per
+///   element).
+/// Types with a variable node count (polygons, polyhedra) are intentionally
+/// absent: a wrong count would corrupt every read that indexes node lists
+/// by it.
+pub fn gmsh_node_count(id: i32) -> Option<usize> {
+    let count = match id {
+        15 => 1,
+        // 2- to 11-node lines (orders 1-10).
+        1 => 2,
+        8 => 3,
+        26 => 4,
+        27 => 5,
+        28 => 6,
+        62 => 7,
+        63 => 8,
+        64 => 9,
+        65 => 10,
+        66 => 11,
+        // Triangles: complete and Gmsh incomplete variants, orders 1-10.
+        2 => 3,
+        9 => 6,
+        20 => 9,
+        21 => 10,
+        22 => 12,
+        23 => 15,
+        24 => 15,
+        25 => 21,
+        32 => 22,
+        33 => 28,
+        42 => 28,
+        43 => 36,
+        44 => 45,
+        45 => 55,
+        46 => 66,
+        52 => 18,
+        53 => 21,
+        54 => 24,
+        55 => 27,
+        56 => 30,
+        // Quadrangles: complete (orders 1-10) and Gmsh incomplete variants.
+        3 => 4,
+        10 => 9,
+        16 => 8,
+        36 => 16,
+        37 => 25,
+        38 => 36,
+        39 => 12,
+        40 => 16,
+        41 => 20,
+        47 => 49,
+        48 => 64,
+        49 => 81,
+        50 => 100,
+        51 => 121,
+        57 => 24,
+        58 => 28,
+        59 => 32,
+        60 => 36,
+        61 => 40,
+        // Tetrahedra, orders 1-5.
+        4 => 4,
+        11 => 10,
+        29 => 20,
+        30 => 35,
+        31 => 56,
+        // Hexahedra: 8/27 complete, 20 incomplete, 64/125 for orders 3-4.
+        5 => 8,
+        12 => 27,
+        17 => 20,
+        92 => 64,
+        93 => 125,
+        // Prisms: 6/18 complete, 15 incomplete, 40/75 for orders 3-4.
+        6 => 6,
+        13 => 18,
+        18 => 15,
+        90 => 40,
+        91 => 75,
+        // Pyramids: 5/14 complete, 13 incomplete, 30/55 for orders 3-4.
+        7 => 5,
+        14 => 14,
+        19 => 13,
+        118 => 30,
+        119 => 55,
+        _ => return None,
+    };
+    Some(count)
 }
 
 fn gmsh_dimension_from_type_id(id: i32) -> u8 {
@@ -150,7 +245,9 @@ impl ElementType {
         }
     }
 
-    /// Number of nodes for this element type.
+    /// Number of nodes for this element type. High-order types loaded as
+    /// [`ElementType::Unknown`] resolve through the verified Gmsh table;
+    /// genuinely unknown ids report 0 (callers treat 0 as "not validated").
     pub fn node_count(&self) -> usize {
         match self {
             ElementType::Point1 => 1,
@@ -161,7 +258,7 @@ impl ElementType {
             ElementType::Hexahedron8 => 8,
             ElementType::Prism6 => 6,
             ElementType::Pyramid5 => 5,
-            ElementType::Unknown(_) => 0,
+            ElementType::Unknown(id) => gmsh_node_count(*id).unwrap_or(0),
         }
     }
 
@@ -251,7 +348,71 @@ impl Element {
 
 #[cfg(test)]
 mod tests {
-    use super::ElementType;
+    use super::{Element, ElementType};
+
+    #[test]
+    fn gmsh_node_count_table_matches_verified_sources() {
+        // Doc-verified (official manual MSH table).
+        assert_eq!(super::gmsh_node_count(15), Some(1));
+        assert_eq!(super::gmsh_node_count(1), Some(2));
+        assert_eq!(super::gmsh_node_count(11), Some(10)); // Tet10
+        assert_eq!(super::gmsh_node_count(12), Some(27)); // Hex27
+        assert_eq!(super::gmsh_node_count(92), Some(64)); // Hex64, order 3
+        assert_eq!(super::gmsh_node_count(93), Some(125)); // Hex125, order 4
+        // Empirically verified against real Gmsh 4.14 output (the manual
+        // abridges its list after 31; these came from block headers of
+        // meshes Gmsh itself wrote).
+        assert_eq!(super::gmsh_node_count(8), Some(3)); // Line3
+        assert_eq!(super::gmsh_node_count(16), Some(8)); // Quad8
+        assert_eq!(super::gmsh_node_count(36), Some(16)); // order-3 complete quad
+        assert_eq!(super::gmsh_node_count(39), Some(12)); // order-3 incomplete quad
+        assert_eq!(super::gmsh_node_count(51), Some(121)); // order-10 complete quad
+        assert_eq!(super::gmsh_node_count(66), Some(11)); // order-10 edge
+        assert_eq!(super::gmsh_node_count(90), Some(40)); // order-3 prism
+        assert_eq!(super::gmsh_node_count(91), Some(75)); // order-4 prism
+        assert_eq!(super::gmsh_node_count(118), Some(30)); // order-3 pyramid
+        assert_eq!(super::gmsh_node_count(119), Some(55)); // order-4 pyramid
+        // Variable-count and unlisted types stay unlisted.
+        assert_eq!(super::gmsh_node_count(34), None);
+        assert_eq!(super::gmsh_node_count(35), None);
+        assert_eq!(super::gmsh_node_count(999), None);
+    }
+
+    #[test]
+    fn every_listed_type_count_has_a_family_and_positive_count() {
+        let listed = [
+            15, 1, 8, 26, 27, 28, 62, 63, 64, 65, 66, 2, 9, 20, 21, 22, 23, 24, 25, 32, 33, 42,
+            43, 44, 45, 46, 52, 53, 54, 55, 56, 3, 10, 16, 36, 37, 38, 39, 40, 41, 47, 48, 49,
+            50, 51, 57, 58, 59, 60, 61, 4, 11, 29, 30, 31, 5, 12, 17, 92, 93, 6, 13, 18, 90, 91,
+            7, 14, 19, 118, 119,
+        ];
+        assert_eq!(listed.len(), 70, "the table pins 70 verified type ids");
+        for id in listed {
+            let count = super::gmsh_node_count(id)
+                .unwrap_or_else(|| panic!("type {id} must have a count"));
+            assert!(count >= 1, "type {id} count must be positive");
+            assert!(
+                super::family_from_gmsh_type_id(id).is_some(),
+                "type {id} has a count but no family"
+            );
+        }
+    }
+
+    #[test]
+    fn serde_json_cycle_preserves_unknown_high_order_element() {
+        let etype = ElementType::Unknown(11);
+        let json = serde_json::to_string(&etype).expect("serialize element type");
+        let back: ElementType = serde_json::from_str(&json).expect("deserialize element type");
+        assert_eq!(back, etype, "the Unknown(id) form must survive a JSON cycle");
+
+        let element = Element::new(7, ElementType::Unknown(16), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let json = serde_json::to_string(&element).expect("serialize element");
+        let back: Element = serde_json::from_str(&json).expect("deserialize element");
+        assert_eq!(back.id, 7);
+        assert_eq!(back.etype, ElementType::Unknown(16));
+        assert_eq!(back.physical_tag, None);
+        assert_eq!(back.node_ids, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    }
 
     #[test]
     fn unknown_high_order_types_have_correct_dimension() {

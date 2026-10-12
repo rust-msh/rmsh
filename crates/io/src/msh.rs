@@ -106,6 +106,9 @@ pub fn write_msh_v2<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), MshErro
     }
     writeln!(writer, "$EndElements")?;
 
+    // Gmsh writes $Periodic after $Elements; empty links emit nothing.
+    crate::msh_periodic::write_periodic_v2(writer, &mesh.periodic)?;
+
     Ok(())
 }
 
@@ -196,6 +199,9 @@ pub fn write_msh_v4<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), MshErro
     }
     writeln!(writer, "$EndElements")?;
 
+    // Gmsh writes $Periodic after $Elements; empty links emit nothing.
+    crate::msh_periodic::write_periodic_v4(writer, &mesh.periodic)?;
+
     Ok(())
 }
 
@@ -282,6 +288,16 @@ pub fn parse_msh<R: BufRead>(reader: R) -> Result<Mesh, MshError> {
                 MshVersion::V2 => parse_elements_v2(&mut lines, &mut line_num, &mut mesh)?,
                 MshVersion::V4 => parse_elements_v4(&mut lines, &mut line_num, &mut mesh)?,
             },
+            "$Periodic" => {
+                let mut src = crate::msh_periodic::BufLineSource {
+                    lines: &mut lines,
+                    line_num: &mut line_num,
+                };
+                mesh.periodic = match version {
+                    MshVersion::V2 => crate::msh_periodic::parse_periodic_v2(&mut src)?,
+                    MshVersion::V4 => crate::msh_periodic::parse_periodic_v4(&mut src)?,
+                };
+            }
             _ => {
                 if trimmed.starts_with('$') && !trimmed.starts_with("$End") {
                     let end_tag = format!("$End{}", &trimmed[1..]);
@@ -599,6 +615,25 @@ fn next_line_raw<R: BufRead>(
 fn validate_mesh(mesh: &Mesh) -> Result<(), MshError> {
     for element in &mesh.elements {
         gmsh_type_id(element.etype)?;
+        // A high-order Unknown element must carry exactly the node count
+        // its Gmsh type number prescribes: a mismatch would write a file
+        // no reader can parse back.
+        if let ElementType::Unknown(id) = element.etype {
+            if let Some(expected) = rmsh_model::gmsh_node_count(id) {
+                if element.node_ids.len() != expected {
+                    return Err(MshError::Parse {
+                        line: 0,
+                        message: format!(
+                            "element {} declares Gmsh type {} ({} node(s)) but carries {} node id(s)",
+                            element.id,
+                            id,
+                            expected,
+                            element.node_ids.len()
+                        ),
+                    });
+                }
+            }
+        }
         for node_id in &element.node_ids {
             if !mesh.nodes.contains_key(node_id) {
                 return Err(MshError::MissingNode(*node_id));
@@ -648,7 +683,13 @@ fn gmsh_type_id(element_type: ElementType) -> Result<i32, MshError> {
         ElementType::Hexahedron8 => Ok(5),
         ElementType::Prism6 => Ok(6),
         ElementType::Pyramid5 => Ok(7),
-        ElementType::Unknown(_) => Err(MshError::UnsupportedElementType(element_type)),
+        // A high-order element loaded as Unknown(id) writes back as its
+        // Gmsh type number when the verified node-count table knows the
+        // id; a genuinely unknown id stays unsupported.
+        ElementType::Unknown(id) => match rmsh_model::gmsh_node_count(id) {
+            Some(_) => Ok(id),
+            None => Err(MshError::UnsupportedElementType(element_type)),
+        },
     }
 }
 
@@ -665,71 +706,21 @@ fn skip_to_marker(pos: &mut usize, bytes: &[u8], marker: &[u8]) {
     }
 }
 
+/// Node count for a v2 chunked element type: the shared verified Gmsh
+/// table first, then the legacy local fallback for the exotic ids the
+/// verification sweep could not cover (94-117, 120-131 — absent from both
+/// the official manual's abridged list and real Gmsh 4.14 output, kept so
+/// such files still parse at their historical counts).
+fn chunk_node_count(element_type_id: i32) -> Option<usize> {
+    rmsh_model::gmsh_node_count(element_type_id)
+        .or_else(|| v2_nodes_per_element(element_type_id))
+}
+
+/// Legacy fallback table, trimmed to the ids NOT covered by
+/// [`rmsh_model::gmsh_node_count`] (everything verified there was deleted
+/// from here so the two tables cannot diverge).
 fn v2_nodes_per_element(element_type_id: i32) -> Option<usize> {
     match element_type_id {
-        1 => Some(2),
-        2 => Some(3),
-        3 => Some(4),
-        4 => Some(4),
-        5 => Some(8),
-        6 => Some(6),
-        7 => Some(5),
-        8 => Some(3),
-        9 => Some(6),
-        10 => Some(9),
-        11 => Some(10),
-        12 => Some(27),
-        13 => Some(18),
-        14 => Some(14),
-        15 => Some(1),
-        16 => Some(8),
-        17 => Some(20),
-        18 => Some(15),
-        19 => Some(13),
-        20 => Some(9),
-        21 => Some(10),
-        22 => Some(12),
-        23 => Some(15),
-        24 => Some(15),
-        25 => Some(21),
-        26 => Some(4),
-        27 => Some(5),
-        28 => Some(6),
-        29 => Some(20),
-        30 => Some(35),
-        31 => Some(56),
-        32 => Some(22),
-        33 => Some(28),
-        36 => Some(16),
-        37 => Some(25),
-        38 => Some(36),
-        39 => Some(12),
-        40 => Some(16),
-        41 => Some(20),
-        42 => Some(28),
-        43 => Some(36),
-        44 => Some(45),
-        45 => Some(55),
-        46 => Some(66),
-        47 => Some(49),
-        48 => Some(64),
-        49 => Some(81),
-        50 => Some(100),
-        51 => Some(121),
-        52 => Some(18),
-        53 => Some(21),
-        54 => Some(24),
-        55 => Some(27),
-        56 => Some(30),
-        57 => Some(24),
-        58 => Some(28),
-        59 => Some(32),
-        60 => Some(36),
-        61 => Some(40),
-        90 => Some(40),
-        91 => Some(75),
-        92 => Some(64),
-        93 => Some(125),
         94 => Some(216),
         95 => Some(343),
         96 => Some(512),
@@ -754,8 +745,6 @@ fn v2_nodes_per_element(element_type_id: i32) -> Option<usize> {
         115 => Some(60),
         116 => Some(69),
         117 => Some(78),
-        118 => Some(30),
-        119 => Some(55),
         120 => Some(91),
         121 => Some(140),
         122 => Some(204),
@@ -863,6 +852,13 @@ fn parse_msh_v2_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
                 }
                 skip_to_marker(&mut pos, bytes, b"$EndPhysicalNames");
             }
+            "$Periodic" => {
+                // Gmsh keeps the MSH2 $Periodic section in ASCII even inside
+                // binary files (only $Nodes/$Elements payloads go binary),
+                // so the ASCII-form parser runs against the byte cursor.
+                let mut src = crate::msh_periodic::ByteLineSource { bytes, pos: &mut pos };
+                mesh.periodic = crate::msh_periodic::parse_periodic_v2(&mut src)?;
+            }
             "$Nodes" => {
                 let Some(count_line) = read_line(&mut pos) else {
                     break;
@@ -909,7 +905,7 @@ fn parse_msh_v2_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
                     let element_type_id = read_i32_le(&mut pos)?;
                     let n_elems = read_i32_le(&mut pos)? as usize;
                     let n_tags = read_i32_le(&mut pos)? as usize;
-                    let Some(n_nodes_per) = v2_nodes_per_element(element_type_id) else {
+                    let Some(n_nodes_per) = chunk_node_count(element_type_id) else {
                         return Err(MshError::Parse {
                             line: 0,
                             message: format!("binary v2: unsupported element type {}", element_type_id),
@@ -1359,25 +1355,29 @@ $EndElements
 // four tests) already pin: the `$Elements` payload groups per element TYPE
 // as `i32 type; i32 num_elements; i32 num_tags;` followed by
 // `num_elements x (i32 id; num_tags x i32 tags; nodes x i32)`. The v4.1
-// binary layout keeps the section and block HEADERS in ASCII and writes the
-// payloads binary (`size_t` = u64, coordinates = f64), mirroring the ASCII
-// block structure exactly. Both flavors open with the endianness magic
-// `i32 1; f64 1.0` right after the format line; big-endian files are
-// refused with a located, naming error (little endian only, documented).
+// binary layout (verified against real Gmsh 4.14 output, which silently
+// ingests nothing from a deviant file) keeps ONLY the section marker lines
+// ASCII: section headers, entity block headers and payloads are all
+// little-endian binary (`size_t` = u64, int = i32, coordinates = f64).
+// Both flavors open with the endianness magic right after the format line:
+// readers accept the documented 12-byte form (`i32 1; f64 1.0`) and the
+// compact 4-byte form (`i32 1`) that real Gmsh 4.14 writes; writers emit
+// the documented 12-byte form. Big-endian files are refused with a
+// located, naming error (little endian only).
 
-fn le_i32<W: Write>(writer: &mut W, v: i32) -> Result<(), MshError> {
+pub(crate) fn le_i32<W: Write>(writer: &mut W, v: i32) -> Result<(), MshError> {
     writer.write_all(&v.to_le_bytes()).map_err(MshError::Io)
 }
 
-fn le_u64<W: Write>(writer: &mut W, v: u64) -> Result<(), MshError> {
+pub(crate) fn le_u64<W: Write>(writer: &mut W, v: u64) -> Result<(), MshError> {
     writer.write_all(&v.to_le_bytes()).map_err(MshError::Io)
 }
 
-fn le_f64<W: Write>(writer: &mut W, v: f64) -> Result<(), MshError> {
+pub(crate) fn le_f64<W: Write>(writer: &mut W, v: f64) -> Result<(), MshError> {
     writer.write_all(&v.to_le_bytes()).map_err(MshError::Io)
 }
 
-fn bin_read_i32(bytes: &[u8], pos: &mut usize, what: &str) -> Result<i32, MshError> {
+pub(crate) fn bin_read_i32(bytes: &[u8], pos: &mut usize, what: &str) -> Result<i32, MshError> {
     if *pos + 4 > bytes.len() {
         return Err(MshError::Parse {
             line: 0,
@@ -1389,7 +1389,7 @@ fn bin_read_i32(bytes: &[u8], pos: &mut usize, what: &str) -> Result<i32, MshErr
     Ok(v)
 }
 
-fn bin_read_u64(bytes: &[u8], pos: &mut usize, what: &str) -> Result<u64, MshError> {
+pub(crate) fn bin_read_u64(bytes: &[u8], pos: &mut usize, what: &str) -> Result<u64, MshError> {
     if *pos + 8 > bytes.len() {
         return Err(MshError::Parse {
             line: 0,
@@ -1402,7 +1402,7 @@ fn bin_read_u64(bytes: &[u8], pos: &mut usize, what: &str) -> Result<u64, MshErr
     Ok(u64::from_le_bytes(buf))
 }
 
-fn bin_read_f64(bytes: &[u8], pos: &mut usize, what: &str) -> Result<f64, MshError> {
+pub(crate) fn bin_read_f64(bytes: &[u8], pos: &mut usize, what: &str) -> Result<f64, MshError> {
     if *pos + 8 > bytes.len() {
         return Err(MshError::Parse {
             line: 0,
@@ -1446,37 +1446,50 @@ fn bin_expect_marker(bytes: &[u8], pos: &mut usize, marker: &str) -> Result<(), 
 }
 
 /// The binary endianness magic: `i32 1` followed by `f64 1.0` (little
-/// endian), written right after every binary `format_line`.
+/// endian), written right after every binary `format_line`. (Readers also
+/// accept the compact `i32 1`-only form real Gmsh 4.14 emits; see
+/// [`read_binary_magic`].)
 fn write_binary_magic<W: Write>(writer: &mut W) -> Result<(), MshError> {
     le_i32(writer, 1)?;
     le_f64(writer, 1.0)
 }
 
 /// Validates the endianness magic at the cursor and refuses big-endian /
-/// corrupt files with a located, naming error.
+/// corrupt files with a located, naming error. Two little-endian forms are
+/// accepted:
+/// - the 12-byte form `i32 1; f64 1.0` (the documented magic; what this
+///   crate writes),
+/// - the compact 4-byte form `i32 1` that real Gmsh 4.14 writes (verified
+///   against its v2.2 and v4.1 binary output; that form is followed by the
+///   `$EndMeshFormat` newline, whose first byte never reads as f64 1.0, so
+///   the two forms cannot be confused).
 fn read_binary_magic(bytes: &[u8], pos: &mut usize, flavor: &str) -> Result<(), MshError> {
-    if *pos + 12 > bytes.len() {
+    if *pos + 4 > bytes.len() {
         return Err(MshError::Parse {
             line: 0,
             message: format!("binary {flavor}: truncated endianness magic"),
         });
     }
-    let raw = &bytes[*pos..*pos + 12];
-    let le_flag = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
-    let le_one = f64::from_le_bytes(raw[4..12].try_into().unwrap());
-    *pos += 12;
-    // The Gmsh magic writes `1` in the file's own endianness: a big-endian
-    // file reads as 16777216 here.
-    if le_flag == 1 && (le_one - 1.0).abs() < f64::EPSILON {
-        return Ok(());
+    let flag = i32::from_le_bytes([bytes[*pos], bytes[*pos + 1], bytes[*pos + 2], bytes[*pos + 3]]);
+    if flag != 1 {
+        let be_flag =
+            i32::from_be_bytes([bytes[*pos], bytes[*pos + 1], bytes[*pos + 2], bytes[*pos + 3]]);
+        return Err(MshError::Parse {
+            line: 0,
+            message: format!(
+                "binary {flavor}: bad endianness magic (i32 {flag}, f64 flag reads as {be_flag}) - big-endian files are not supported; expected little-endian i32 1, f64 1.0"
+            ),
+        });
     }
-    let be_flag = i32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
-    Err(MshError::Parse {
-        line: 0,
-        message: format!(
-            "binary {flavor}: bad endianness magic (i32 {le_flag}, f64 flag reads as {be_flag}) - big-endian files are not supported; expected little-endian i32 1, f64 1.0"
-        ),
-    })
+    if *pos + 12 <= bytes.len() {
+        let one = f64::from_le_bytes(bytes[*pos + 4..*pos + 12].try_into().unwrap());
+        if (one - 1.0).abs() < f64::EPSILON {
+            *pos += 12;
+            return Ok(());
+        }
+    }
+    *pos += 4;
+    Ok(())
 }
 
 fn v2_int32_id(id: u64) -> Result<i32, MshError> {
@@ -1547,14 +1560,19 @@ pub fn write_msh_v2_binary<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), 
     writeln!(writer)?;
     writeln!(writer, "$EndElements")?;
 
+    // The $Periodic section stays ASCII in v2 binary files (the Gmsh
+    // convention); empty links emit nothing.
+    crate::msh_periodic::write_periodic_v2(writer, &mesh.periodic)?;
+
     Ok(())
 }
 
-/// Write a Gmsh MSH v4.1 BINARY file: the section and block headers stay
-/// ASCII (the v4.1 layout keeps headers text even in binary mode), the
-/// payloads — node tags as `size_t` (u64), coordinates as f64, element
-/// tags + connectivity as `size_t` — are little-endian binary. The block
-/// structure mirrors [`write_msh_v4`] exactly.
+/// Write a Gmsh MSH v4.1 BINARY file. Pinned against real Gmsh 4.14 (which
+/// silently ingests nothing from a file whose section headers are ASCII):
+/// only the section MARKER lines are ASCII; the section headers, entity
+/// block headers and payloads are little-endian binary (`size_t` = u64,
+/// int = i32, coordinates = f64). The block structure mirrors
+/// [`write_msh_v4`] exactly.
 pub fn write_msh_v4_binary<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), MshError> {
     validate_mesh(mesh)?;
 
@@ -1579,10 +1597,19 @@ pub fn write_msh_v4_binary<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), 
 
     writeln!(writer, "$Nodes")?;
     if nodes.is_empty() {
-        writeln!(writer, "0 0 0 0")?;
+        le_u64(writer, 0)?;
+        le_u64(writer, 0)?;
+        le_u64(writer, 0)?;
+        le_u64(writer, 0)?;
     } else {
-        writeln!(writer, "1 {} {} {}", nodes.len(), min_node_tag, max_node_tag)?;
-        writeln!(writer, "{} 1 0 {}", entity_dim, nodes.len())?;
+        le_u64(writer, 1)?;
+        le_u64(writer, nodes.len() as u64)?;
+        le_u64(writer, min_node_tag)?;
+        le_u64(writer, max_node_tag)?;
+        le_i32(writer, entity_dim)?;
+        le_i32(writer, 1)?;
+        le_i32(writer, 0)?;
+        le_u64(writer, nodes.len() as u64)?;
         for node in &nodes {
             le_u64(writer, node.id)?;
         }
@@ -1606,22 +1633,20 @@ pub fn write_msh_v4_binary<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), 
 
     writeln!(writer, "$Elements")?;
     if elements.is_empty() {
-        writeln!(writer, "0 0 0 0")?;
+        le_u64(writer, 0)?;
+        le_u64(writer, 0)?;
+        le_u64(writer, 0)?;
+        le_u64(writer, 0)?;
     } else {
-        writeln!(
-            writer,
-            "{} {} {} {}",
-            blocks.len(),
-            elements.len(),
-            min_element_tag,
-            max_element_tag
-        )?;
+        le_u64(writer, blocks.len() as u64)?;
+        le_u64(writer, elements.len() as u64)?;
+        le_u64(writer, min_element_tag)?;
+        le_u64(writer, max_element_tag)?;
         for ((dimension, entity_tag, gmsh_type), block_elements) in blocks {
-            writeln!(
-                writer,
-                "{} {} {} {}",
-                dimension, entity_tag, gmsh_type, block_elements.len()
-            )?;
+            le_i32(writer, i32::from(dimension))?;
+            le_i32(writer, entity_tag)?;
+            le_i32(writer, gmsh_type)?;
+            le_u64(writer, block_elements.len() as u64)?;
             for element in block_elements {
                 le_u64(writer, element.id)?;
                 for node_id in &element.node_ids {
@@ -1631,6 +1656,9 @@ pub fn write_msh_v4_binary<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), 
         }
     }
     writeln!(writer, "$EndElements")?;
+
+    // Gmsh writes $Periodic after $Elements; empty links emit nothing.
+    crate::msh_periodic::write_periodic_v4_binary(writer, &mesh.periodic)?;
 
     Ok(())
 }
@@ -1645,10 +1673,11 @@ pub fn save_msh_v4_binary_to_path(path: &Path, mesh: &Mesh) -> Result<(), MshErr
     write_msh_v4_binary(&mut file, mesh)
 }
 
-/// Parse a Gmsh MSH v4.1 BINARY file: ASCII section and block headers,
-/// binary payloads (`size_t` node/element tags as u64, f64 coordinates),
-/// mirroring [`write_msh_v4_binary`]. Element types come from the block
-/// header; unknown types are refused with a located error. The block's
+/// Parse a Gmsh MSH v4.1 BINARY file. Pinned against real Gmsh 4.14
+/// output: only the section MARKER lines (`$Nodes`, ...) are ASCII — the
+/// section headers, entity block headers and payloads are all
+/// little-endian binary (`size_t` = u64, int = i32, coordinates = f64).
+/// Node blocks list ALL tags first, then ALL coordinates. The block's
 /// entity tag rides as the physical tag — the same "rem uses this as
 /// physical tag" convention as the ASCII v4 reader.
 fn parse_msh_v4_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
@@ -1698,43 +1727,28 @@ fn parse_msh_v4_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
                 bin_expect_marker(bytes, &mut pos, "$EndPhysicalNames")?;
             }
             "$Nodes" => {
-                let header = bin_read_line(bytes, &mut pos)?;
-                let hp: Vec<&str> = header.split_whitespace().collect();
-                if hp.len() < 4 {
-                    return Err(MshError::Parse {
-                        line: 0,
-                        message: format!("binary v4: invalid nodes header: {header}"),
-                    });
-                }
-                let num_blocks: usize = hp[0].parse().map_err(|_| MshError::Parse {
-                    line: 0,
-                    message: format!("binary v4: invalid nodes block count: {header}"),
-                })?;
+                // The section header is four binary u64s in binary mode
+                // (numBlocks, numNodes, minTag, maxTag) — NOT an ASCII
+                // line. Real Gmsh writes it that way and refuses nothing:
+                // an ASCII header makes Gmsh silently ingest an empty
+                // model.
+                let num_blocks = bin_read_u64(bytes, &mut pos, "nodes block count")? as usize;
+                let _num_nodes = bin_read_u64(bytes, &mut pos, "nodes count")?;
+                let _min_tag = bin_read_u64(bytes, &mut pos, "nodes min tag")?;
+                let _max_tag = bin_read_u64(bytes, &mut pos, "nodes max tag")?;
                 for _ in 0..num_blocks {
-                    let block_header = bin_read_line(bytes, &mut pos)?;
-                    let bp: Vec<&str> = block_header.split_whitespace().collect();
-                    if bp.len() < 4 {
-                        return Err(MshError::Parse {
-                            line: 0,
-                            message: format!("binary v4: invalid node block header: {block_header}"),
-                        });
-                    }
-                    let parametric: i32 = bp[2].parse().map_err(|_| MshError::Parse {
-                        line: 0,
-                        message: format!("binary v4: invalid parametric flag: {block_header}"),
-                    })?;
+                    // Entity block header: i32 entityDim, i32 entityTag,
+                    // i32 parametric, u64 numNodesInBlock — binary.
+                    let _entity_dim = bin_read_i32(bytes, &mut pos, "node block dim")?;
+                    let _entity_tag = bin_read_i32(bytes, &mut pos, "node block entity tag")?;
+                    let parametric: i32 = bin_read_i32(bytes, &mut pos, "node block parametric")?;
                     if parametric != 0 {
                         return Err(MshError::Parse {
                             line: 0,
-                            message: format!(
-                                "binary v4: parametric node blocks are not supported (header: {block_header})"
-                            ),
+                            message: "binary v4: parametric node blocks are not supported".into(),
                         });
                     }
-                    let count: usize = bp[3].parse().map_err(|_| MshError::Parse {
-                        line: 0,
-                        message: format!("binary v4: invalid node block count: {block_header}"),
-                    })?;
+                    let count = bin_read_u64(bytes, &mut pos, "node block count")? as usize;
                     // The v4.1 layout lists ALL node tags first, then ALL
                     // coordinates — two runs, not per-node interleaved.
                     let mut ids = Vec::with_capacity(count);
@@ -1751,37 +1765,17 @@ fn parse_msh_v4_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
                 bin_expect_marker(bytes, &mut pos, "$EndNodes")?;
             }
             "$Elements" => {
-                let header = bin_read_line(bytes, &mut pos)?;
-                let hp: Vec<&str> = header.split_whitespace().collect();
-                if hp.len() < 4 {
-                    return Err(MshError::Parse {
-                        line: 0,
-                        message: format!("binary v4: invalid elements header: {header}"),
-                    });
-                }
-                let num_blocks: usize = hp[0].parse().map_err(|_| MshError::Parse {
-                    line: 0,
-                    message: format!("binary v4: invalid element block count: {header}"),
-                })?;
+                let num_blocks = bin_read_u64(bytes, &mut pos, "element block count")? as usize;
+                let _num_elements = bin_read_u64(bytes, &mut pos, "element count")?;
+                let _min_tag = bin_read_u64(bytes, &mut pos, "element min tag")?;
+                let _max_tag = bin_read_u64(bytes, &mut pos, "element max tag")?;
                 for _ in 0..num_blocks {
-                    let block_header = bin_read_line(bytes, &mut pos)?;
-                    let bp: Vec<&str> = block_header.split_whitespace().collect();
-                    if bp.len() < 4 {
-                        return Err(MshError::Parse {
-                            line: 0,
-                            message: format!(
-                                "binary v4: invalid element block header: {block_header}"
-                            ),
-                        });
-                    }
-                    let element_type_id: i32 = bp[2].parse().map_err(|_| MshError::Parse {
-                        line: 0,
-                        message: format!("binary v4: invalid element type: {block_header}"),
-                    })?;
-                    let count: usize = bp[3].parse().map_err(|_| MshError::Parse {
-                        line: 0,
-                        message: format!("binary v4: invalid element block count: {block_header}"),
-                    })?;
+                    // Entity block header: i32 entityDim, i32 entityTag,
+                    // i32 elementType, u64 numElementsInBlock — binary.
+                    let _entity_dim = bin_read_i32(bytes, &mut pos, "element block dim")?;
+                    let entity_tag: i32 = bin_read_i32(bytes, &mut pos, "element block entity tag")?;
+                    let element_type_id: i32 = bin_read_i32(bytes, &mut pos, "element type")?;
+                    let count = bin_read_u64(bytes, &mut pos, "element block count")? as usize;
                     let etype = ElementType::from_gmsh_type_id(element_type_id);
                     let expected = etype.node_count();
                     if expected == 0 {
@@ -1790,16 +1784,11 @@ fn parse_msh_v4_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
                             message: format!("binary v4: unsupported element type {element_type_id}"),
                         });
                     }
-                    let entity_tag: i32 = bp[1].parse().map_err(|_| MshError::Parse {
-                        line: 0,
-                        message: format!("binary v4: invalid entity tag: {block_header}"),
-                    })?;
                     for _ in 0..count {
                         let id = bin_read_u64(bytes, &mut pos, "element tag")?;
                         let mut node_ids = Vec::with_capacity(expected);
-                        for k in 0..expected {
+                        for _ in 0..expected {
                             node_ids.push(bin_read_u64(bytes, &mut pos, "element node")?);
-                            let _ = k;
                         }
                         let mut elem = Element::new(id, etype, node_ids);
                         elem.physical_tag = Some(entity_tag);
@@ -1807,6 +1796,17 @@ fn parse_msh_v4_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
                     }
                 }
                 bin_expect_marker(bytes, &mut pos, "$EndElements")?;
+            }
+            "$Periodic" => {
+                mesh.periodic = crate::msh_periodic::parse_periodic_v4_binary(bytes, &mut pos)?;
+                bin_expect_marker(bytes, &mut pos, "$EndPeriodic")?;
+            }
+            "$Entities" => {
+                // Real Gmsh always writes $Entities in v4.1; its binary
+                // payload must be consumed structurally (a line scan would
+                // hit raw binary). The content is discarded.
+                crate::msh_periodic::skip_entities_v4_binary(bytes, &mut pos)?;
+                bin_expect_marker(bytes, &mut pos, "$EndEntities")?;
             }
             _ if line.starts_with('$') && !line.starts_with("$End") => {
                 let end_tag = format!("$End{}", &line[1..]);
