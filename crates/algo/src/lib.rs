@@ -55,6 +55,10 @@ pub use frontal_delaunay_2d::FrontalDelaunay2D;
 pub mod bamg_2d;
 pub use bamg_2d::{Bamg2D, Metric2, MetricField2D, UniformMetricField};
 
+/// Triangle-to-quadrilateral recombination (P3b): Blossom-style pairing of
+/// adjacent triangle pairs scored by quality.
+pub mod quad_recombine;
+
 /// Quad Paving 2-D: packing of parallelograms / cross-field quads (Gmsh algo 9/11).
 pub mod quad_paving_2d;
 pub use quad_paving_2d::{QuadPaving2D, QuadStrategy};
