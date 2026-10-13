@@ -1327,6 +1327,14 @@ mod tests {
     /// the field drives the rim density: the Gmsh-faithful mesher takes
     /// min(boundary-implied size, field) per vertex, and a rim finer than
     /// the field would saturate the rim band in the uniform reference too).
+    ///
+    /// The P3 tail card's field-discretization prescription (7-gon at the
+    /// rim size 0.8976, matching the graded Gmsh fixture's own 1D
+    /// discretization) was PROBED and REFUTED (2026-10-13): the finer ring
+    /// worsens the graded p95 radius-edge from 0.758 to 0.818 against the
+    /// x1.15 bar 0.787 — the coarser 5-gon chords smooth the rim-to-far-
+    /// field transition instead of steepening it. Kept at 5; evidence over
+    /// prescription.
     fn corpus_domain() -> Domain2D {
         Domain2D::from_outer(square_ring(5.0, 6)).with_hole(circle_ring(1.0, 5, true))
     }
@@ -1508,23 +1516,21 @@ Mesh.Algorithm = 6;
             mean(&triangle_edges(&gmsh_mesh).into_iter().map(|(l, _)| l).collect::<Vec<_>>()),
             mean(&triangle_edges(&rmsh_mesh).into_iter().map(|(l, _)| l).collect::<Vec<_>>()),
         );
-        // THE P3 acceptance bar (rmsh p95 radius-edge <= Gmsh p95 x 1.15 =
-        // ~0.81 here) is NOT met yet: the mesher retains ~5% boundary-anchored
-        // flat triangles (frontal insertions rejected near under-discretized
-        // boundary spans). The P3 quality card closed the structural part of
-        // the gap — the live constrained-Delaunay rewrite (cdt_2d) with
-        // field-pure sizing (computeSizeField), the background-seed lattice,
-        // the cavity-shrink insertion and the gamma/Delaunay swap passes
-        // brought the p95 from the pre-card 5.6-7.9 down to ~1.07 (Gmsh's own
-        // distribution: p50 0.60 / p90 0.69 / p95 0.70). Regression ceiling:
-        // measured 1.07 at lc 0.5 (2026-10-12).
+        // THE P3 acceptance bar (rmsh p95 radius-edge <= Gmsh p95 x 1.15,
+        // ~0.81 here) — MET. The boundary-anchored flat-triangle tail the
+        // P3 quality card left at a provisional 1.07 (ceiling pinned 1.15)
+        // closed with the triangulator root fix (P3 tail card, 2026-10-13):
+        // the exact-predicate Lawson initial mesh no longer poisons the
+        // front with overlapping initial triangles, and the measured p95
+        // dropped 1.07 -> 0.7058 against Gmsh's own 0.7032 (2026-10-13).
         eprintln!(
             "[p3a-gap] uniform: rmsh p95 {p95_rmsh:.4} vs gmsh p95 {p95_gmsh:.4} (bar: {:+.4})",
             p95_gmsh * 1.15
         );
         assert!(
-            p95_rmsh <= 1.15,
-            "rmsh uniform p95 {p95_rmsh:.4} exceeded the pinned ceiling 1.15"
+            p95_rmsh <= p95_gmsh * 1.15,
+            "rmsh uniform p95 {p95_rmsh:.4} exceeded the Gmsh x1.15 bar {:.4}",
+            p95_gmsh * 1.15
         );
     }
 
@@ -1609,20 +1615,21 @@ Mesh.Algorithm = 6;
             triangle_count(&gmsh_mesh),
             triangle_count(&rmsh_mesh),
         );
-        // THE P3 bar, graded field: rmsh p95 <= Gmsh p95 x 1.15 = ~0.787 —
-        // NOT met yet. The rewritten mesher sits at ~1.27 on this fixture
-        // (the old pipeline measured 0.98): its tail is the handful of
-        // triangles spanning from the coarse 5-gon rim chord to the outer
-        // boundary, whose frontal insertions are rejected by the
-        // boundary-boundary edge-distance rule. The pre-card baseline and
-        // the bar stay documented here for the follow-up.
+        // THE P3 bar, graded field: rmsh p95 <= Gmsh p95 x 1.15 (~0.787) —
+        // MET. The rewrite-era tail (old pipeline 0.98, live-CDT rewrite
+        // 1.27, provisional ceiling 1.35) closed with the triangulator
+        // root fix (P3 tail card, 2026-10-13): measured 0.7582 against
+        // Gmsh's own 0.6840. The card's hole-ring field-discretization
+        // prescription was probed and refuted on the way (7-gon rim: p95
+        // 0.818, worse — see corpus_domain).
         eprintln!(
             "[p3a-gap] graded: rmsh p95 {p95_rmsh:.4} vs gmsh p95 {p95_gmsh:.4} (bar: {:+.4})",
             p95_gmsh * 1.15
         );
         assert!(
-            p95_rmsh <= 1.35,
-            "rmsh graded p95 {p95_rmsh:.4} exceeded the pinned ceiling 1.35"
+            p95_rmsh <= p95_gmsh * 1.15,
+            "rmsh graded p95 {p95_rmsh:.4} exceeded the Gmsh x1.15 bar {:.4}",
+            p95_gmsh * 1.15
         );
     }
 }
