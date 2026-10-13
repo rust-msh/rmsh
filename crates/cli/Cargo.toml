@@ -1,0 +1,22 @@
+[package]
+name = "rmsh-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line interface for the rmsh mesh toolchain"
+
+# Dependency charter (rmsh ROADMAP.md section 0, hard constraint): std +
+# rmsh-owned crates + open-source rcad only. No clap: argument parsing for
+# the three verbs is hand-rolled in src/lib.rs.
+[dependencies]
+rmsh-model = { workspace = true }
+rmsh-geo = { workspace = true }
+rmsh-io = { workspace = true }
+rmsh-algo = { workspace = true }
+
+# Integration tests (tests/cli_verbs.rs) reuse these main deps as dev-deps;
+# no external test-only dependencies per the charter.
+
+[[bin]]
+name = "rmsh"
+path = "src/main.rs"
