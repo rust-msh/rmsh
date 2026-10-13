@@ -6,6 +6,7 @@ members = [
     "crates/algo",
     "crates/rcad-bridge",
     "crates/cli",
+    "crates/py",
 ]
 default-members = [
     "crates/model",
@@ -14,6 +15,7 @@ default-members = [
     "crates/algo",
     "crates/rcad-bridge",
     "crates/cli",
+    "crates/py",
 ]
 resolver = "2"
 
@@ -31,6 +33,7 @@ rmsh-io = { path = "crates/io" }
 rmsh-algo = { path = "crates/algo" }
 rmsh-bridge = { path = "crates/rcad-bridge" }
 rayon = "1.10"
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39", "generate-import-lib"] }
 rmsh-renderer = { path = "crates/renderer" }
 
 # RCAD — the open-source rcad this project is built on, consumed from the

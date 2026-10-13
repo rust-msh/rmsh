@@ -1,549 +1,306 @@
-"""Auto-generated rmsh Python API.
+"""The rmsh Python API - a gmsh-compatible procedural surface.
 
-This file is generated from api/rmshc.h by crates/rmsh-py/build.rs.
-Do not edit manually.
+Migration from gmsh: replace `import gmsh` with `import rmsh` (the
+namespace tree - `rmsh.model.occ.addBox`, `rmsh.model.mesh.generate`,
+`rmsh.option.setNumber`, ... - mirrors the gmsh layout). The backend is
+the real rcad CAD kernel (primitives, the OCCT-aligned boolean pipeline,
+STEP I/O) plus the rmsh mesh model / I-O / meshing crates; element type
+numbers in `getElements` are the gmsh MSH type ids.
+
+Deliberate omissions versus the gmsh API (the rmsh charter excludes a
+GUI/viewer): `gui.*` and `plugin.*` do not exist here, and gmsh's
+built-in `model.geo.*` kernel is not part of v1 - build geometry through
+`model.occ.*`. Functions that have no backend yet raise
+NotImplementedError with an honest reason instead of silently doing
+nothing.
+
+Run with:
+    maturin develop --release      (or copy the built cdylib next to
+                                    python/rmsh/_rmsh)
+    python examples/cad_example.py
 """
 
 from __future__ import annotations
 
-from rmsh import _rmsh
+from . import _rmsh
 
 __version__ = getattr(_rmsh, "__version__", "0.0.0")
+
 
 def _invoke(symbol: str, *args, **kwargs):
     return getattr(_rmsh, symbol)(*args, **kwargs)
 
+
+# ── root ─────────────────────────────────────────────────────────────
+
+
+def initialize(argv0="", readConfigFiles=True, runInBackground=False):
+    return _invoke("initialize_impl", argv0, readConfigFiles, runInBackground)
+
+
+def finalize():
+    return _invoke("finalize_impl")
+
+
+def clear():
+    return _invoke("clear_impl")
+
+
+def open(fileName):
+    return _invoke("open_impl", fileName)
+
+
+def merge(fileName):
+    return _invoke("merge_impl", fileName)
+
+
+def write(fileName):
+    return _invoke("write_impl", fileName)
+
+
+# ── model ────────────────────────────────────────────────────────────
+
 class _Namespace:
-    def __init__(self, name: str):
-        self._name = name
-
-def clear(*args, **kwargs):
-    return _invoke("clear", *args, **kwargs)
-
-def finalize(*args, **kwargs):
-    return _invoke("finalize", *args, **kwargs)
-
-def initialize(*args, **kwargs):
-    return _invoke("initialize", *args, **kwargs)
-
-def merge(*args, **kwargs):
-    return _invoke("merge", *args, **kwargs)
-
-def open(*args, **kwargs):
-    return _invoke("open", *args, **kwargs)
-
-def write(*args, **kwargs):
-    return _invoke("write", *args, **kwargs)
-
-class _NsGui(_Namespace):
     pass
 
-class _NsLogger(_Namespace):
-    pass
 
-class _NsModel(_Namespace):
-    pass
+class Model:
+    def add(self, name):
+        return _invoke("model_add", name)
 
-class _NsModelGeo(_Namespace):
-    pass
+    def remove(self):
+        return _invoke("model_remove")
 
-class _NsModelMesh(_Namespace):
-    pass
+    def getCurrent(self):
+        return _invoke("model_get_current")
 
-class _NsModelOcc(_Namespace):
-    pass
+    def setCurrent(self, name):
+        return _invoke("model_set_current", name)
 
-class _NsOption(_Namespace):
-    pass
+    def getDimension(self):
+        return _invoke("model_get_dimension")
 
-class _NsPlugin(_Namespace):
-    pass
+    def getEntities(self, dim=-1):
+        return _invoke("model_get_entities", dim)
 
-gui = _NsGui("gui")
-logger = _NsLogger("logger")
-model = _NsModel("model")
-model_geo = _NsModelGeo("model.geo")
-model_mesh = _NsModelMesh("model.mesh")
-model_occ = _NsModelOcc("model.occ")
-option = _NsOption("option")
-plugin = _NsPlugin("plugin")
+    def getEntitiesInBoundingBox(self, xmin, ymin, zmin, xmax, ymax, zmax, dim=-1):
+        return _invoke(
+            "model_get_entities_in_bounding_box",
+            xmin, ymin, zmin, xmax, ymax, zmax, dim,
+        )
 
-model.geo = model_geo
-model.mesh = model_mesh
-model.occ = model_occ
+    def getBoundingBox(self, dim=-1, tag=-1):
+        return _invoke("model_get_bounding_box", dim, tag)
 
-def _gui_initialize(*args, **kwargs):
-    """rmshGuiInitialize(ierr)"""
-    return _invoke("gui_initialize", *args, **kwargs)
+    def getEntityName(self, dim, tag):
+        return _invoke("model_get_entity_name", dim, tag)
 
-gui.initialize = _gui_initialize
+    def setEntityName(self, dim, tag, name):
+        return _invoke("model_set_entity_name", dim, tag, name)
 
-def _gui_run(*args, **kwargs):
-    """rmshGuiRun(ierr)"""
-    return _invoke("gui_run", *args, **kwargs)
+    def addPhysicalGroup(self, dim, tags, tag=-1, name=""):
+        return _invoke("model_add_physical_group", dim, tags, tag, name)
 
-gui.run = _gui_run
+    def getPhysicalGroups(self, dim=-1):
+        return _invoke("model_get_physical_groups", dim)
 
-def _gui_wait(*args, **kwargs):
-    """rmshGuiWait(time, ierr)"""
-    return _invoke("gui_wait", *args, **kwargs)
+    def setPhysicalName(self, dim, tag, name):
+        return _invoke("model_set_physical_name", dim, tag, name)
 
-gui.wait = _gui_wait
+    def getPhysicalName(self, dim, tag):
+        return _invoke("model_get_physical_name", dim, tag)
 
-def _logger_get(*args, **kwargs):
-    """rmshLoggerGet(log, log_n, ierr)"""
-    return _invoke("logger_get", *args, **kwargs)
 
-logger.get = _logger_get
+class _Occ:
+    def addBox(self, x, y, z, dx, dy, dz, tag=-1):
+        return _invoke("model_occ_add_box", x, y, z, dx, dy, dz, tag)
 
-def _logger_start(*args, **kwargs):
-    """rmshLoggerStart(ierr)"""
-    return _invoke("logger_start", *args, **kwargs)
+    def addSphere(self, x, y, z, r, tag=-1):
+        return _invoke("model_occ_add_sphere", x, y, z, r, tag)
 
-logger.start = _logger_start
+    def addCylinder(self, x, y, z, dx, dy, dz, r, tag=-1):
+        return _invoke("model_occ_add_cylinder", x, y, z, dx, dy, dz, r, tag)
 
-def _logger_stop(*args, **kwargs):
-    """rmshLoggerStop(ierr)"""
-    return _invoke("logger_stop", *args, **kwargs)
+    def addCone(self, x, y, z, dx, dy, dz, r1, r2, tag=-1, angle=2 * 3.141592653589793):
+        if angle is None or abs(angle - 2 * 3.141592653589793) < 1e-12:
+            return _invoke("model_occ_add_cone", x, y, z, dx, dy, dz, r1, r2, tag)
+        raise NotImplementedError("occ.addCone with a partial angle is not wired in v1")
 
-logger.stop = _logger_stop
+    def addTorus(self, *args, **kwargs):
+        # legacy rmsh signature: (x, y, z, dx, dy, dz, r1, r2, tag=-1)
+        return _invoke("model_occ_add_torus", *args, **kwargs)
 
-def _model_add(*args, **kwargs):
-    """rmshModelAdd(name, ierr)"""
-    return _invoke("model_add", *args, **kwargs)
+    def addRectangle(self, x, y, z, dx, dy, tag=-1):
+        return _invoke("model_occ_add_rectangle", x, y, z, dx, dy, tag)
 
-model.add = _model_add
+    def addDisk(self, xc, yc, zc, rx, ry, tag=-1):
+        return _invoke("model_occ_add_disk", xc, yc, zc, rx, ry, tag)
 
-def _model_addPhysicalGroup(*args, **kwargs):
-    """rmshModelAddPhysicalGroup(dim, tags, tags_n, tag, name, ierr)"""
-    return _invoke("model_add_physical_group", *args, **kwargs)
+    def addPoint(self, x, y, z, meshSize=0.0, tag=-1):
+        return _invoke("model_occ_add_point", x, y, z, meshSize, tag)
 
-model.addPhysicalGroup = _model_addPhysicalGroup
+    def addLine(self, startTag, endTag, tag=-1):
+        return _invoke("model_occ_add_line", startTag, endTag, tag)
 
-def _model_getBoundingBox(*args, **kwargs):
-    """rmshModelGetBoundingBox(dim, tag, xmin, ymin, zmin, xmax, ymax, zmax, ierr)"""
-    return _invoke("model_get_bounding_box", *args, **kwargs)
+    def addCircleArc(self, startTag, centerTag, endTag, tag=-1):
+        return _invoke("model_occ_add_circle_arc", startTag, centerTag, endTag, tag)
 
-model.getBoundingBox = _model_getBoundingBox
+    def addSpline(self, pointTags, tag=-1):
+        return _invoke("model_occ_add_spline", pointTags, tag)
 
-def _model_getCurrent(*args, **kwargs):
-    """rmshModelGetCurrent(name, ierr)"""
-    return _invoke("model_get_current", *args, **kwargs)
+    def addCurveLoop(self, curveTags, tag=-1):
+        return _invoke("model_occ_add_curve_loop", curveTags, tag)
 
-model.getCurrent = _model_getCurrent
+    def addPlaneSurface(self, wireTags, tag=-1):
+        return _invoke("model_occ_add_plane_surface", wireTags, tag)
 
-def _model_getDimension(*args, **kwargs):
-    """rmshModelGetDimension(dim, ierr)"""
-    return _invoke("model_get_dimension", *args, **kwargs)
+    def addSurfaceLoop(self, surfaceTags, tag=-1):
+        return _invoke("model_occ_add_surface_loop", surfaceTags, tag)
 
-model.getDimension = _model_getDimension
+    def addVolume(self, shellTags, tag=-1):
+        return _invoke("model_occ_add_volume", shellTags, tag)
 
-def _model_getEntities(*args, **kwargs):
-    """rmshModelGetEntities(dimTags, dimTags_n, dim, ierr)"""
-    return _invoke("model_get_entities", *args, **kwargs)
+    def cut(self, objectDimTags, toolDimTags, tag=-1, removeObject=True, removeTool=True):
+        return _invoke(
+            "model_occ_cut",
+            objectDimTags, toolDimTags, tag, removeObject, removeTool,
+        )
 
-model.getEntities = _model_getEntities
+    def fuse(self, objectDimTags, toolDimTags, tag=-1, removeObject=True, removeTool=True):
+        return _invoke(
+            "model_occ_fuse",
+            objectDimTags, toolDimTags, tag, removeObject, removeTool,
+        )
 
-def _model_getEntitiesInBoundingBox(*args, **kwargs):
-    """getEntitiesInBoundingBox(xmin, ymin, zmin, xmax, ymax, zmax, dim=-1) -> dimTags"""
-    return _invoke("model_get_entities_in_bounding_box", *args, **kwargs)
+    def intersect(self, objectDimTags, toolDimTags, tag=-1, removeObject=True, removeTool=True):
+        return _invoke(
+            "model_occ_intersect",
+            objectDimTags, toolDimTags, tag, removeObject, removeTool,
+        )
 
-model.getEntitiesInBoundingBox = _model_getEntitiesInBoundingBox
+    def fragment(self, objectDimTags, toolDimTags, tag=-1, removeObject=True, removeTool=True):
+        return _invoke(
+            "model_occ_fragment",
+            objectDimTags, toolDimTags, tag, removeObject, removeTool,
+        )
 
-def _model_getEntityName(*args, **kwargs):
-    """rmshModelGetEntityName(dim, tag, name, ierr)"""
-    return _invoke("model_get_entity_name", *args, **kwargs)
+    def copy(self, dimTags):
+        return _invoke("model_occ_copy", dimTags)
 
-model.getEntityName = _model_getEntityName
+    def remove(self, dimTags, recursive=False):
+        return _invoke("model_occ_remove", dimTags, recursive)
 
-def _model_getPhysicalGroups(*args, **kwargs):
-    """rmshModelGetPhysicalGroups(dimTags, dimTags_n, dim, ierr)"""
-    return _invoke("model_get_physical_groups", *args, **kwargs)
+    def translate(self, dimTags, dx, dy, dz):
+        return _invoke("model_occ_translate", dimTags, dx, dy, dz)
 
-model.getPhysicalGroups = _model_getPhysicalGroups
+    def rotate(self, dimTags, x, y, z, ax, ay, az, angle):
+        return _invoke("model_occ_rotate", dimTags, x, y, z, ax, ay, az, angle)
 
-def _model_getPhysicalName(*args, **kwargs):
-    """rmshModelGetPhysicalName(dim, tag, name, ierr)"""
-    return _invoke("model_get_physical_name", *args, **kwargs)
+    def dilate(self, dimTags, x, y, z, a, b, c):
+        return _invoke("model_occ_dilate", dimTags, x, y, z, a, b, c)
 
-model.getPhysicalName = _model_getPhysicalName
+    def mirror(self, dimTags, a, b, c, d):
+        return _invoke("model_occ_mirror", dimTags, a, b, c, d)
 
-def _model_remove(*args, **kwargs):
-    """rmshModelRemove(ierr)"""
-    return _invoke("model_remove", *args, **kwargs)
+    def importShapes(self, fileName, highestDimOnly=True, format=""):
+        return _invoke("model_occ_import_shapes", fileName, highestDimOnly, format)
 
-model.remove = _model_remove
+    def synchronize(self):
+        return _invoke("model_occ_synchronize")
 
-def _model_setCurrent(*args, **kwargs):
-    """rmshModelSetCurrent(name, ierr)"""
-    return _invoke("model_set_current", *args, **kwargs)
+    def getMass(self, tag):
+        return _invoke("model_occ_get_mass", tag)
 
-model.setCurrent = _model_setCurrent
+    def getProperties(self, tag):
+        return _invoke("model_occ_get_properties", tag)
 
-def _model_setEntityName(*args, **kwargs):
-    """rmshModelSetEntityName(dim, tag, name, ierr)"""
-    return _invoke("model_set_entity_name", *args, **kwargs)
+    def extrude(self, tag, face_idx, dx, dy, dz, distance):
+        return _invoke("model_occ_extrude", tag, face_idx, dx, dy, dz, distance)
 
-model.setEntityName = _model_setEntityName
+    def revolve(self, *args, **kwargs):
+        return _invoke("model_occ_revolve", *args, **kwargs)
 
-def _model_setPhysicalName(*args, **kwargs):
-    """rmshModelSetPhysicalName(dim, tag, name, ierr)"""
-    return _invoke("model_set_physical_name", *args, **kwargs)
+    def fillet(self, *args, **kwargs):
+        return _invoke("model_occ_fillet", *args, **kwargs)
 
-model.setPhysicalName = _model_setPhysicalName
+    def chamfer(self, *args, **kwargs):
+        return _invoke("model_occ_chamfer", *args, **kwargs)
 
-def _model_geo_addCurveLoop(*args, **kwargs):
-    """rmshModelGeoAddCurveLoop(curveTags, curveTags_n, tag, ierr)"""
-    return _invoke("model_geo_add_curve_loop", *args, **kwargs)
+    def healShapes(self, tag, tolerance=1e-8):
+        return _invoke("model_occ_heal_shapes", tag, tolerance)
 
-model_geo.addCurveLoop = _model_geo_addCurveLoop
 
-def _model_geo_addLine(*args, **kwargs):
-    """rmshModelGeoAddLine(startTag, endTag, tag, ierr)"""
-    return _invoke("model_geo_add_line", *args, **kwargs)
+class _Mesh:
+    def setSize(self, dimTags, size):
+        return _invoke("model_mesh_set_size", dimTags, size)
 
-model_geo.addLine = _model_geo_addLine
+    def generate(self, dim):
+        return _invoke("model_mesh_generate", dim)
 
-def _model_geo_addPlaneSurface(*args, **kwargs):
-    """rmshModelGeoAddPlaneSurface(wireTags, wireTags_n, tag, ierr)"""
-    return _invoke("model_geo_add_plane_surface", *args, **kwargs)
+    def setOrder(self, order):
+        return _invoke("model_mesh_set_order", order)
 
-model_geo.addPlaneSurface = _model_geo_addPlaneSurface
+    def getNodes(self, dim=-1, tag=-1, includeBoundary=False, returnParametricCoord=False):
+        return _invoke(
+            "model_mesh_get_nodes",
+            dim, tag, includeBoundary, returnParametricCoord,
+        )
 
-def _model_geo_addPoint(*args, **kwargs):
-    """rmshModelGeoAddPoint(x, y, z, meshSize, tag, ierr)"""
-    return _invoke("model_geo_add_point", *args, **kwargs)
+    def getElements(self, dim=-1, tag=-1):
+        return _invoke("model_mesh_get_elements", dim, tag)
 
-model_geo.addPoint = _model_geo_addPoint
+    def clear(self, dimTags=(), dimTags_n=0):
+        return _invoke("model_mesh_clear", list(dimTags), dimTags_n)
 
-def _model_geo_synchronize(*args, **kwargs):
-    """rmshModelGeoSynchronize(ierr)"""
-    return _invoke("model_geo_synchronize", *args, **kwargs)
+    def optimize(self, method="", force=False, niter=1, dimTags=(), dimTags_n=0):
+        return _invoke("model_mesh_optimize", method, force, niter, list(dimTags), dimTags_n)
 
-model_geo.synchronize = _model_geo_synchronize
+    def refine(self):
+        return _invoke("model_mesh_refine")
 
-def _model_mesh_clear(*args, **kwargs):
-    """rmshModelMeshClear(dimTags, dimTags_n, ierr)"""
-    return _invoke("model_mesh_clear", *args, **kwargs)
+    def recombine(self, dim=2, tag=-1, angle=45.0):
+        return _invoke("model_mesh_recombine", dim, tag, angle)
 
-model_mesh.clear = _model_mesh_clear
 
-def _model_mesh_generate(*args, **kwargs):
-    """rmshModelMeshGenerate(dim, ierr)"""
-    return _invoke("model_mesh_generate", *args, **kwargs)
+class _Option:
+    def setNumber(self, name, value):
+        return _invoke("option_set_number", name, value)
 
-model_mesh.generate = _model_mesh_generate
+    def getNumber(self, name):
+        return _invoke("option_get_number", name)
 
-def _model_mesh_getElements(*args, **kwargs):
-    """rmshModelMeshGetElements(elementTypes_n, elementTags_n, nodeTags_n, dim, tag, ierr)"""
-    return _invoke("model_mesh_get_elements", *args, **kwargs)
+    def setString(self, name, value):
+        return _invoke("option_set_string", name, value)
 
-model_mesh.getElements = _model_mesh_getElements
+    def getString(self, name):
+        return _invoke("option_get_string", name)
 
-def _model_mesh_getNodes(*args, **kwargs):
-    """rmshModelMeshGetNodes(nodeTags_n, coord_n, parametricCoord_n, dim, tag, includeBoundary, returnParametricCoord, ierr)"""
-    return _invoke("model_mesh_get_nodes", *args, **kwargs)
+    def setColor(self, name, r, g, b, a=255):
+        return _invoke("option_set_color", name, r, g, b, a)
 
-model_mesh.getNodes = _model_mesh_getNodes
+    def getColor(self, name):
+        return _invoke("option_get_color", name)
 
-def _model_mesh_optimize(*args, **kwargs):
-    """rmshModelMeshOptimize(method, force, niter, dimTags, dimTags_n, ierr)"""
-    return _invoke("model_mesh_optimize", *args, **kwargs)
+    def restoreDefaults(self):
+        return _invoke("option_restore_defaults")
 
-model_mesh.optimize = _model_mesh_optimize
 
-def _model_mesh_recombine(*args, **kwargs):
-    """rmshModelMeshRecombine(dim, tag, angle, ierr)"""
-    return _invoke("model_mesh_recombine", *args, **kwargs)
+class _Logger:
+    def start(self):
+        return _invoke("logger_start")
 
-model_mesh.recombine = _model_mesh_recombine
+    def stop(self):
+        return _invoke("logger_stop")
 
-def _model_mesh_refine(*args, **kwargs):
-    """rmshModelMeshRefine(ierr)"""
-    return _invoke("model_mesh_refine", *args, **kwargs)
+    def get(self):
+        return _invoke("logger_get")
 
-model_mesh.refine = _model_mesh_refine
 
-def _model_mesh_setOrder(*args, **kwargs):
-    """rmshModelMeshSetOrder(order, ierr)"""
-    return _invoke("model_mesh_set_order", *args, **kwargs)
-
-model_mesh.setOrder = _model_mesh_setOrder
-
-def _model_mesh_setSize(*args, **kwargs):
-    """rmshModelMeshSetSize(dimTags, dimTags_n, size, ierr)"""
-    return _invoke("model_mesh_set_size", *args, **kwargs)
-
-model_mesh.setSize = _model_mesh_setSize
-
-def _model_occ_addBox(*args, **kwargs):
-    """rmshModelOccAddBox(x, y, z, dx, dy, dz, tag, ierr)"""
-    return _invoke("model_occ_add_box", *args, **kwargs)
-
-model_occ.addBox = _model_occ_addBox
-
-def _model_occ_addPoint(*args, **kwargs):
-    """addPoint(x, y, z, meshSize=0, tag=-1) -> tag"""
-    return _invoke("model_occ_add_point", *args, **kwargs)
-
-model_occ.addPoint = _model_occ_addPoint
-
-def _model_occ_addLine(*args, **kwargs):
-    """addLine(startTag, endTag, tag=-1) -> tag"""
-    return _invoke("model_occ_add_line", *args, **kwargs)
-
-model_occ.addLine = _model_occ_addLine
-
-def _model_occ_addCircleArc(*args, **kwargs):
-    """addCircleArc(startTag, centerTag, endTag, tag=-1) -> tag"""
-    return _invoke("model_occ_add_circle_arc", *args, **kwargs)
-
-model_occ.addCircleArc = _model_occ_addCircleArc
-
-def _model_occ_addSpline(*args, **kwargs):
-    """addSpline(pointTags, tag=-1) -> tag"""
-    return _invoke("model_occ_add_spline", *args, **kwargs)
-
-model_occ.addSpline = _model_occ_addSpline
-
-def _model_occ_addCurveLoop(*args, **kwargs):
-    """addCurveLoop(curveTags, tag=-1) -> tag"""
-    return _invoke("model_occ_add_curve_loop", *args, **kwargs)
-
-model_occ.addCurveLoop = _model_occ_addCurveLoop
-
-def _model_occ_addPlaneSurface(*args, **kwargs):
-    """addPlaneSurface(wireTags, tag=-1) -> tag"""
-    return _invoke("model_occ_add_plane_surface", *args, **kwargs)
-
-model_occ.addPlaneSurface = _model_occ_addPlaneSurface
-
-def _model_occ_addSurfaceLoop(*args, **kwargs):
-    """addSurfaceLoop(surfaceTags, tag=-1) -> tag"""
-    return _invoke("model_occ_add_surface_loop", *args, **kwargs)
-
-model_occ.addSurfaceLoop = _model_occ_addSurfaceLoop
-
-def _model_occ_addVolume(*args, **kwargs):
-    """addVolume(shellTags, tag=-1) -> tag"""
-    return _invoke("model_occ_add_volume", *args, **kwargs)
-
-model_occ.addVolume = _model_occ_addVolume
-
-def _model_occ_addDisk(*args, **kwargs):
-    """addDisk(xc, yc, zc, rx, ry, tag=-1) -> tag"""
-    return _invoke("model_occ_add_disk", *args, **kwargs)
-
-model_occ.addDisk = _model_occ_addDisk
-
-def _model_occ_addRectangle(*args, **kwargs):
-    """addRectangle(x, y, z, dx, dy, tag=-1) -> tag
-    Create a planar rectangle surface in the XY plane (z offset by z).
-    Matches gmsh.model.occ.addRectangle.
-    """
-    return _invoke("model_occ_add_rectangle", *args, **kwargs)
-
-model_occ.addRectangle = _model_occ_addRectangle
-
-def _model_occ_addCylinder(*args, **kwargs):
-    """rmshModelOccAddCylinder(x, y, z, dx, dy, dz, r, tag, ierr)"""
-    return _invoke("model_occ_add_cylinder", *args, **kwargs)
-
-model_occ.addCylinder = _model_occ_addCylinder
-
-def _model_occ_addSphere(*args, **kwargs):
-    """rmshModelOccAddSphere(x, y, z, r, tag, ierr)"""
-    return _invoke("model_occ_add_sphere", *args, **kwargs)
-
-model_occ.addSphere = _model_occ_addSphere
-
-def _model_occ_cut(*args, **kwargs):
-    """cut(objectDimTags, toolDimTags, tag=-1, removeObject=True, removeTool=True) -> (outDimTags, outDimTagsMap)"""
-    return _invoke("model_occ_cut", *args, **kwargs)
-
-model_occ.cut = _model_occ_cut
-
-def _model_occ_fragment(*args, **kwargs):
-    """fragment(objectDimTags, toolDimTags, tag=-1, removeObject=True, removeTool=True) -> (outDimTags, outDimTagsMap)"""
-    return _invoke("model_occ_fragment", *args, **kwargs)
-
-model_occ.fragment = _model_occ_fragment
-
-def _model_occ_intersect(*args, **kwargs):
-    """intersect(objectDimTags, toolDimTags, tag=-1, removeObject=True, removeTool=True) -> (outDimTags, outDimTagsMap)"""
-    return _invoke("model_occ_intersect", *args, **kwargs)
-
-model_occ.intersect = _model_occ_intersect
-
-def _model_occ_fuse(*args, **kwargs):
-    """fuse(objectDimTags, toolDimTags, tag=-1, removeObject=True, removeTool=True) -> (outDimTags, outDimTagsMap)"""
-    return _invoke("model_occ_fuse", *args, **kwargs)
-
-model_occ.fuse = _model_occ_fuse
-
-def _model_occ_copy(*args, **kwargs):
-    """copy(dimTags) -> outDimTags"""
-    return _invoke("model_occ_copy", *args, **kwargs)
-
-model_occ.copy = _model_occ_copy
-
-def _model_occ_remove(*args, **kwargs):
-    """remove(dimTags, recursive=False)"""
-    return _invoke("model_occ_remove", *args, **kwargs)
-
-model_occ.remove = _model_occ_remove
-
-def _model_occ_translate(*args, **kwargs):
-    """translate(dimTags, dx, dy, dz)"""
-    return _invoke("model_occ_translate", *args, **kwargs)
-
-model_occ.translate = _model_occ_translate
-
-def _model_occ_rotate(*args, **kwargs):
-    """rotate(dimTags, x, y, z, ax, ay, az, angle)"""
-    return _invoke("model_occ_rotate", *args, **kwargs)
-
-model_occ.rotate = _model_occ_rotate
-
-def _model_occ_dilate(*args, **kwargs):
-    """dilate(dimTags, x, y, z, a, b, c)"""
-    return _invoke("model_occ_dilate", *args, **kwargs)
-
-model_occ.dilate = _model_occ_dilate
-
-def _model_occ_mirror(*args, **kwargs):
-    """mirror(dimTags, a, b, c, d)"""
-    return _invoke("model_occ_mirror", *args, **kwargs)
-
-model_occ.mirror = _model_occ_mirror
-
-def _model_occ_importShapes(*args, **kwargs):
-    """importShapes(fileName, highestDimOnly=True, format='') -> outDimTags"""
-    return _invoke("model_occ_import_shapes", *args, **kwargs)
-
-model_occ.importShapes = _model_occ_importShapes
-
-def _model_occ_synchronize(*args, **kwargs):
-    """rmshModelOccSynchronize(ierr)"""
-    return _invoke("model_occ_synchronize", *args, **kwargs)
-
-model_occ.synchronize = _model_occ_synchronize
-
-def _model_occ_addCone(*args, **kwargs):
-    """addCone(x, y, z, dx, dy, dz, r1, r2, tag=-1, angle=2*pi) -> tag"""
-    return _invoke("model_occ_add_cone", *args, **kwargs)
-
-model_occ.addCone = _model_occ_addCone
-
-def _model_occ_addTorus(*args, **kwargs):
-    """addTorus(x, y, z, r1, r2, tag=-1, angle=2*pi, zAxis=[]) -> tag
-    Also supports legacy rmsh signature:
-    addTorus(x, y, z, dx, dy, dz, r1, r2, tag=-1)."""
-    return _invoke("model_occ_add_torus", *args, **kwargs)
-
-model_occ.addTorus = _model_occ_addTorus
-
-def _model_occ_fillet(*args, **kwargs):
-    """fillet(tag, curveTags, radii) -> new_tag"""
-    return _invoke("model_occ_fillet", *args, **kwargs)
-
-model_occ.fillet = _model_occ_fillet
-
-def _model_occ_chamfer(*args, **kwargs):
-    """chamfer(tag, curveTags, distances) -> new_tag"""
-    return _invoke("model_occ_chamfer", *args, **kwargs)
-
-model_occ.chamfer = _model_occ_chamfer
-
-def _model_occ_healShapes(*args, **kwargs):
-    """healShapes(tag, tolerance=1e-8) -> report_dict"""
-    return _invoke("model_occ_heal_shapes", *args, **kwargs)
-
-model_occ.healShapes = _model_occ_healShapes
-
-def _model_occ_getMass(*args, **kwargs):
-    """getMass(tag) -> volume"""
-    return _invoke("model_occ_get_mass", *args, **kwargs)
-
-model_occ.getMass = _model_occ_getMass
-
-def _model_occ_getProperties(*args, **kwargs):
-    """getProperties(tag) -> (volume, area, cx, cy, cz)"""
-    return _invoke("model_occ_get_properties", *args, **kwargs)
-
-model_occ.getProperties = _model_occ_getProperties
-
-def _model_occ_extrude(*args, **kwargs):
-    """extrude(tag, face_idx, dx, dy, dz, distance) -> new_tag"""
-    return _invoke("model_occ_extrude", *args, **kwargs)
-
-model_occ.extrude = _model_occ_extrude
-
-def _model_occ_revolve(*args, **kwargs):
-    """revolve(tag, face_idx, ax, ay, az, dx, dy, dz, angle) -> new_tag"""
-    return _invoke("model_occ_revolve", *args, **kwargs)
-
-model_occ.revolve = _model_occ_revolve
-
-def _option_getColor(*args, **kwargs):
-    """rmshOptionGetColor(name, r, g, b, a, ierr)"""
-    return _invoke("option_get_color", *args, **kwargs)
-
-option.getColor = _option_getColor
-
-def _option_getNumber(*args, **kwargs):
-    """rmshOptionGetNumber(name, value, ierr)"""
-    return _invoke("option_get_number", *args, **kwargs)
-
-option.getNumber = _option_getNumber
-
-def _option_getString(*args, **kwargs):
-    """rmshOptionGetString(name, value, ierr)"""
-    return _invoke("option_get_string", *args, **kwargs)
-
-option.getString = _option_getString
-
-def _option_setColor(*args, **kwargs):
-    """rmshOptionSetColor(name, r, g, b, a, ierr)"""
-    return _invoke("option_set_color", *args, **kwargs)
-
-option.setColor = _option_setColor
-
-def _option_setNumber(*args, **kwargs):
-    """rmshOptionSetNumber(name, value, ierr)"""
-    return _invoke("option_set_number", *args, **kwargs)
-
-option.setNumber = _option_setNumber
-
-def _option_setString(*args, **kwargs):
-    """rmshOptionSetString(name, value, ierr)"""
-    return _invoke("option_set_string", *args, **kwargs)
-
-option.setString = _option_setString
-
-def _option_restoreDefaults(*args, **kwargs):
-    """restoreDefaults() - clear all option overrides"""
-    return _invoke("option_restore_defaults", *args, **kwargs)
-
-option.restoreDefaults = _option_restoreDefaults
-
-def _plugin_run(*args, **kwargs):
-    """rmshPluginRun(name, ierr)"""
-    return _invoke("plugin_run", *args, **kwargs)
-
-plugin.run = _plugin_run
-
-def _plugin_setNumber(*args, **kwargs):
-    """rmshPluginSetNumber(name, option, value, ierr)"""
-    return _invoke("plugin_set_number", *args, **kwargs)
-
-plugin.setNumber = _plugin_setNumber
-
-def _plugin_setString(*args, **kwargs):
-    """rmshPluginSetString(name, option, value, ierr)"""
-    return _invoke("plugin_set_string", *args, **kwargs)
-
-plugin.setString = _plugin_setString
+model = Model()
+model.occ = _Occ()
+model.mesh = _Mesh()
+option = _Option()
+logger = _Logger()
 
 __all__ = [
     "initialize",
@@ -555,13 +312,4 @@ __all__ = [
     "model",
     "option",
     "logger",
-    "plugin",
-    "gui",
 ]
-
-# Public namespace aliases
-model = model
-option = option
-logger = logger
-plugin = plugin
-gui = gui

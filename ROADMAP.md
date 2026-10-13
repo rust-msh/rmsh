@@ -100,14 +100,25 @@ rcad → rmsh）。分层裁定（布尔不进 rmsh、曲率/特征查询挂 tra
 ### P6 — 产品化（2026-10-13 排期裁定更新）
 - [x] CLI（convert / refine / quality 三动词起步）——早已建成
   （crates/cli，rmsh bin 26 测全绿），勾账补正 2026-10-13
-- [ ] **Python 绑定**（py crate 移植重写）——**下一卡**。入场更新
-  （2026-10-13 用户裁定）：rcad 内核自旧 API 冻结以来大幅演进，
-  重写时按当前 rcad checkout 重新盘点绑定面——旧时不可用的建模 API
-  现可能完全可用，绑定面不止 rmsh mesh（model/io/algo）也含 rcad
-  建模能力（kernel/modeling/step）。现状：pyo3 0.23、abi3-py39、
-  127 fn 待移植；旧 Cargo.toml 还挂着 P0 已退役的 rmsh-viewer 依赖
-  （Rule 4 清除）；etype 穷举匹配按 P5 语义变体 + to_gmsh_type_id
-  重写。验收 = 绑定 e2e
+- [x] **Python 绑定**（✅ 2026-10-13，gmsh 迁移路径重建）：用户裁定
+  保留旧 py 的 **gmsh API 兼容层定位**（`import gmsh` → `import rmsh`
+  即迁移），在当前架构上重建后端——旧 5059 行单文件（gmsh 仿制 +
+  旧 BRep/viewer 债）按 Rule 4 整体退役，新后端 = 模块化
+  （state/occ/mesh_api/model_api/io_api）+ 真 rcad 内核：
+  occ 基元（box/sphere/cylinder/cone/torus/rectangle/disk）→
+  rcad-modeling primapi；cut/fuse/intersect → OCCT 对齐的 rcad-algo
+  BOP；translate/rotate/dilate/mirror → BRep::apply_transform；
+  synchronize → 内核 IncrementalMesh 三角化（catch_unwind 容器）+
+  rmsh-bridge 走读（welded Triangle3 + element→entity 记账）；
+  generate(3) → CentroidStarMesher3D；getNodes/getElements → gmsh
+  数据布局（类型号 = P5 语义变体经 to_gmsh_type_id 原生映射）；
+  STEP 读写 → rcad-step；物理组/选项表/logger。诚实省略：gui/plugin
+  （宪章禁域）、fragment/addVolume/extrude/revolve/fillet/chamfer/
+  setOrder>1/optimize/refine/recombine（NotImplementedError 带原因）。
+  e2e：init→建模→布尔（解析体积 1.86596 钉）→变换→同步→体积网格
+  →getNodes/getElements→msh 往返→STEP 导出重导入（发现并钉住
+  rcad-step 读侧球面裁剪缺陷，见交接缺陷账）→2D 三角→选项/logger。
+  workspace 375/0/0（py 0 测 + e2e 脚本，运行方式见 e2e.py 头注）
 - [ ] **$Partitioned 分区语义**（用户裁定需要）：对齐 Gmsh MSH 4.1
   的 $PartitionedEntities（numPartitions / ghost / parent /
   partitions 四路读写，真 Gmsh METIS 分区夹具探针实证），

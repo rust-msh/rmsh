@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [lib]
-name = "_rmsh"
+name = "rmsh_py"
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -14,9 +14,10 @@ pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39", "generat
 rmsh-model.workspace = true
 rmsh-io.workspace = true
 rmsh-algo.workspace = true
+rmsh-bridge.workspace = true
 rcad-kernel.workspace = true
 rcad-modeling.workspace = true
-rcad-algo = { workspace = true }
 rcad-step.workspace = true
+rcad-mesh.workspace = true
+rcad-algo.workspace = true
 glam.workspace = true
-rmsh-viewer = { path = "../viewer" }
