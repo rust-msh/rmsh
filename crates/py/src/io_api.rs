@@ -83,8 +83,28 @@ pub fn open_impl(file_name: &str) -> PyResult<()> {
             state.current = Some(stem);
             Ok(())
         }
+        "vtu" => {
+            let bytes = std::fs::read(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
+            let mesh = rmsh_io::read_vtu(bytes.as_slice())
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let mut model = Model::new(stem.clone());
+            model.mesh = mesh;
+            state.models.insert(stem.clone(), model);
+            state.current = Some(stem);
+            Ok(())
+        }
+        "vtk" => {
+            let bytes = std::fs::read(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
+            let mesh = rmsh_io::read_vtk_legacy(bytes.as_slice())
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let mut model = Model::new(stem.clone());
+            model.mesh = mesh;
+            state.models.insert(stem.clone(), model);
+            state.current = Some(stem);
+            Ok(())
+        }
         other => Err(PyValueError::new_err(format!(
-            "unsupported file extension .{other}; expected .msh, .step, or .stp"
+            "unsupported file extension .{other}; expected .msh, .step, .stp, .vtu, or .vtk"
         ))),
     }
 }
@@ -225,8 +245,20 @@ pub fn write_impl(file_name: &str) -> PyResult<()> {
             let content = rcad_step::StepWriter::write_string(solids[0], selection);
             std::fs::write(path, content).map_err(|e| PyIOError::new_err(e.to_string()))
         }
+        "vtu" => {
+            let mut file =
+                std::fs::File::create(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
+            rmsh_io::write_vtu(&mut file, &model.mesh)
+                .map_err(|e| PyIOError::new_err(e.to_string()))
+        }
+        "vtk" => {
+            let mut file =
+                std::fs::File::create(path).map_err(|e| PyIOError::new_err(e.to_string()))?;
+            rmsh_io::write_vtk_legacy(&mut file, &model.mesh)
+                .map_err(|e| PyIOError::new_err(e.to_string()))
+        }
         other => Err(PyValueError::new_err(format!(
-            "unsupported file extension .{other}; expected .msh, .step, or .stp"
+            "unsupported file extension .{other}; expected .msh, .step, .stp, .vtu, or .vtk"
         ))),
     }
 }

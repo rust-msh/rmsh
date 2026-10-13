@@ -136,6 +136,15 @@ pub use multi_material::{
     tetrahedralize_region,
 };
 
+/// The a posteriori adaptive loop (P6): error estimate → size-field
+/// update → re-mesh, closed over the size-field framework and
+/// Frontal-Delaunay-2D.
+pub mod adaptive;
+pub use adaptive::{
+    AdaptiveConfig, AdaptiveError, AdaptiveLoop2D, AdaptiveReport, AdaptiveSizeField,
+    AdaptiveStep, ErrorEstimator, GradientRecovery,
+};
+
 /// Curved high-order element geometry (P5): probe-pinned Gmsh reference
 /// layouts, isoparametric maps, sampled Jacobian validity and the
 /// evaluation primitive behind the geometric-error contract.
