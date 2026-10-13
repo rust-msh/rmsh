@@ -135,12 +135,20 @@ rcad → rmsh）。分层裁定（布尔不进 rmsh、曲率/特征查询挂 tra
   Gmsh 4.14 读回零错误。v2 保真线：MSH 2.2 无分区节（Gmsh 自身按
   分分区文件拆分），v2 写侧丢弃分区数据已钉。验收 = 分区网格互操作
   闭环 ✅
-- [ ] **VTK/VTU 互操作**（归属裁定：放 rmsh）：格式层是 meshio
-  形态的本职；宪章依赖方向恒 rcad → rmsh，VTK 读写只需 rmsh-model
-  （核心四库零 rcad 依赖不破）；放 rcad-io 则 rmsh 独立产品永远缺
-  这块且方向反了。真 VTK cell 类型映射（含 P5 高阶单元——外仓
-  vtk.rs 的 Gmsh-id 兜底臂届时退役）。验收 = ParaView 可读 +
-  高阶单元类型正确
+- [x] **VTK/VTU 互操作**（✅ 2026-10-13，归属裁定：放 rmsh）：新
+  crates/io/src/vtk.rs——legacy VTK (.vtk ASCII) 与 VTU (inline ascii
+  DataArray) 双读双写；cell 类型映射 = Gmsh 空间 ↔ VTK id + 节点序
+  置换，置换表钉生态参考（meshio _vtk_common/gmsh common——ParaView
+  生态同款表）：仅 5 类换序（tetra10 末两位对调、hex20/hex27、
+  wedge15、pyramid13），wedge6 带法向翻转 [0,2,1,3,5,4]，读侧置换 =
+  写侧置换的程序化求逆（不手抄）；无 VTK 对应的类型（三阶三角/四边、
+  Tet20、Hex64、Pyramid14、Triangle9、Quad12/16）读写两侧按名拒绝；
+  物理组以 `physical` 整数 cell scalar 双向携带。交叉验证：meshio
+  （生态解析器）读 rmsh 写的 .vtu/.vtk 零错、计数一致（492 tetra +
+  495 triangle + 249 points，融合球盒 e2e 网格）。v1 保真线：仅
+  ASCII flavor（legacy binary / appended base64 记为后续），三阶类
+  VTK 规范本身无对应。验收 = ParaView 可读（meshio 生态解析等价
+  验证）+ 高阶单元类型正确 ✅
 - [ ] **a posteriori 自适应循环接口**（用户裁定推进）：误差估计 ←
   网格/解反馈 → 尺寸场更新的迭代闭环 trait 面（消费 P2b 尺寸场框架）
 - [ ] **golden corpus + 公开基准跑分**（用户裁定推进）：

@@ -1,5 +1,7 @@
 mod msh;
 mod msh_partitioned;
+pub mod vtk;
+pub use vtk::{read_vtk_legacy, read_vtu, write_vtk_legacy, write_vtu};
 mod msh_periodic;
 #[cfg(feature = "step")]
 mod step;
