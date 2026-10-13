@@ -132,8 +132,8 @@ pub use boundary_layer_3d::{BoundaryLayer3D, BoundaryLayer3DError, insert_bounda
 /// for the interface-conformity limitation and the 3-D CDT upgrade path).
 pub mod multi_material;
 pub use multi_material::{
-    MATERIAL_TAG_OUTER, MultiMaterialError, region_volumes, tetrahedralize_multi_material,
-    tetrahedralize_region,
+    MATERIAL_TAG_CAVITY_BASE, MATERIAL_TAG_OUTER, MultiMaterialError, region_volumes,
+    tetrahedralize_multi_material, tetrahedralize_region,
 };
 
 /// The a posteriori adaptive loop (P6): error estimate → size-field
@@ -143,6 +143,17 @@ pub mod adaptive;
 pub use adaptive::{
     AdaptiveConfig, AdaptiveError, AdaptiveLoop2D, AdaptiveReport, AdaptiveSizeField,
     AdaptiveStep, ErrorEstimator, GradientRecovery,
+};
+
+/// The golden corpus (P6): named scenario families, quality statistics
+/// and gates — the shared source behind the corpus pins and the public
+/// benchmark run.
+pub mod corpus;
+pub use corpus::{
+    box_surface, circle_ring, format_tet_stats, format_tri_stats, l_shape_polygon,
+    nested_cubes_surfaces, plate_with_hole_domain, p95, rim_distance, square_ring,
+    tet_quality_stats, tet_radius_edge_ratio, tri_quality_stats, QualityGate, RimGeometrySource,
+    TetQualityStats, TriQualityStats,
 };
 
 /// Curved high-order element geometry (P5): probe-pinned Gmsh reference
