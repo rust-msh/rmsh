@@ -167,8 +167,29 @@ rcad → rmsh）。分层裁定（布尔不进 rmsh、曲率/特征查询挂 tra
   全局 max 带边界锚定噪声（P3 教训）；debug 性能线 = 循环步是全量
   重网格，几千三角形单步数十秒（mesher 既有 O(N²) 结构，性能卡另立）。
   workspace 391/0/0（+5）。
-- [ ] **golden corpus + 公开基准跑分**（用户裁定推进）：
-  按场景族的语料钉 + 可复现的公开跑分
+- [x] **golden corpus + 公开基准跑分**（用户裁定推进）：
+  （✅ 2026-10-14 闭环，`a264e00`）：crates/algo/src/corpus.rs = 统一
+  语料源——命名场景族（plate-with-hole uniform + graded 曲率场
+  [RimGeometrySource 生产化]、L 形凹域走 CDT、单位立方体 ×3 个 3D
+  网格器、nested-cubes 多材料、尖锐前沿自适应循环）+ 质量统计
+  （TriQualityStats / TetQualityStats，后者自 mesher3d 回归定义
+  生产化）+ QualityGate（ROADMAP §1 优化后硬门 5°/2.0/0.1%，诚实
+  规则 = 未达硬门的族钉实测基线并打印差距，不假绿）。tests/corpus.rs
+  = 金值钉（确定性三角数 1155/95/44、解析面积精确——plate 的洞是
+  正五边形，面积恒等式 = 100−(5/2)sin(2π/5)；L 形 3.0 精确；
+  nested-cubes 体积 1e-9；质量带按实测余量收紧；graded 局部性
+  rim/far = 0.644 < 0.75 门——激进的 ×0.5 契约留在 adaptive_loop 的
+  sharp-front 钉）。tests/corpus_benchmark.rs = 公开跑分入口
+  （#[ignore]，--ignored --nocapture 显式运行）：每族 3 次取最优
+  墙钟 + 质量表，文档钉明「输出确定、时间机器相关」。
+  **顺路修复**：corpus 初版 cross3 中间分量 typo（a[0]*b[1] 误为
+  a[0]*b[2]）——法向 corrupt 使全部四面体二面角失真（0.000000 min /
+  21/60 "slivers"，而同 bit 网格（连接 digest d248863f34230235 两
+  二进制钉同）回归夹具报 5.625°/2/60）。**新缺陷线索**：Hxt3D 质量
+  数字跨调用漂移（同输入跨二进制 min dihedral 19.777 vs 21.944）——
+  rayon 并行输出非逐位确定（Delaunay3D/Frontal3D 确定），路由
+  3D 质量卡。workspace 397/0/1（+6 corpus；+1 ignore = 跑分入口
+  按设计）。
 - [ ] 文档站 + 发布准备（crates.io / GitHub Release 流水线）——
   **用户缓议**（2026-10-13：以后合适的时候做；保留排队不排期）
 - 验收：绑定 e2e、分区与 VTK/VTU 互操作、基准公开、文档完整、
