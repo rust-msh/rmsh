@@ -137,7 +137,8 @@ use crate::traits::{MeshAlgoError, MeshOptimizer, MeshParams, OptimizeParams};
 // ─── Quality measures ─────────────────────────────────────────────────────────
 
 /// Absolute volume epsilon for "zero-volume / degenerate" classification.
-const VOL_EPS: f64 = 1e-15;
+/// `pub(crate)` for the HXT parallel optimization layer (`hxt_3d`).
+pub(crate) const VOL_EPS: f64 = 1e-15;
 
 /// Signed volume of a tetrahedron: `((a-d) · ((b-d) × (c-d))) / 6`.
 ///
@@ -819,8 +820,9 @@ pub(crate) fn normalize_orientations(tm: &mut TetMesh) -> Result<usize, MeshAlgo
 
 /// Convert back to a public `Mesh`, dropping orphan nodes (no tet references
 /// them — collapse leftovers) and renumbering elements `1..n`. Node IDs are
-/// preserved.
-fn tetmesh_to_mesh_referenced(tm: &TetMesh) -> Mesh {
+/// preserved. `pub(crate)` for the HXT parallel optimization layer (`hxt_3d`),
+/// which mirrors the serial driver's write-back.
+pub(crate) fn tetmesh_to_mesh_referenced(tm: &TetMesh) -> Mesh {
     let mut referenced = vec![false; tm.nodes.len()];
     for tet in &tm.tets {
         for &n in &tet.nodes {
@@ -850,7 +852,8 @@ fn tetmesh_to_mesh_referenced(tm: &TetMesh) -> Mesh {
 }
 
 /// Node → incident tet indices (built once per pass, deterministic order).
-fn star_tets(tm: &TetMesh) -> HashMap<u32, Vec<u32>> {
+/// `pub(crate)` for the HXT parallel optimization layer (`hxt_3d`).
+pub(crate) fn star_tets(tm: &TetMesh) -> HashMap<u32, Vec<u32>> {
     let mut star: HashMap<u32, Vec<u32>> = HashMap::new();
     for (ti, tet) in tm.tets.iter().enumerate() {
         for &n in &tet.nodes {
@@ -862,7 +865,8 @@ fn star_tets(tm: &TetMesh) -> HashMap<u32, Vec<u32>> {
 
 /// Free nodes for relocation: all referenced nodes, minus the boundary set
 /// unless `move_boundary` allows moving boundary nodes.
-fn free_nodes(tm: &TetMesh, move_boundary: bool) -> Vec<u32> {
+/// `pub(crate)` for the HXT parallel optimization layer (`hxt_3d`).
+pub(crate) fn free_nodes(tm: &TetMesh, move_boundary: bool) -> Vec<u32> {
     let mut free: Vec<u32> = Vec::new();
     if move_boundary {
         let mut seen = vec![false; tm.nodes.len()];
@@ -927,7 +931,8 @@ fn tet_edge_map(tm: &TetMesh) -> BTreeMap<[u32; 2], Vec<u32>> {
 }
 
 /// Mean edge length over the unique edges.
-fn mean_edge_length(tm: &TetMesh) -> f64 {
+/// `pub(crate)` for the HXT parallel optimization layer (`hxt_3d`).
+pub(crate) fn mean_edge_length(tm: &TetMesh) -> f64 {
     let map = tet_edge_map(tm);
     if map.is_empty() {
         return 0.0;
@@ -940,8 +945,9 @@ fn mean_edge_length(tm: &TetMesh) -> f64 {
 }
 
 /// Global worst lexicographic quality tuple over all tets — the driver's
-/// convergence signal.
-fn mesh_worst_quality_tuple(tm: &TetMesh, metric: QualityMetric) -> (f64, f64) {
+/// convergence signal. `pub(crate)` for the HXT parallel optimization layer
+/// (`hxt_3d`), whose rounds use the identical convergence signal.
+pub(crate) fn mesh_worst_quality_tuple(tm: &TetMesh, metric: QualityMetric) -> (f64, f64) {
     let nodes: Vec<[u32; 4]> = tm.tets.iter().map(|t| t.nodes).collect();
     affected_quality(tm, &nodes, metric).unwrap_or((f64::MAX, f64::MAX))
 }
@@ -969,16 +975,24 @@ fn count_tets_with_node(tm: &TetMesh, x: u32) -> usize {
 // ─── Pass 1: edge collapse ────────────────────────────────────────────────────
 
 /// Outcome of one collapse pass.
+///
+/// Fields `pub(crate)` for the HXT parallel optimization layer (`hxt_3d`),
+/// which runs the identical serial collapse pass inside its rounds.
 #[derive(Debug, Clone, Copy, Default)]
-struct CollapseOutcome {
-    collapses: usize,
-    tets_removed: usize,
+pub(crate) struct CollapseOutcome {
+    pub(crate) collapses: usize,
+    pub(crate) tets_removed: usize,
 }
 
 /// Collapse every edge shorter than `threshold` whose merge passes the link
 /// condition and the geometric gates. Sweeps repeat until no collapse is
 /// accepted (cap 16).
-fn edge_collapse_pass(tm: &mut TetMesh, threshold: f64, floor_deg: f64) -> CollapseOutcome {
+///
+/// Topology-changing pass — inherently sequential (each collapse rebuilds
+/// the connectivity). Shared verbatim with the HXT parallel optimization
+/// layer (`hxt_3d`), whose parallelism is the node-relocation / evaluation
+/// layer; `pub(crate)` for that reuse.
+pub(crate) fn edge_collapse_pass(tm: &mut TetMesh, threshold: f64, floor_deg: f64) -> CollapseOutcome {
     let mut out = CollapseOutcome::default();
     for _sweep in 0..16 {
         let bnd = boundary_node_set(tm);
@@ -1174,7 +1188,10 @@ fn find_face_pair(
 /// 2-3 swap pass: up to 8 sweeps over the interior faces; each face shared by
 /// exactly two tets is swapped for its opposite edge when that strictly
 /// improves the worst affected-tet goodness.
-fn edge_swap_pass(tm: &mut TetMesh, metric: QualityMetric) -> usize {
+///
+/// Topology-changing pass — inherently sequential. Shared verbatim with the
+/// HXT parallel optimization layer (`hxt_3d`); `pub(crate)` for that reuse.
+pub(crate) fn edge_swap_pass(tm: &mut TetMesh, metric: QualityMetric) -> usize {
     let mut swaps = 0usize;
     for _sweep in 0..8 {
         tm.build_neighbors();
@@ -1280,7 +1297,10 @@ fn edge_swap_pass(tm: &mut TetMesh, metric: QualityMetric) -> usize {
 /// quality tuple strictly improves (or passes the sliver-relaxed gate). This
 /// completes the bistellar flip family named in the module docs — the 2-3
 /// pass alone cannot remove edges. Returns the number of flips.
-fn edge_removal_pass_3_2(tm: &mut TetMesh, metric: QualityMetric) -> usize {
+///
+/// Topology-changing pass — inherently sequential. Shared verbatim with the
+/// HXT parallel optimization layer (`hxt_3d`); `pub(crate)` for that reuse.
+pub(crate) fn edge_removal_pass_3_2(tm: &mut TetMesh, metric: QualityMetric) -> usize {
     let mut flips = 0usize;
     for _sweep in 0..8 {
         // Candidate edges with exactly three incident tets (deterministic
@@ -1431,107 +1451,125 @@ fn golden_max<F: Fn(f64) -> f64>(f: F, lo: f64, hi: f64) -> f64 {
     (a + b) * 0.5
 }
 
-/// Relocation pass: Gmsh `optimizeMeshGRegion`-style per-axis golden-section
-/// line search over every free node's star. The objective is the star's
-/// worst primary goodness; a found move is accepted only through the same
-/// gates as every other pass — no star tet may invert, and the star's
-/// lexicographic tuple (primary metric, radius-edge tie-break) must hold or
-/// improve. Returns the number of nodes whose position changed.
+/// Relocation candidate for one free node: the per-node body of
+/// [`relocate_pass`] (Gmsh `optimizeMeshGRegion`-style per-axis
+/// golden-section line search over the node's star). Pure read on `tm` and
+/// `star` — the shared evaluation kernel of the serial pass (immediate
+/// commit, ascending node order) and of the HXT colored-parallel pass
+/// (`hxt_3d`: per-color batch evaluation with rayon, then sequential commit
+/// in ascending node order). Returns `Some(new_position)` when a move is
+/// accepted under the standard gates (no star tet inverts, lexicographic
+/// tuple holds or improves), `None` otherwise.
+pub(crate) fn relocate_candidate_for_node(
+    tm: &TetMesh,
+    star: &HashMap<u32, Vec<u32>>,
+    v: u32,
+    metric: QualityMetric,
+) -> Option<[f64; 3]> {
+    let tets = match star.get(&v) {
+        Some(t) if !t.is_empty() => t,
+        _ => return None,
+    };
+    let star_nodes: Vec<[u32; 4]> = tets.iter().map(|&ti| tm.tets[ti as usize].nodes).collect();
+    let base_q = affected_quality(tm, &star_nodes, metric)?;
+
+    // Local search bracket: half the mean star edge length (the star's
+    // own scale, so the search cannot jump across neighbouring nodes).
+    let pv = tm.nodes[v as usize];
+    let mut h = 0.0f64;
+    let mut hcount = 0usize;
+    for &ti in tets {
+        let nodes = tm.tets[ti as usize].nodes;
+        for &n in nodes.iter() {
+            if n != v {
+                h += len3(sub3(tm.nodes[n as usize], pv));
+                hcount += 1;
+            }
+        }
+    }
+    if hcount == 0 {
+        return None;
+    }
+    h *= 0.5 / hcount as f64;
+    if h <= 0.0 {
+        return None;
+    }
+
+    // Star quality at a trial position: `None` when any star tet would
+    // invert (signalled as the worst possible objective).
+    let quality_at = |p: [f64; 3]| -> (f64, f64) {
+        let mut primary = f64::MAX;
+        let mut secondary = f64::MAX;
+        for &ti in tets {
+            let nodes = tm.tets[ti as usize].nodes;
+            let pts: [[f64; 3]; 4] =
+                nodes.map(|n| if n == v { p } else { tm.nodes[n as usize] });
+            if signed_volume_tet(pts[0], pts[1], pts[2], pts[3]) <= VOL_EPS {
+                return (f64::MIN, f64::MIN);
+            }
+            primary = primary.min(tet_goodness_points(
+                pts[0], pts[1], pts[2], pts[3], metric,
+            ));
+            secondary = secondary.min(match metric {
+                QualityMetric::RadiusEdgeRatio => {
+                    min_dihedral_deg_tet(pts[0], pts[1], pts[2], pts[3])
+                }
+                _ => -radius_edge_ratio_tet(pts[0], pts[1], pts[2], pts[3]),
+            });
+        }
+        (primary, secondary)
+    };
+
+    // Per-axis line search, starting from the current position. The
+    // search objective is a bounded scalarization of the lexicographic
+    // tuple — squashed primary + 1e-3 · squashed secondary — so the
+    // search actively improves the radius-edge leg wherever the primary
+    // is flat, while the primary always dominates (both squashes map to
+    // (-1, 1); the weight gap cannot be bridged by the secondary leg).
+    let squash = |x: f64| x / (1.0 + x.abs());
+    let objective = |p: [f64; 3]| -> f64 {
+        let (q0, q1) = quality_at(p);
+        squash(q0) + 1.0e-3 * squash(q1)
+    };
+    let mut best = pv;
+    let mut best_q = quality_at(best);
+    for axis in 0..3 {
+        let lo = best[axis] - h;
+        let hi = best[axis] + h;
+        let t = golden_max(
+            |x| {
+                let mut p = best;
+                p[axis] = x;
+                objective(p)
+            },
+            lo,
+            hi,
+        );
+        let mut p = best;
+        p[axis] = t;
+        let q = quality_at(p);
+        if q.0 > best_q.0 || ((q.0 - best_q.0).abs() <= 1e-6 && q.1 < best_q.1) {
+            best = p;
+            best_q = q;
+        }
+    }
+
+    if best != pv && quality_tuple_holds(best_q, base_q) {
+        Some(best)
+    } else {
+        None
+    }
+}
+
+/// Relocation pass: every free node evaluated through
+/// [`relocate_candidate_for_node`]; accepted moves committed immediately in
+/// ascending node order. Returns the number of nodes whose position changed.
 fn relocate_pass(tm: &mut TetMesh, free: &[u32], metric: QualityMetric) -> usize {
     let star = star_tets(tm);
     let mut moved = 0usize;
     for &v in free {
-        let tets = match star.get(&v) {
-            Some(t) if !t.is_empty() => t,
-            _ => continue,
-        };
-        let star_nodes: Vec<[u32; 4]> = tets.iter().map(|&ti| tm.tets[ti as usize].nodes).collect();
-        let Some(base_q) = affected_quality(tm, &star_nodes, metric) else {
-            continue;
-        };
-        // Local search bracket: half the mean star edge length (the star's
-        // own scale, so the search cannot jump across neighbouring nodes).
-        let pv = tm.nodes[v as usize];
-        let mut h = 0.0f64;
-        let mut hcount = 0usize;
-        for &ti in tets {
-            let nodes = tm.tets[ti as usize].nodes;
-            for &n in nodes.iter() {
-                if n != v {
-                    h += len3(sub3(tm.nodes[n as usize], pv));
-                    hcount += 1;
-                }
-            }
-        }
-        if hcount == 0 {
-            continue;
-        }
-        h *= 0.5 / hcount as f64;
-        if h <= 0.0 {
-            continue;
-        }
-
-        // Star quality at a trial position: `None` when any star tet would
-        // invert (signalled as the worst possible objective).
-        let quality_at = |p: [f64; 3]| -> (f64, f64) {
-            let mut primary = f64::MAX;
-            let mut secondary = f64::MAX;
-            for &ti in tets {
-                let nodes = tm.tets[ti as usize].nodes;
-                let pts: [[f64; 3]; 4] =
-                    nodes.map(|n| if n == v { p } else { tm.nodes[n as usize] });
-                if signed_volume_tet(pts[0], pts[1], pts[2], pts[3]) <= VOL_EPS {
-                    return (f64::MIN, f64::MIN);
-                }
-                primary = primary.min(tet_goodness_points(
-                    pts[0], pts[1], pts[2], pts[3], metric,
-                ));
-                secondary = secondary.min(match metric {
-                    QualityMetric::RadiusEdgeRatio => {
-                        min_dihedral_deg_tet(pts[0], pts[1], pts[2], pts[3])
-                    }
-                    _ => -radius_edge_ratio_tet(pts[0], pts[1], pts[2], pts[3]),
-                });
-            }
-            (primary, secondary)
-        };
-
-        // Per-axis line search, starting from the current position. The
-        // search objective is a bounded scalarization of the lexicographic
-        // tuple — squashed primary + 1e-3 · squashed secondary — so the
-        // search actively improves the radius-edge leg wherever the primary
-        // is flat, while the primary always dominates (both squashes map to
-        // (-1, 1); the weight gap cannot be bridged by the secondary leg).
-        let squash = |x: f64| x / (1.0 + x.abs());
-        let objective = |p: [f64; 3]| -> f64 {
-            let (q0, q1) = quality_at(p);
-            squash(q0) + 1.0e-3 * squash(q1)
-        };
-        let mut best = pv;
-        let mut best_q = quality_at(best);
-        for axis in 0..3 {
-            let lo = best[axis] - h;
-            let hi = best[axis] + h;
-            let t = golden_max(
-                |x| {
-                    let mut p = best;
-                    p[axis] = x;
-                    objective(p)
-                },
-                lo,
-                hi,
-            );
-            let mut p = best;
-            p[axis] = t;
-            let q = quality_at(p);
-            if q.0 > best_q.0 || ((q.0 - best_q.0).abs() <= 1e-6 && q.1 < best_q.1) {
-                best = p;
-                best_q = q;
-            }
-        }
-
-        if best != pv && quality_tuple_holds(best_q, base_q) {
-            tm.nodes[v as usize] = best;
+        if let Some(p) = relocate_candidate_for_node(tm, &star, v, metric) {
+            tm.nodes[v as usize] = p;
             moved += 1;
         }
     }

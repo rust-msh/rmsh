@@ -11,3 +11,6 @@ thiserror = { workspace = true }
 # aligns with the rcad kernel's math type so adapters convert nothing; the
 # core model/geo crates keep nalgebra and are untouched.
 glam = { workspace = true }
+# Data parallelism for the HXT optimization layer (hxt_3d.rs): parallel
+# relocation evaluation and parallel quality measures over tets.
+rayon = { workspace = true }
