@@ -967,18 +967,49 @@ impl TriMesh2d {
         flips
     }
 
-    /// Classify the outside triangles: one flood seed per boundary ring (the
-    /// triangle across the ring's first carried edge, on the non-domain side),
-    /// then flood fill across non-constraint edges. The outer ring seeds the
-    /// exterior region; each hole ring seeds its own interior region.
+    /// Classify the outside triangles, then flood fill across
+    /// non-constraint edges from one flood seed set.
+    ///
+    /// Outer region: every live triangle carrying a HULL edge (single
+    /// carrier) that is not a constraint edge. The chain polygon and the
+    /// convex hull of its points bound the pockets between them (hull \
+    /// domain); each pocket touches at least one non-chain hull edge, and
+    /// the chain edges wall the flood inside the pocket region. A convex
+    /// domain has no such edges — hull edges are all chain edges — and no
+    /// outer seed, correctly.
+    ///
+    /// Hole rings: one seed per ring on its non-domain side (the hole
+    /// interior) via the carrier-across rule. Hole chains are small rings
+    /// well inside the hull, where the carrier side is unambiguous.
     fn classify_outside(&self, rings: &[Vec<usize>]) -> Vec<usize> {
         let mut seeds: Vec<usize> = Vec::new();
+        // outer-region seeds: non-chain hull edges
+        {
+            let mut carriers: HashMap<(usize, usize), usize> = HashMap::new();
+            for t in self.live() {
+                for k in 0..3 {
+                    let (u, v) = (self.tri[t][k], self.tri[t][(k + 1) % 3]);
+                    *carriers.entry(edge_key(u, v)).or_insert(0) += 1;
+                }
+            }
+            for t in self.live() {
+                for k in 0..3 {
+                    let (u, v) = (self.tri[t][k], self.tri[t][(k + 1) % 3]);
+                    let key = edge_key(u, v);
+                    if carriers[&key] == 1 && !self.constraint.contains(&key) {
+                        seeds.push(t);
+                        break;
+                    }
+                }
+            }
+        }
+        // hole-ring seeds: the triangle across the carrier, on the
+        // non-domain side of the ring
         for (ri, ring) in rings.iter().enumerate() {
-            let n = ring.len();
-            if n < 3 {
+            if ri == 0 || ring.len() < 3 {
                 continue;
             }
-            // ring orientation by signed area
+            let n = ring.len();
             let mut area2 = 0.0;
             for i in 0..n {
                 let a = self.pts[ring[i]];
@@ -986,10 +1017,7 @@ impl TriMesh2d {
                 area2 += a[0] * b[1] - b[0] * a[1];
             }
             let ccw = area2 > 0.0;
-            let outer = ri == 0;
-            // domain side relative to the ring direction u -> v: left for a
-            // CCW outer ring or a CW hole ring, right otherwise
-            let domain_left = if outer { ccw } else { !ccw };
+            let domain_left = !ccw;
             for i in 0..n {
                 let (u, v) = (ring[i], ring[(i + 1) % n]);
                 let Some((t, k)) = self.find_edge(u, v) else {
@@ -1002,7 +1030,6 @@ impl TriMesh2d {
                 let t_left_of_carried = orient(self.pts[eu], self.pts[ev], self.pts[w]) > 0.0;
                 let t_left_of_ring = if forward { t_left_of_carried } else { !t_left_of_carried };
                 let seeded = if t_left_of_ring == domain_left {
-                    // t is the domain-side triangle: seed the one across
                     let across = self.neigh[t][k];
                     if across >= 0 && !self.dead[across as usize] {
                         seeds.push(across as usize);
@@ -1060,15 +1087,25 @@ impl TriMesh2d {
                 if n < 0 || self.dead[n as usize] || outside.contains(&(n as usize)) {
                     continue;
                 }
-                let nt = n as usize;
-                let cn = centroid(nt);
-                // wall iff the centroid-to-centroid segment hits the chain
-                let blocked = chain
-                    .iter()
-                    .any(|&(a, b)| segments_intersect_closed(ct, cn, a, b));
+                // wall iff the crossed edge is a constraint edge (exact,
+                // topological) — the naive-float geometric test below can
+                // misjudge the sign for the thin near-collinear triangles
+                // that boundary chains of near-cocircular rings produce —
+                // OR the centroid-to-centroid segment hits the chain (the
+                // cut-corner chords that share both endpoints with the
+                // chain and no edge-key wall can block)
+                let (u, v) = (self.tri[t][k], self.tri[t][(k + 1) % 3]);
+                let mut blocked = self.constraint.contains(&edge_key(u, v));
                 if !blocked {
-                    outside.insert(nt);
-                    stack.push(nt);
+                    let nt = n as usize;
+                    let cn = centroid(nt);
+                    blocked = chain
+                        .iter()
+                        .any(|&(a, b)| segments_intersect_closed(ct, cn, a, b));
+                }
+                if !blocked {
+                    outside.insert(n as usize);
+                    stack.push(n as usize);
                 }
             }
         }

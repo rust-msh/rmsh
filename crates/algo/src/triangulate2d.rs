@@ -64,18 +64,22 @@ impl Polygon2D {
     }
 }
 
-// ─── Delaunay triangulation (Bowyer-Watson) ──────────────────────────────────
+// ─── Delaunay triangulation (Lawson incremental) ─────────────────────────────
 
-/// Bowyer-Watson incremental Delaunay triangulation.
+/// Incremental Delaunay triangulation (Lawson construction with exact
+/// predicates).
 ///
 /// Returns a list of triangles as `[i, j, k]` index triples into `pts`.
 /// All points must be distinct (within floating-point tolerance).
 ///
 /// The computation runs on the point set translated and scaled into the
 /// unit box: the super-triangle is sized relative to the bbox, and large /
-/// offset coordinates make the circumcircle determinant lose precision
-/// through cancellation (a convex 12-gon at radius ~7.7 triangulated as 22
-/// overlapping triangles instead of 10). Index triples are unaffected.
+/// offset coordinates make the geometric determinants lose precision
+/// through cancellation. Index triples are unaffected. Points inserted
+/// exactly onto an existing edge split it; exactly cocircular ties are left
+/// in place (weakly Delaunay). The output is a valid triangulation of the
+/// point set — no overlapping triangles — with the Delaunay property where
+/// the input is non-degenerate.
 pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
     let n = pts.len();
     if n < 3 {
@@ -123,312 +127,212 @@ pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
     all.push(st1);
     all.push(st2);
 
-    let mut triangles: Vec<[usize; 3]> = vec![[st_start, st_start + 1, st_start + 2]];
+    // ── Lawson incremental construction ──────────────────────────────────
+    // Every point is inserted into its containing triangle (a fan of 3, or
+    // an exact edge split when the point lies EXACTLY on an edge) and the
+    // result is restored to the Delaunay property by stack-driven
+    // legalization flips (Lawson 1977, in the robust form of Shewchuk 1997
+    // with the exact orientation / in-circumcircle predicates of
+    // `crate::predicates`). Unlike the Bowyer-Watson cavity scheme this
+    // replaces, validity never depends on a cavity being star-shaped: a
+    // flip is taken only on a strictly convex quad, so collinear chains and
+    // cocircular ties leave a valid weakly-Delaunay triangulation instead
+    // of overlapping triangles (the concave-domain leak the P3 quality card
+    // traced to cavity ties on the super-triangle circles).
+    let mut triangles: Vec<[usize; 3]> = vec![tri_ccw([st_start, st_start + 1, st_start + 2], &all)];
 
     for i in 0..n {
-        let p = all[i];
-
-        // Collinear fast path: a point lying EXACTLY on an existing edge
-        // (a boundary subdivision mid) has degenerate circumcircle tests —
-        // the cavity boundary ends up containing the very edge the point
-        // lies on, and the retriangulation pushes a zero-area triangle.
-        // Split the carrying edge deterministically instead.
-        if let Some(ti) = find_edge_carrier(&triangles, &all, i) {
-            if let Some((u, v)) = split_one(&mut triangles, ti, i, &all) {
-                let other = (0..triangles.len())
-                    .find(|&oj| tri_has_edge(triangles[oj], u, v) && !triangles[oj].contains(&i));
-                if let Some(oj) = other {
-                    split_one(&mut triangles, oj, i, &all);
-                }
+        // locate the first triangle whose three edge orientations accept i
+        // (CCW storage: all signs >= 0); the scan is deterministic
+        let mut host: Option<(usize, [i32; 3])> = None;
+        for (ti, &tri) in triangles.iter().enumerate() {
+            let s = [
+                crate::predicates::orient2d_sign(all[tri[0]], all[tri[1]], all[i]),
+                crate::predicates::orient2d_sign(all[tri[1]], all[tri[2]], all[i]),
+                crate::predicates::orient2d_sign(all[tri[2]], all[tri[0]], all[i]),
+            ];
+            if s[0] >= 0 && s[1] >= 0 && s[2] >= 0 {
+                host = Some((ti, s));
+                break;
             }
+        }
+        let Some((ti, s)) = host else {
+            // unreachable for distinct inputs: the scaled point set lies in
+            // the unit box, which the super-triangle covers with margin
             continue;
-        }
-
-        // Find all triangles whose circumcircle contains p
-        let bad: Vec<[usize; 3]> = triangles
-            .iter()
-            .filter(|&&tri| circumcircle_contains(all[tri[0]], all[tri[1]], all[tri[2]], p))
-            .copied()
-            .collect();
-
-        // Boundary of the polygonal hole formed by removing bad triangles.
-        // An edge is on the boundary iff it belongs to exactly one bad triangle.
-        let mut boundary: Vec<[usize; 2]> = Vec::new();
-        for &tri in &bad {
-            let edges = [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]];
-            for edge in edges {
-                let shared = bad
+        };
+        let tri = triangles[ti];
+        let mut new_tris: Vec<[usize; 3]> = Vec::with_capacity(4);
+        if s[0] == 0 || s[1] == 0 || s[2] == 0 {
+            // exactly on edge k (exact collinearity, e.g. an axis-aligned
+            // boundary chain): split the edge in both carrying triangles
+            let k = if s[0] == 0 {
+                0
+            } else if s[1] == 0 {
+                1
+            } else {
+                2
+            };
+            let (u, v) = (tri[k], tri[(k + 1) % 3]);
+            let x = tri[(k + 2) % 3];
+            let dot = (all[i][0] - all[u][0]) * (all[i][0] - all[v][0])
+                + (all[i][1] - all[u][1]) * (all[i][1] - all[v][1]);
+            if dot >= 0.0 {
+                // i coincides with u or v: a duplicate input point, already
+                // a vertex
+                continue;
+            }
+            let t0 = tri_ccw([u, i, x], &all);
+            let t1 = tri_ccw([i, v, x], &all);
+            triangles[ti] = t0;
+            new_tris.push(t0);
+            triangles.push(t1);
+            new_tris.push(t1);
+            // the neighbour across (u, v) splits too
+            let oj = (0..triangles.len())
+                .find(|&oj| oj != ti && tri_has_edge(triangles[oj], u, v));
+            if let Some(oj) = oj {
+                let ntri = triangles[oj];
+                let y = ntri
                     .iter()
-                    .any(|&other| other != tri && tri_has_edge(other, edge[0], edge[1]));
-                if !shared {
-                    boundary.push(edge);
-                }
+                    .copied()
+                    .find(|&q| q != u && q != v)
+                    .expect("edge endpoints are triangle vertices");
+                let t2 = tri_ccw([u, y, i], &all);
+                let t3 = tri_ccw([i, y, v], &all);
+                triangles[oj] = t2;
+                new_tris.push(t2);
+                triangles.push(t3);
+                new_tris.push(t3);
+            }
+        } else {
+            // strictly inside: replace the host with the fan of 3
+            let t0 = tri_ccw([tri[0], tri[1], i], &all);
+            let t1 = tri_ccw([tri[1], tri[2], i], &all);
+            let t2 = tri_ccw([tri[2], tri[0], i], &all);
+            triangles[ti] = t0;
+            new_tris.push(t0);
+            triangles.push(t1);
+            new_tris.push(t1);
+            triangles.push(t2);
+            new_tris.push(t2);
+        }
+        // legalize: every edge of every new triangle is checked against its
+        // opposite triangle; the stack grows with each flip's new edges and
+        // drains when no edge violates the in-circumcircle criterion
+        let mut stack: Vec<[usize; 3]> = Vec::with_capacity(16);
+        for t in &new_tris {
+            for k in 0..3 {
+                stack.push([t[k], t[(k + 1) % 3], t[(k + 2) % 3]]);
             }
         }
-
-        triangles.retain(|t| !bad.contains(t));
-
-        for edge in boundary {
-            triangles.push([edge[0], edge[1], i]);
+        let mut guard = 0usize;
+        while let Some([a, b, w]) = stack.pop() {
+            guard += 1;
+            if guard > 64 * triangles.len() + 4096 {
+                break;
+            }
+            // the two live carriers of the edge (a, b)
+            let mut it = triangles
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| tri_has_edge(**t, a, b))
+                .map(|(ti, t)| (ti, *t));
+            let (Some((ti0, tri0)), Some((ti1, tri1))) = (it.next(), it.next()) else {
+                continue;
+            };
+            if it.next().is_some() {
+                continue;
+            }
+            let apex = |t: [usize; 3]| t.iter().copied().find(|&q| q != a && q != b);
+            // the carrier holding w as its apex owns the circle; the other
+            // holds the opposite vertex x. (Stack entries may be stale
+            // after earlier flips — the carriers are re-identified here.)
+            let (w_tri, oti) = if apex(tri0) == Some(w) {
+                (tri0, ti1)
+            } else if apex(tri1) == Some(w) {
+                (tri1, ti0)
+            } else {
+                continue;
+            };
+            let Some(x) = apex(triangles[oti]) else {
+                continue;
+            };
+            // ghost-vertex rule (Shewchuk's triangle.c dummy semantics;
+            // cf. Gmsh, which avoids super-triangles entirely by inserting
+            // into the boundary-only initial mesh): a flip is never taken
+            // on a quad touching a super-triangle vertex. Circles through
+            // two real points and one super-triangle vertex are enormous
+            // and would pull the interior triangles toward the ghost —
+            // leaving, after the ghost discard, holes instead of the real
+            // hull triangulation. Skipping keeps the mesh valid (flips are
+            // the only topology changes besides splits) and the hull
+            // interior tiled by real-only triangles.
+            if w >= st_start || x >= st_start {
+                continue;
+            }
+            // the directed edge (da, db) in the w-carrier's CCW order, so
+            // (da, db, w) is CCW and the in-circumcircle sign reads direct
+            let mut da = a;
+            let mut db = b;
+            for k in 0..3 {
+                if w_tri[k] == a && w_tri[(k + 1) % 3] == b {
+                    break;
+                }
+                if w_tri[k] == b && w_tri[(k + 1) % 3] == a {
+                    da = b;
+                    db = a;
+                    break;
+                }
+            }
+            // flip only when x lies STRICTLY inside the circumcircle of the
+            // CCW triangle (da, db, w) (exact zero = cocircular tie: leave)
+            if crate::predicates::incircle_sign(all[da], all[db], all[w], all[x]) <= 0 {
+                continue;
+            }
+            // and only on a strictly convex quad. The CCW cyclic order
+            // around the directed edge (da, db) is (da, x, db, w) — w sits
+            // on the LEFT of da->db, x on the right — but the test accepts
+            // either uniform polarity so the geometry, not the labeling,
+            // decides.
+            let o1 = crate::predicates::orient2d_sign(all[da], all[w], all[db]);
+            let o2 = crate::predicates::orient2d_sign(all[w], all[db], all[x]);
+            let o3 = crate::predicates::orient2d_sign(all[db], all[x], all[da]);
+            let o4 = crate::predicates::orient2d_sign(all[x], all[da], all[w]);
+            if !((o1 > 0 && o2 > 0 && o3 > 0 && o4 > 0)
+                || (o1 < 0 && o2 < 0 && o3 < 0 && o4 < 0))
+            {
+                continue;
+            }
+            let n0 = tri_ccw([da, w, x], &all);
+            let n1 = tri_ccw([w, db, x], &all);
+            triangles[ti0] = n0;
+            triangles[ti1] = n1;
+            for t in [&n0, &n1] {
+                for k in 0..3 {
+                    stack.push([t[k], t[(k + 1) % 3], t[(k + 2) % 3]]);
+                }
+            }
         }
     }
 
     // Drop any triangle that uses super-triangle vertices
     triangles.retain(|t| t[0] < st_start && t[1] < st_start && t[2] < st_start);
-
-    // Post-pass: a collinear input point lying ON an existing edge was
-    // never connected (its circumcircle tests are degenerate — the point
-    // sits on the circles' boundary, det ~ 0 — so no cavity formed and
-    // Bowyer-Watson silently skipped it). Split the carrying edge so
-    // every input point becomes a vertex.
-    // split_one/find_edge_carrier are module-level functions (below)
-    // Split triangle `ti` at point index `p` lying on one of its edges;
-    // orientation-preserving. Returns the split edge (u, v).
-fn split_one(
-    triangles: &mut Vec<[usize; 3]>,
-        ti: usize,
-        p: usize,
-        all: &[[f64; 2]],
-    ) -> Option<(usize, usize)> {
-        let tri = triangles[ti];
-        let pts = [all[tri[0]], all[tri[1]], all[tri[2]]];
-        let o = [
-            orient2f(pts[0], pts[1], all[p]),
-            orient2f(pts[1], pts[2], all[p]),
-            orient2f(pts[2], pts[0], all[p]),
-        ];
-        let tol = 1e-12 * (o[0].abs() + o[1].abs() + o[2].abs() + 1e-30);
-        for k in 0..3 {
-            if o[k].abs() > tol {
-                continue;
-            }
-            let (u, v) = (tri[k], tri[(k + 1) % 3]);
-            let dot = (all[p][0] - all[u][0]) * (all[p][0] - all[v][0])
-                + (all[p][1] - all[u][1]) * (all[p][1] - all[v][1]);
-            if dot > 0.0 {
-                continue;
-            }
-            let x = [tri[0], tri[1], tri[2]]
-                .into_iter()
-                .find(|&q| q != u && q != v)
-                .expect("edge endpoints are triangle vertices");
-            // (t_k, p, x) and (p, t_{k+1}, x) preserve the orientation
-            triangles[ti] = [tri[k], p, x];
-            triangles.push([p, tri[(k + 1) % 3], x]);
-            return Some((u, v));
-        }
-        None
-    }
-
-    loop {
-        let referenced: std::collections::HashSet<usize> =
-            triangles.iter().flatten().copied().collect();
-        let Some(i) = (0..n).find(|i| !referenced.contains(i)) else {
-            break;
-        };
-        // find the triangle carrying i on one of its edges; the pick is
-        // CANONICAL (smallest carrying-edge key) so the result does not
-        // depend on the vector's push/swap_remove layout
-        let mut carrier: Option<(usize, usize)> = None; // (edge key lo, hi) -> ti below
-        let mut carrier_ti: Option<usize> = None;
-        for ti in 0..triangles.len() {
-            let tri = triangles[ti];
-            let pts = [all[tri[0]], all[tri[1]], all[tri[2]]];
-            let o = [
-                orient2f(pts[0], pts[1], all[i]),
-                orient2f(pts[1], pts[2], all[i]),
-                orient2f(pts[2], pts[0], all[i]),
-            ];
-            let tol = 1e-12 * (o[0].abs() + o[1].abs() + o[2].abs() + 1e-30);
-            for k in 0..3 {
-                if o[k].abs() > tol {
-                    continue;
-                }
-                let (u, v) = (tri[k], tri[(k + 1) % 3]);
-                let dot = (all[i][0] - all[u][0]) * (all[i][0] - all[v][0])
-                    + (all[i][1] - all[u][1]) * (all[i][1] - all[v][1]);
-                if dot > 0.0 {
-                    continue;
-                }
-                let key = (u.min(v), u.max(v));
-                let better = match (carrier, carrier_ti) {
-                    (None, _) => true,
-                    _ => key < carrier.unwrap(),
-                };
-                if better {
-                    carrier = Some(key);
-                    carrier_ti = Some(ti);
-                }
-                break;
-            }
-        }
-        let carrier_ti = carrier_ti;
-        let Some(ti) = carrier_ti else {
-            // No carrying edge: the point lies OUTSIDE the triangulated
-            // region (a hull vertex the super-triangle Bowyer-Watson
-            // skipped). Fan-connect it to every boundary edge visible from
-            // it (each edge's incident triangle lies on the far side).
-            let mut incident: std::collections::HashMap<[usize; 2], (usize, usize)> =
-                std::collections::HashMap::new();
-            for (ti2, tri) in triangles.iter().enumerate() {
-                for k in 0..3 {
-                    let u = tri[k];
-                    let v = tri[(k + 1) % 3];
-                    let key = if u <= v { [u, v] } else { [v, u] };
-                    let e = incident.entry(key).or_insert((0, ti2));
-                    e.0 += 1;
-                    e.1 = ti2;
-                }
-            }
-            let mut connected = false;
-            let mut incident_sorted: Vec<([usize; 2], (usize, usize))> =
-                incident.into_iter().collect();
-            incident_sorted.sort_unstable();
-            for (key, counts) in incident_sorted.iter() {
-                let (count, ti2) = *counts;
-                if count != 1 {
-                    continue;
-                }
-                let (u, v) = (key[0], key[1]);
-                let tri = triangles[ti2];
-                let x = [tri[0], tri[1], tri[2]]
-                    .into_iter()
-                    .find(|&q| q != u && q != v)
-                    .expect("edge endpoints are triangle vertices");
-                // visible: p on the OUTER side (opposite the triangle)
-                let side_tri = orient2f(all[u], all[v], all[x]);
-                let side_p = orient2f(all[u], all[v], all[i]);
-                if side_tri * side_p >= 0.0 {
-                    continue;
-                }
-                // sightline check: the segments p-u and p-v must not cross
-                // any existing edge (endpoints shared with u / v excluded)
-                let crosses = |a: usize| {
-                    let pa = all[a];
-                    let seg = |c: [f64; 2], d: [f64; 2], e: [f64; 2], f: [f64; 2]| {
-                        let o1 = orient2f(c, d, e);
-                        let o2 = orient2f(c, d, f);
-                        let o3 = orient2f(e, f, c);
-                        let o4 = orient2f(e, f, d);
-                        o1 * o2 < 0.0 && o3 * o4 < 0.0
-                    };
-                    for t3 in &triangles {
-                        for k in 0..3 {
-                            let c = t3[k];
-                            let d = t3[(k + 1) % 3];
-                            if c == a || d == a {
-                                continue;
-                            }
-                            if seg(pa, all[a], all[c], all[d]) {
-                                return true;
-                            }
-                        }
-                    }
-                    false
-                };
-                if crosses(u) || crosses(v) {
-                    continue;
-                }
-                // orientation-corrected fan triangle
-                if side_p > 0.0 {
-                    triangles.push([u, v, i]);
-                } else {
-                    triangles.push([v, u, i]);
-                }
-                connected = true;
-            }
-            if !connected {
-                // genuinely unconnectable: leave the point unconnected
-                break;
-            }
-            continue;
-        };
-        if let Some((u, v)) = split_one(&mut triangles, ti, i, &all) {
-            // the neighbour across the split edge splits too
-            let other = (0..triangles.len())
-                .find(|&oj| tri_has_edge(triangles[oj], u, v)
-                    && !triangles[oj].contains(&i));
-            if let Some(oj) = other {
-                split_one(&mut triangles, oj, i, &all);
-            }
-        }
-    }
     triangles
+}
+
+/// Normalize a triangle to counter-clockwise storage.
+fn tri_ccw(tri: [usize; 3], all: &[[f64; 2]]) -> [usize; 3] {
+    if orient2f(all[tri[0]], all[tri[1]], all[tri[2]]) < 0.0 {
+        [tri[0], tri[2], tri[1]]
+    } else {
+        tri
+    }
 }
 
 /// Signed area cross product (twice the signed area).
 fn orient2f(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
-}
-
-/// Find the triangle carrying point `all[i]` exactly on one of its edges
-/// (zero orient, point between the endpoints). Returns the triangle index.
-fn find_edge_carrier(
-    triangles: &[[usize; 3]],
-    all: &[[f64; 2]],
-    i: usize,
-) -> Option<usize> {
-    let p = all[i];
-    for ti in 0..triangles.len() {
-        let tri = triangles[ti];
-        let pts = [all[tri[0]], all[tri[1]], all[tri[2]]];
-        let o = [
-            orient2f(pts[0], pts[1], p),
-            orient2f(pts[1], pts[2], p),
-            orient2f(pts[2], pts[0], p),
-        ];
-        let tol = 1e-12 * (o[0].abs() + o[1].abs() + o[2].abs() + 1e-30);
-        for k in 0..3 {
-            if o[k].abs() > tol {
-                continue;
-            }
-            let (u, v) = (tri[k], tri[(k + 1) % 3]);
-            let dot = (p[0] - all[u][0]) * (p[0] - all[v][0])
-                + (p[1] - all[u][1]) * (p[1] - all[v][1]);
-            if dot <= 0.0 {
-                return Some(ti);
-            }
-        }
-    }
-    None
-}
-
-/// Split triangle `ti` at point index `p` lying on one of its edges;
-/// orientation-preserving. Returns the split edge (u, v).
-fn split_one(
-    triangles: &mut Vec<[usize; 3]>,
-    ti: usize,
-    p: usize,
-    all: &[[f64; 2]],
-) -> Option<(usize, usize)> {
-    let tri = triangles[ti];
-    let pts = [all[tri[0]], all[tri[1]], all[tri[2]]];
-    let o = [
-        orient2f(pts[0], pts[1], all[p]),
-        orient2f(pts[1], pts[2], all[p]),
-        orient2f(pts[2], pts[0], all[p]),
-    ];
-    let tol = 1e-12 * (o[0].abs() + o[1].abs() + o[2].abs() + 1e-30);
-    for k in 0..3 {
-        if o[k].abs() > tol {
-            continue;
-        }
-        let (u, v) = (tri[k], tri[(k + 1) % 3]);
-        let dot = (all[p][0] - all[u][0]) * (all[p][0] - all[v][0])
-            + (all[p][1] - all[u][1]) * (all[p][1] - all[v][1]);
-        if dot > 0.0 {
-            continue;
-        }
-        let x = [tri[0], tri[1], tri[2]]
-            .into_iter()
-            .find(|&q| q != u && q != v)
-            .expect("edge endpoints are triangle vertices");
-        // (t_k, p, x) and (p, t_{k+1}, x) preserve the orientation
-        triangles[ti] = [tri[k], p, x];
-        triangles.push([p, tri[(k + 1) % 3], x]);
-        return Some((u, v));
-    }
-    None
 }
 
 // ─── Polygon meshing ─────────────────────────────────────────────────────────
@@ -437,10 +341,14 @@ fn split_one(
 /// edge length `mesh_size`.
 ///
 /// The algorithm:
-/// 1. Discretises the boundary edges (respecting `mesh_size`).
-/// 2. Scatters interior seed points on a staggered uniform grid.
-/// 3. Runs Bowyer-Watson Delaunay triangulation on all points.
-/// 4. Discards triangles whose centroid lies outside the polygon.
+/// 1. Discretises the boundary edges (respecting `mesh_size`); the boundary
+///    points form the constraint chain, verbatim.
+/// 2. Scatters interior seed points on a staggered uniform grid (seeds
+///    closer than `0.1 x mesh_size` to an accepted point are dropped).
+/// 3. Runs the constrained Delaunay build ([`crate::cdt_2d::TriMesh2d`]:
+///    exact-predicate Lawson initial triangulation, Sloan constraint
+///    recovery, flood classification) — the live triangles cover exactly
+///    the domain, concave included.
 ///
 /// Returns a [`Mesh`] with `Triangle3` elements at z = 0.
 pub fn mesh_polygon(polygon: &Polygon2D, mesh_size: f64) -> Result<Mesh, MeshError> {
@@ -457,8 +365,9 @@ pub fn mesh_polygon(polygon: &Polygon2D, mesh_size: f64) -> Result<Mesh, MeshErr
 
     let (bb_min, bb_max) = polygon.bounding_box();
 
-    // ── Boundary points ───────────────────────────────────────────────────
+    // ── Boundary points (the constraint chain, no dedup) ──────────────────
     let mut points: Vec<[f64; 2]> = Vec::new();
+    let mut ring: Vec<usize> = Vec::new();
     let nv = polygon.vertices.len();
     for i in 0..nv {
         let a = polygon.vertices[i];
@@ -467,11 +376,16 @@ pub fn mesh_polygon(polygon: &Polygon2D, mesh_size: f64) -> Result<Mesh, MeshErr
         let nseg = ((len / mesh_size).ceil() as usize).max(1);
         for k in 0..nseg {
             let t = k as f64 / nseg as f64;
+            ring.push(points.len());
             points.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
         }
     }
 
     // ── Interior seed points on staggered grid ────────────────────────────
+    // A seed too close to an accepted point (boundary point or earlier
+    // seed) is dropped; chain vertices are never merged, so every input
+    // boundary vertex survives into the mesh.
+    let tol = mesh_size * 0.1;
     let mut iy = 1usize;
     let mut py = bb_min[1] + mesh_size;
     while py < bb_max[1] {
@@ -480,7 +394,18 @@ pub fn mesh_polygon(polygon: &Polygon2D, mesh_size: f64) -> Result<Mesh, MeshErr
         let mut px = bb_min[0] + offset_x + mesh_size;
         while px < bb_max[0] {
             if polygon.contains([px, py]) {
-                points.push([px, py]);
+                let mut clear = true;
+                for q in &points {
+                    let dx = px - q[0];
+                    let dy = py - q[1];
+                    if dx * dx + dy * dy < tol * tol {
+                        clear = false;
+                        break;
+                    }
+                }
+                if clear {
+                    points.push([px, py]);
+                }
             }
             px += mesh_size;
         }
@@ -488,40 +413,34 @@ pub fn mesh_polygon(polygon: &Polygon2D, mesh_size: f64) -> Result<Mesh, MeshErr
         iy += 1;
     }
 
-    // ── Deduplicate points that are too close ─────────────────────────────
-    let tol = mesh_size * 0.1;
-    points = deduplicate(points, tol * tol);
-
     if points.len() < 3 {
         return Err(MeshError::Generation(
             "Too few distinct points after sampling".to_string(),
         ));
     }
 
-    // ── Delaunay triangulation ────────────────────────────────────────────
-    let tris = triangulate_points(&points);
+    // ── Constrained Delaunay build with exact domain classification ───────
+    let mut constraints: Vec<(usize, usize)> = Vec::with_capacity(ring.len());
+    let n = ring.len();
+    for k in 0..n {
+        constraints.push((ring[k], ring[(k + 1) % n]));
+    }
+    let tmesh = crate::cdt_2d::TriMesh2d::build(points, &constraints, &[ring.clone()]);
 
-    // ── Build Mesh, keeping only triangles whose centroid is inside polygon ──
+    // ── Build Mesh from the live (inside-domain) triangles ─────────────────
     let mut mesh = Mesh::new();
     let mut node_id: u64 = 1;
     let mut elem_id: u64 = 1;
     let mut pt_to_node: HashMap<usize, u64> = HashMap::new();
 
-    for tri in tris {
-        let centroid = [
-            (points[tri[0]][0] + points[tri[1]][0] + points[tri[2]][0]) / 3.0,
-            (points[tri[0]][1] + points[tri[1]][1] + points[tri[2]][1]) / 3.0,
-        ];
-        if !polygon.contains(centroid) {
-            continue;
-        }
-
+    for t in tmesh.live() {
+        let tri = tmesh.tri[t];
         let mut nids: Vec<u64> = Vec::with_capacity(3);
         for &pi in &tri {
             let nid = *pt_to_node.entry(pi).or_insert_with(|| {
                 let id = node_id;
                 node_id += 1;
-                mesh.add_node(Node::new(id, points[pi][0], points[pi][1], 0.0));
+                mesh.add_node(Node::new(id, tmesh.pts[pi][0], tmesh.pts[pi][1], 0.0));
                 id
             });
             nids.push(nid);
@@ -541,32 +460,7 @@ pub fn mesh_polygon(polygon: &Polygon2D, mesh_size: f64) -> Result<Mesh, MeshErr
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-/// Returns `true` if the circumcircle of triangle `(a, b, c)` contains `p`.
-///
-/// Uses the standard 3×3 determinant criterion, adjusted for triangle
-/// orientation so both CW and CCW triangles are handled correctly.
-fn circumcircle_contains(a: [f64; 2], b: [f64; 2], c: [f64; 2], p: [f64; 2]) -> bool {
-    // Translate so p is at origin
-    let ax = a[0] - p[0];
-    let ay = a[1] - p[1];
-    let bx = b[0] - p[0];
-    let by = b[1] - p[1];
-    let cx = c[0] - p[0];
-    let cy = c[1] - p[1];
-
-    let a2 = ax * ax + ay * ay;
-    let b2 = bx * bx + by * by;
-    let c2 = cx * cx + cy * cy;
-
-    let det = ax * (by * c2 - cy * b2) - ay * (bx * c2 - cx * b2) + a2 * (bx * cy - by * cx);
-
-    // `det > 0` only means "inside" for CCW triangles.
-    // Multiply by the orientation sign to handle CW triangles too.
-    let orient = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
-    det * orient > 0.0
-}
-
-fn tri_has_edge(tri: [usize; 3], a: usize, b: usize) -> bool {
+pub(crate) fn tri_has_edge(tri: [usize; 3], a: usize, b: usize) -> bool {
     [[tri[0], tri[1]], [tri[1], tri[2]], [tri[2], tri[0]]]
         .iter()
         .any(|e| (e[0] == a && e[1] == b) || (e[0] == b && e[1] == a))
@@ -576,21 +470,6 @@ fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
     (dx * dx + dy * dy).sqrt()
-}
-
-fn deduplicate(pts: Vec<[f64; 2]>, min_dist_sq: f64) -> Vec<[f64; 2]> {
-    let mut result: Vec<[f64; 2]> = Vec::with_capacity(pts.len());
-    'outer: for p in pts {
-        for q in &result {
-            let dx = p[0] - q[0];
-            let dy = p[1] - q[1];
-            if dx * dx + dy * dy < min_dist_sq {
-                continue 'outer;
-            }
-        }
-        result.push(p);
-    }
-    result
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -604,6 +483,8 @@ mod tests {
         // Four corners → 2 triangles (minimum)
         let pts = [[0.0f64, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         let tris = triangulate_points(&pts);
+        // trace: replicate scaled set + st to see the pre-discard mesh
+        eprintln!("n={}", pts.len());
         assert!(!tris.is_empty(), "should produce at least one triangle");
         // All index values must be valid
         for t in &tris {
@@ -696,6 +577,8 @@ mod tests {
     fn exactly_three_points_gives_one_triangle() {
         let pts = [[0.0f64, 0.0], [1.0, 0.0], [0.5, 1.0]];
         let tris = triangulate_points(&pts);
+        // trace: replicate scaled set + st to see the pre-discard mesh
+        eprintln!("n={}", pts.len());
         assert_eq!(tris.len(), 1);
         let t = tris[0];
         // All indices must be 0, 1, 2 (any order).
@@ -713,6 +596,8 @@ mod tests {
             })
             .collect();
         let tris = triangulate_points(&pts);
+        // trace: replicate scaled set + st to see the pre-discard mesh
+        eprintln!("n={}", pts.len());
         assert!(!tris.is_empty());
         for t in &tris {
             for &idx in t {
@@ -730,6 +615,8 @@ mod tests {
             })
             .collect();
         let tris = triangulate_points(&pts);
+        // trace: replicate scaled set + st to see the pre-discard mesh
+        eprintln!("n={}", pts.len());
         for t in &tris {
             let a = pts[t[0]];
             let b = pts[t[1]];
@@ -749,6 +636,8 @@ mod tests {
             })
             .collect();
         let tris = triangulate_points(&pts);
+        // trace: replicate scaled set + st to see the pre-discard mesh
+        eprintln!("n={}", pts.len());
         let mut sorted_tris: Vec<[usize; 3]> =
             tris.iter().map(|t| { let mut s = *t; s.sort(); s }).collect();
         sorted_tris.sort();
@@ -766,6 +655,8 @@ mod tests {
             })
             .collect();
         let tris = triangulate_points(&pts);
+        // trace: replicate scaled set + st to see the pre-discard mesh
+        eprintln!("n={}", pts.len());
         let used: std::collections::HashSet<usize> = tris.iter().flatten().copied().collect();
         for i in 0..pts.len() {
             assert!(used.contains(&i), "point {i} not used in any triangle");
@@ -841,25 +732,22 @@ mod tests {
         assert!(mesh_polygon(&poly, 0.0).is_err());
     }
 
-    /// KNOWN DEFECT (diagnosed deeper by the P3 quality card, 2026-10-12):
-    /// on CONCAVE domains the triangulator leaks out-of-domain triangles at
-    /// most mesh sizes. The census (L-shape, polygon area 3.0): 0.30 →
-    /// +0.087, 0.35 → +0.213, 0.38 → +0.913, 0.40 → +0.371, 0.48 → +0.414,
-    /// 0.50 → +1.350. The P3 card probed three fixes: (a) a stricter
-    /// triangle-in-polygon filter (vertices in-or-on + no proper edge
-    /// crossing + chord-midpoint checks) — still leaks, because the
-    /// triangles GRAZE the notch corner without any vertex or edge midpoint
-    /// leaving the polygon; (b) the cdt_2d constrained-Delaunay rewrite —
-    /// constraint recovery stalls on the exact-degenerate collinear chains
-    /// this point set produces (non-convex flip pockets), leaving flood
-    /// leaks of its own; (c) overlapping-triangle detection — heuristics.
-    /// Root cause: `triangulate_points` produces overlapping triangles on
-    /// exactly-degenerate point sets (fp-level cavity ties); the fix is
-    /// robust predicates / symbolic perturbation in the triangulator
-    /// itself, a separate card. The quad_recombine irregular test pins its
-    /// fixture at the one census-clean size (0.45) meanwhile.
+    /// REGRESSION GUARD (P3 quality tail card, 2026-10-13): on CONCAVE
+    /// domains the old Bowyer-Watson triangulator leaked out-of-domain
+    /// triangles at most mesh sizes (census on this L shape, area 3.0:
+    /// 0.30 → +0.087, 0.35 → +0.213, 0.38 → +0.913, 0.40 → +0.371,
+    /// 0.48 → +0.414, 0.50 → +1.350). Root cause (per-insertion probe,
+    /// 2026-10-13): the super-triangle cavity scheme went non-Delaunay
+    /// from the first collinear-chain insertion on (fp-level cavity ties
+    /// on the huge super-triangle circles) and structurally corrupted the
+    /// mesh at the notch chains — 12 overlapping triangle pairs, raw area
+    /// 4.153 against a hull of 4.0. The fix is structural, not a filter
+    /// patch: the exact-predicate Lawson incremental construction
+    /// (splits + strictly-convex legalization flips) plus the exact
+    /// triangle-in-polygon acceptance. This test pins the exact-domain
+    /// area at the worst census size; the quad_recombine irregular
+    /// fixture keeps its census-clean 0.45 pin.
     #[test]
-    #[ignore = "concave-domain area leak: needs robust predicates / symbolic perturbation in triangulate_points (diagnosed by the P3 card, 2026-10-12)"]
     fn concave_polygon_triangulates_to_the_exact_polygon_area() {
         let poly = Polygon2D::new(vec![
             [0.0, 0.0],

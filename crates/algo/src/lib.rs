@@ -5,6 +5,10 @@ pub use rmsh_io::{MshError, parse_msh};
 pub mod triangulate2d;
 pub use triangulate2d::{MeshError, Polygon2D, mesh_polygon, triangulate_points};
 
+/// Robust adaptive-exact geometric predicates (internal machinery of the 2-D
+/// Delaunay codes).
+pub(crate) mod predicates;
+
 pub(crate) mod planar_meshing;
 
 /// Constrained Delaunay triangulation with incremental insertion (internal
