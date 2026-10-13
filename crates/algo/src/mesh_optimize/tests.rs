@@ -662,19 +662,23 @@ after(min={:.3}, p95={:.3}, sliver={:.4}, n={}) stats={stats:?}",
             "charter gate: min dihedral {:.3} < 5",
             after.min_dihedral_deg
         );
-        // p95 radius-edge improves sharply (measured 20.629 -> 6.107), but
-        // the 2.0 charter gate is NOT met by the v1 op set: the residual is
-        // the corner-diagonal spindle family (long edges, nearly cospherical
-        // nodes over the cube-face diagonals), which no union-preserving
-        // local operation of this card can repair. Reported to the main
-        // line; pinned here as the no-degradation + measured band.
+        // p95 radius-edge improves sharply (measured 20.629 -> 6.107). The
+        // 2.0 charter gate resolves to the PER-FAMILY BASELINE decision
+        // (P3-tail spindle card, 2026-10-13): the residual is the corner-
+        // diagonal spindle family — the probe showed 18 of 74 tets above
+        // radius-edge 3.0, every one anchored on a frozen corner-to-corner
+        // face diagonal of the input surface contract (worst 10.17
+        // spanning (0,0,0)-(1,1,0)) — structural for quad-surface-bounded
+        // boxes, unreachable for any union-preserving local operation set.
+        // The module docs carry the decision and the multi-flip long-term
+        // path; this pin IS the box family's corpus baseline.
         assert!(
             after.p95_radius_edge <= before.p95_radius_edge,
             "box: p95 radius-edge must not degrade"
         );
         assert!(
             (after.p95_radius_edge - 6.107).abs() < 0.05,
-            "box: pinned p95 drifted to {}",
+            "box family baseline drifted to {}",
             after.p95_radius_edge
         );
         // Slivers eliminated.
@@ -698,3 +702,4 @@ after(min={:.3}, p95={:.3}, sliver={:.4}, n={}) stats={stats:?}",
         assert!((after.p95_radius_edge - 1204.910).abs() < 1.0);
         assert!(after.sliver_fraction <= before.sliver_fraction);
     }
+

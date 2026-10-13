@@ -95,6 +95,34 @@
 //!   [`MeshAlgoError::InvalidInput`]; surface-conforming refinement belongs
 //!   to a future refinement card.
 //!
+//! # The corner-diagonal spindle family (per-family quality baseline)
+//!
+//! The charter `p95 radius-edge <= 2.0` gate is NOT met on the unit-box
+//! fixture (measured 6.107 after optimization, 2026-10-13) — by DECISION,
+//! not by omission (the P3-tail spindle card, 2026-10-13). The probe of
+//! the optimized box shows the residual concentrated in the corner-
+//! diagonal spindle family: 18 of 74 tets score radius-edge > 3.0, every
+//! one of them anchored on a corner-to-corner FACE DIAGONAL of the input
+//! surface (worst 10.17 spanning (0,0,0)-(1,1,0), lmax 1.414 against
+//! lmin 0.20). Those diagonals are part of the box faces' internal
+//! triangulation — the input surface contract (Quad4 elements whose
+//! internal triangulation must conform with the volume mesh's boundary
+//! triangles) freezes every boundary edge, and a union-preserving local
+//! operation set (collapse / 2-3 / 3-2 / relocation) cannot remove a
+//! frozen edge. The residual is therefore STRUCTURAL for quad-surface-
+//! bounded boxes, not an optimizer deficiency.
+//!
+//! Resolution: per-family baseline, the form the charter itself sanctions
+//! (the charter quality gate reads "p95 radius-edge <= 2.0 ... pinned into
+//! the corpus per scenario family"). The box family's baseline is the
+//! measured 6.107 (pinned ±0.05 in the fixture test) with the charter's
+//! OTHER gates holding (min dihedral 20.6 >= 5, slivers 0). The upgrade
+//! path if a consumer needs sub-6 p95 on boxes is composite multi-flip
+//! machinery — 4-4 and 5-6 flips retetrahedralizing a boundary-edge pocket
+//! in several bistellar steps, or annealing acceptance over flip
+//! sequences — the same honestly-documented long-term pattern as the HXT
+//! full parallel insertion path in `crate::hxt_3d`. Not scheduled for v1.
+//!
 //! # Driver
 //!
 //! [`MeshQualityOptimizer::optimize_with_params`] runs rounds of
