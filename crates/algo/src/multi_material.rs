@@ -1621,4 +1621,166 @@ mod tests {
         assert_eq!(vols.len(), 1);
         assert!((vols[0] - 1.0).abs() < 1e-9);
     }
+
+    /// The U-shaped (horseshoe) prism outer surface: the non-convex outer
+    /// fixture for the v2 enclosure tightening. Outline (CCW):
+    /// (0,0),(1,0),(2,0),(3,0),(3,3),(2,3),(2,1),(1,1),(1,3),(0,3);
+    /// extruded z in [0,1]. The slot is x in (1,2), y > 1.
+    fn u_outer_surface() -> Mesh {
+        let outline: Vec<[f64; 2]> = vec![
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [3.0, 0.0],
+            [3.0, 3.0],
+            [2.0, 3.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 3.0],
+            [0.0, 3.0],
+        ];
+        let mut m = Mesh::new();
+        // 20 distinct nodes: outline vertex i at z=0 -> id 2i+1, z=1 -> id
+        // 2i+2 (shared verbatim by every incident face)
+        for (i, p) in outline.iter().enumerate() {
+            m.add_node(Node::new(2 * i as u64 + 1, p[0], p[1], 0.0));
+            m.add_node(Node::new(2 * i as u64 + 2, p[0], p[1], 1.0));
+        }
+        let lo = |i: usize| 2 * i as u64 + 1;
+        let hi = |i: usize| 2 * i as u64 + 2;
+        let mut eid = 1u64;
+        let mut tri = |m: &mut Mesh, eid: &mut u64, a: u64, b: u64, c: u64| {
+            m.add_element(Element::new(*eid, ElementType::Triangle3, vec![a, b, c]));
+            *eid += 1;
+        };
+        // The U decagon triangulates as three pieces (arm A pentagon, bar
+        // quad, arm C pentagon) whose internal edges are shared
+        // back-to-back with the neighbor piece — the oriented-closure check
+        // demands each undirected edge exactly once per direction.
+        //
+        // arm A pentagon: v0,v1,v7,v8,v9 (CCW from above)
+        // bar quad: v1,v2,v6,v7 ; arm C pentagon: v2,v3,v4,v5,v6
+        //
+        // front z=0 (outward -z: CW from above = reversed rings, fan from
+        // the first ring vertex)
+        let a_cw = [0usize, 9, 8, 7, 1];
+        let bar_cw = [1usize, 7, 6, 2];
+        let c_cw = [2usize, 6, 5, 4, 3];
+        for ring in [&a_cw[..], &bar_cw[..], &c_cw[..]] {
+            let k = ring.len();
+            for s in 1..(k - 1) {
+                tri(
+                    &mut m,
+                    &mut eid,
+                    lo(ring[0]),
+                    lo(ring[s]),
+                    lo(ring[s + 1]),
+                );
+            }
+        }
+        // back z=1 (outward +z: CCW from above)
+        let a_ccw = [0usize, 1, 7, 8, 9];
+        let bar_ccw = [1usize, 2, 6, 7];
+        let c_ccw = [2usize, 3, 4, 5, 6];
+        for ring in [&a_ccw[..], &bar_ccw[..], &c_ccw[..]] {
+            let k = ring.len();
+            for s in 1..(k - 1) {
+                tri(
+                    &mut m,
+                    &mut eid,
+                    hi(ring[0]),
+                    hi(ring[s]),
+                    hi(ring[s + 1]),
+                );
+            }
+        }
+        // side quads along the CCW outline (outward = (dir x +z)): quad
+        // (lo_i, lo_j, hi_j, hi_i), fan (lo_i, lo_j, hi_j) + (lo_i, hi_j,
+        // hi_i)
+        let n = outline.len();
+        for i in 0..n {
+            let j = (i + 1) % n;
+            tri(&mut m, &mut eid, lo(i), lo(j), hi(j));
+            tri(&mut m, &mut eid, lo(i), hi(j), hi(i));
+        }
+        m
+    }
+
+    /// A tetrahedron whose four nodes all sit inside the U arms but whose
+    /// faces bridge across the slot: the documented v1 blind spot (node
+    /// parity cannot see it) — the v2 surface-piercing layer must refuse.
+    fn slot_bridging_tet() -> Mesh {
+        let mut m = Mesh::new();
+        for (id, p) in [
+            (1, [0.5, 1.5, 0.5]),
+            (2, [0.5, 1.5, 0.9]),
+            (3, [2.5, 1.6, 0.5]),
+            (4, [2.5, 1.4, 0.9]),
+        ] {
+            m.add_node(Node::new(id, p[0], p[1], p[2]));
+        }
+        // outward-wound (verified by hand against the 4th-vertex side)
+        for tri_nodes in [
+            vec![1, 3, 2],
+            vec![1, 2, 4],
+            vec![2, 3, 4],
+            vec![1, 4, 3],
+        ] {
+            m.add_element(Element::new(
+                m.elements.len() as u64 + 1,
+                ElementType::Triangle3,
+                tri_nodes,
+            ));
+        }
+        m
+    }
+
+    #[test]
+    fn u_shape_piercing_inner_with_inside_nodes_is_refused() {
+        let outer = u_outer_surface();
+        let inner = slot_bridging_tet();
+        let err = tetrahedralize_multi_material(&outer, &[inner])
+            .expect_err("a slot-bridging inner tet must be refused");
+        match &err {
+            MultiMaterialError::Enclosure { index, reason } => {
+                assert_eq!(*index, 0);
+                assert!(
+                    reason.contains("pierces the outer surface"),
+                    "got: {reason}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn u_shape_inner_fully_in_one_arm_passes_validation() {
+        let outer = u_outer_surface();
+        // the same tet squeezed into arm A (x in [0.3, 0.8])
+        let mut inner = Mesh::new();
+        for (id, p) in [
+            (1, [0.3, 1.5, 0.5]),
+            (2, [0.3, 1.5, 0.9]),
+            (3, [0.8, 1.6, 0.5]),
+            (4, [0.8, 1.4, 0.9]),
+        ] {
+            inner.add_node(Node::new(id, p[0], p[1], p[2]));
+        }
+        for tri_nodes in [
+            vec![1, 3, 2],
+            vec![1, 2, 4],
+            vec![2, 3, 4],
+            vec![1, 4, 3],
+        ] {
+            inner.add_element(Element::new(
+                inner.elements.len() as u64 + 1,
+                ElementType::Triangle3,
+                tri_nodes,
+            ));
+        }
+        // validation passes (the carve itself may route to either path)
+        let _ = tetrahedralize_multi_material(&outer, &[inner]).expect(
+            "an arm-contained inner tet passes the enclosure layers",
+        );
+    }
 }
