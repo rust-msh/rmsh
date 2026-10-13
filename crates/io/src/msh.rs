@@ -132,6 +132,9 @@ pub fn write_msh_v4<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), MshErro
     writeln!(writer, "$EndMeshFormat")?;
     write_physical_names(writer, mesh)?;
     write_entities_v4(writer, &declared_entities(mesh, &elements))?;
+    if let Some(info) = &mesh.partitioned {
+        crate::msh_partitioned::write_partitioned_v4(writer, info)?;
+    }
 
     writeln!(writer, "$Nodes")?;
     if nodes.is_empty() {
@@ -199,6 +202,9 @@ pub fn write_msh_v4<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), MshErro
         }
     }
     writeln!(writer, "$EndElements")?;
+    if let Some(info) = &mesh.partitioned {
+        crate::msh_partitioned::write_ghost_elements_v4(writer, &info.ghost_elements)?;
+    }
 
     // Gmsh writes $Periodic after $Elements; empty links emit nothing.
     crate::msh_periodic::write_periodic_v4(writer, &mesh.periodic)?;
@@ -298,6 +304,51 @@ pub fn parse_msh<R: BufRead>(reader: R) -> Result<Mesh, MshError> {
                     MshVersion::V2 => crate::msh_periodic::parse_periodic_v2(&mut src)?,
                     MshVersion::V4 => crate::msh_periodic::parse_periodic_v4(&mut src)?,
                 };
+            }
+            "$PartitionedEntities" if version == MshVersion::V4 => {
+                let mut section = Vec::new();
+                loop {
+                    let l = next_line(&mut lines, &mut line_num)?;
+                    if l.trim() == "$EndPartitionedEntities" {
+                        break;
+                    }
+                    section.push(l);
+                }
+                let refs: Vec<&str> = section.iter().map(|s| s.as_str()).collect();
+                let mut info = crate::msh_partitioned::parse_partitioned_v4_ascii(
+                    &refs,
+                    line_num,
+                )?;
+                info.ghost_elements = mesh
+                    .partitioned
+                    .take()
+                    .map(|p| p.ghost_elements)
+                    .unwrap_or_default();
+                mesh.partitioned = Some(info);
+            }
+            "$GhostElements" if version == MshVersion::V4 => {
+                let mut section = Vec::new();
+                loop {
+                    let l = next_line(&mut lines, &mut line_num)?;
+                    if l.trim() == "$EndGhostElements" {
+                        break;
+                    }
+                    section.push(l);
+                }
+                let refs: Vec<&str> = section.iter().map(|s| s.as_str()).collect();
+                let cells = crate::msh_partitioned::parse_ghost_elements_v4_ascii(
+                    &refs,
+                    line_num,
+                )?;
+                match mesh.partitioned.as_mut() {
+                    Some(info) => info.ghost_elements = cells,
+                    None => {
+                        return Err(MshError::Parse {
+                            line: line_num,
+                            message: "$GhostElements without $PartitionedEntities".into(),
+                        })
+                    }
+                }
             }
             _ => {
                 if trimmed.starts_with('$') && !trimmed.starts_with("$End") {
@@ -1687,6 +1738,9 @@ pub fn write_msh_v4_binary<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), 
     writeln!(writer, "$EndMeshFormat")?;
     write_physical_names(writer, mesh)?;
     write_entities_v4_binary(writer, &declared_entities(mesh, &elements))?;
+    if let Some(info) = &mesh.partitioned {
+        crate::msh_partitioned::write_partitioned_v4_binary(writer, info)?;
+    }
 
     writeln!(writer, "$Nodes")?;
     if nodes.is_empty() {
@@ -1749,6 +1803,9 @@ pub fn write_msh_v4_binary<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), 
         }
     }
     writeln!(writer, "$EndElements")?;
+    if let Some(info) = &mesh.partitioned {
+        crate::msh_partitioned::write_ghost_elements_v4_binary(writer, &info.ghost_elements)?;
+    }
 
     // Gmsh writes $Periodic after $Elements; empty links emit nothing.
     crate::msh_periodic::write_periodic_v4_binary(writer, &mesh.periodic)?;
@@ -1900,6 +1957,36 @@ fn parse_msh_v4_binary(bytes: &[u8]) -> Result<Mesh, MshError> {
                 // hit raw binary). The content is discarded.
                 crate::msh_periodic::skip_entities_v4_binary(bytes, &mut pos)?;
                 bin_expect_marker(bytes, &mut pos, "$EndEntities")?;
+            }
+            "$PartitionedEntities" => {
+                // The partition decomposition is RETAINED (unlike the
+                // discarded $Entities payload): the retained records are
+                // what the v4 writers re-emit for the round trip.
+                let mut info = crate::msh_partitioned::parse_partitioned_v4_binary(
+                    bytes,
+                    &mut pos,
+                )?;
+                info.ghost_elements = mesh
+                    .partitioned
+                    .take()
+                    .map(|p| p.ghost_elements)
+                    .unwrap_or_default();
+                mesh.partitioned = Some(info);
+                bin_expect_marker(bytes, &mut pos, "$EndPartitionedEntities")?;
+            }
+            "$GhostElements" => {
+                let cells =
+                    crate::msh_partitioned::parse_ghost_elements_v4_binary(bytes, &mut pos)?;
+                match mesh.partitioned.as_mut() {
+                    Some(info) => info.ghost_elements = cells,
+                    None => {
+                        return Err(MshError::Parse {
+                            line: 0,
+                            message: "$GhostElements without $PartitionedEntities".into(),
+                        })
+                    }
+                }
+                bin_expect_marker(bytes, &mut pos, "$EndGhostElements")?;
             }
             _ if line.starts_with('$') && !line.starts_with("$End") => {
                 let end_tag = format!("$End{}", &line[1..]);

@@ -119,10 +119,22 @@ rcad → rmsh）。分层裁定（布尔不进 rmsh、曲率/特征查询挂 tra
   →getNodes/getElements→msh 往返→STEP 导出重导入（发现并钉住
   rcad-step 读侧球面裁剪缺陷，见交接缺陷账）→2D 三角→选项/logger。
   workspace 375/0/0（py 0 测 + e2e 脚本，运行方式见 e2e.py 头注）
-- [ ] **$Partitioned 分区语义**（用户裁定需要）：对齐 Gmsh MSH 4.1
-  的 $PartitionedEntities（numPartitions / ghost / parent /
-  partitions 四路读写，真 Gmsh METIS 分区夹具探针实证），
-  四 flavor 完整往返。验收 = 分区网格互操作闭环
+- [x] **$Partitioned 分区语义**（✅ 2026-10-13，用户裁定需要）：模型层
+  `PartitionInfo`（num_partitions + 分区实体[dim/tag/parent/partitions/
+  bbox/physical/bounding] + ghost 实体 + ghost 单元）serde 保留；io 读侧
+  `$PartitionedEntities`/`$GhostElements` ASCII token 流 + 二进制双路
+  解析、写侧按保留记录重发（分区节位于自生成 $Entities 后、
+  $GhostElements 位于 $Elements 后——真 Gmsh 写序）。布局权威 =
+  GModelIO_MSH4.cpp 分区读/写臂 + 本机 Gmsh 4.14 METIS 真夹具
+  （3 分区 box，testdata/partitioned_cube_v4a/v4b.msh）：**实证纠偏两处**
+  ——顶点记录无 bounding 数量字段（dim>0 才有），bounding 全维度 =
+  数量 + 带符号单值（二进制并非源码 facade 的 (tag,orientation) 对，
+  实证优先）；顶点 parentDim 可为 1/2（分区边界点挂在曲线/面上）。
+  交叉验证：ASCII/二进制真夹具字段精确解析（67 实体/3 分区/654 ghost
+  cells）+ 双 flavor 四向往返字段精确 + py 透传（open→write v4）+
+  Gmsh 4.14 读回零错误。v2 保真线：MSH 2.2 无分区节（Gmsh 自身按
+  分分区文件拆分），v2 写侧丢弃分区数据已钉。验收 = 分区网格互操作
+  闭环 ✅
 - [ ] **VTK/VTU 互操作**（归属裁定：放 rmsh）：格式层是 meshio
   形态的本职；宪章依赖方向恒 rcad → rmsh，VTK 读写只需 rmsh-model
   （核心四库零 rcad 依赖不破）；放 rcad-io 则 rmsh 独立产品永远缺

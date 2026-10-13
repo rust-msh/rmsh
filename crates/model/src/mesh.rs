@@ -37,6 +37,11 @@ pub struct Mesh {
     /// (the serde default keeps older serialized meshes loading unchanged).
     #[serde(default)]
     pub periodic: Vec<PeriodicLink>,
+    /// The retained `$PartitionedEntities` + `$GhostElements` content.
+    /// `None` unless the file was partitioned (the serde default keeps
+    /// older serialized meshes loading unchanged).
+    #[serde(default)]
+    pub partitioned: Option<crate::partition::PartitionInfo>,
 }
 
 impl Mesh {

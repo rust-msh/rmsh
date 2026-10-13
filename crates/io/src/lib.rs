@@ -1,4 +1,5 @@
 mod msh;
+mod msh_partitioned;
 mod msh_periodic;
 #[cfg(feature = "step")]
 mod step;

@@ -1,10 +1,12 @@
 pub mod element;
 pub mod mesh;
+pub mod partition;
 pub mod node;
 pub mod topology;
 
 pub use element::{Element, ElementType, gmsh_node_count};
 pub use mesh::{Mesh, PeriodicLink};
+pub use partition::{GhostElement, GhostEntity, PartitionInfo, PartitionedEntity};
 pub use node::Node;
 pub use topology::{GEdge, GFace, GModel, GRegion, GSelection, GVertex};
 
