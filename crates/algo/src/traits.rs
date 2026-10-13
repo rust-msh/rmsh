@@ -13,14 +13,15 @@
 //!
 //! # Usage pattern
 //!
-//! ```rust,ignore
-//! use rmsh_algo::traits::{Mesher2D, MeshParams, Domain2D};
-//! use rmsh_algo::frontal_delaunay_2d::FrontalDelaunay2D;
+//! ```
+//! use rmsh_algo::traits::{Domain2D, MeshParams, Mesher2D};
+//! use rmsh_algo::FrontalDelaunay2D;
 //!
 //! let mesher = FrontalDelaunay2D::default();
 //! let domain = Domain2D::from_outer(vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
 //! let params = MeshParams::with_size(0.2);
-//! let mesh = mesher.mesh_2d(&domain, &params)?;
+//! let mesh = mesher.mesh_2d(&domain, &params).expect("planar domain meshes");
+//! assert!(!mesh.elements.is_empty());
 //! ```
 
 use rmsh_model::Mesh;

@@ -1491,8 +1491,12 @@ Mesh.Algorithm = 6;
         Domain2D::from_outer(square_ring(5.0, segs)).with_hole(circle_ring(1.0, n_circle, true))
     }
 
+    // Runs in the default flow (2026-10-13, the last two workspace
+    // ignores retired): the local real Gmsh 4.14 is the acceptance oracle
+    // (GMSH_EXE override or C:/tools/gmsh-4.14.0-Windows64), and the test
+    // FAILS HONESTLY when the CLI is absent - it never silently skips.
+    // Artifacts regenerate out-of-repo (D:/tmp/rmsh-p3a).
     #[test]
-    #[ignore = "requires the local Gmsh 4.14 CLI (GMSH_EXE or C:/tools/gmsh-4.14.0-Windows64); regenerates the pinned acceptance constants out-of-repo (D:/tmp/rmsh-p3a)"]
     fn gmsh_cli_uniform_radius_edge_closed_loop() {
         let lc = 0.5;
         let gmsh_msh = std::path::PathBuf::from("D:/tmp/rmsh-p3a/uniform_plate_gmsh.msh");
@@ -1581,8 +1585,10 @@ Mesh.Algorithm = 6;
         )
     }
 
+    // Runs in the default flow like the uniform pin (2026-10-13): the
+    // graded-field acceptance oracle needs the local Gmsh 4.14 CLI
+    // (GMSH_EXE or the default install path); absence fails the test.
     #[test]
-    #[ignore = "requires the local Gmsh 4.14 CLI; graded-field comparison on the matched Threshold field (second P3 acceptance pin)"]
     fn gmsh_cli_graded_field_comparison() {
         let gmsh_msh = std::path::PathBuf::from("D:/tmp/rmsh-p3a/graded_plate_gmsh.msh");
         run_gmsh(&graded_plate_geo(), &gmsh_msh).expect("gmsh run failed");
