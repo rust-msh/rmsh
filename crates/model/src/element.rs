@@ -19,6 +19,50 @@ pub enum ElementType {
     Pyramid5,
     /// 1-node point
     Point1,
+    // ── Semantic high-order variants (Gmsh MSH type ids in parentheses;
+    // orders 2-3, the charter's high-order business line). Read back from
+    // MSH by [`ElementType::from_gmsh_type_id`], written by
+    // [`ElementType::to_gmsh_type_id`]. ──
+    /// 3-node quadratic line (type 8)
+    Line3,
+    /// 4-node cubic line (type 26)
+    Line4,
+    /// 6-node quadratic triangle (type 9)
+    Triangle6,
+    /// 9-node cubic triangle, Gmsh incomplete variant (type 20)
+    Triangle9,
+    /// 10-node cubic triangle, complete (type 21)
+    Triangle10,
+    /// 8-node quadratic quadrilateral, Gmsh incomplete/serendipity variant (type 16)
+    Quad8,
+    /// 9-node quadratic quadrilateral, complete (type 10)
+    Quad9,
+    /// 12-node cubic quadrilateral, Gmsh incomplete/serendipity variant (type 39)
+    Quad12,
+    /// 16-node cubic quadrilateral, complete (type 36)
+    Quad16,
+    /// 10-node quadratic tetrahedron (type 11)
+    Tetrahedron10,
+    /// 20-node cubic tetrahedron (type 29)
+    Tetrahedron20,
+    /// 20-node quadratic hexahedron, Gmsh incomplete/serendipity variant (type 17)
+    Hexahedron20,
+    /// 27-node quadratic hexahedron, complete (type 12)
+    Hexahedron27,
+    /// 64-node cubic hexahedron, complete (type 92)
+    Hexahedron64,
+    /// 15-node quadratic prism, Gmsh incomplete/serendipity variant (type 18)
+    Prism15,
+    /// 18-node quadratic prism, complete (type 13)
+    Prism18,
+    /// 40-node cubic prism, complete (type 90)
+    Prism40,
+    /// 13-node quadratic pyramid, Gmsh incomplete variant (type 19)
+    Pyramid13,
+    /// 14-node quadratic pyramid, complete (type 14)
+    Pyramid14,
+    /// 30-node cubic pyramid (type 118)
+    Pyramid30,
     /// Unknown / unsupported type
     Unknown(i32),
 }
@@ -230,7 +274,9 @@ const PYRAMID5_FACES: &[&[usize]] = &[
 ];
 
 impl ElementType {
-    /// Convert from Gmsh element type ID (MSH v4 format).
+    /// Convert from Gmsh element type ID (MSH v4 format). The order 2-3
+    /// types load as their semantic variants; every other listed id keeps
+    /// the [`ElementType::Unknown`] fidelity form.
     pub fn from_gmsh_type_id(id: i32) -> Self {
         match id {
             15 => ElementType::Point1,
@@ -241,80 +287,145 @@ impl ElementType {
             5 => ElementType::Hexahedron8,
             6 => ElementType::Prism6,
             7 => ElementType::Pyramid5,
+            // Semantic high-order set (order 2-3).
+            8 => ElementType::Line3,
+            26 => ElementType::Line4,
+            9 => ElementType::Triangle6,
+            20 => ElementType::Triangle9,
+            21 => ElementType::Triangle10,
+            16 => ElementType::Quad8,
+            10 => ElementType::Quad9,
+            39 => ElementType::Quad12,
+            36 => ElementType::Quad16,
+            11 => ElementType::Tetrahedron10,
+            29 => ElementType::Tetrahedron20,
+            17 => ElementType::Hexahedron20,
+            12 => ElementType::Hexahedron27,
+            92 => ElementType::Hexahedron64,
+            18 => ElementType::Prism15,
+            13 => ElementType::Prism18,
+            90 => ElementType::Prism40,
+            19 => ElementType::Pyramid13,
+            14 => ElementType::Pyramid14,
+            118 => ElementType::Pyramid30,
             _ => ElementType::Unknown(id),
         }
     }
 
-    /// Number of nodes for this element type. High-order types loaded as
-    /// [`ElementType::Unknown`] resolve through the verified Gmsh table;
-    /// genuinely unknown ids report 0 (callers treat 0 as "not validated").
+    /// Gmsh MSH type id of this element type; `None` only for an
+    /// [`ElementType::Unknown`] whose id is absent from the verified
+    /// node-count table (such an id has no valid Gmsh element mapping).
+    pub fn to_gmsh_type_id(&self) -> Option<i32> {
+        match self {
+            ElementType::Point1 => Some(15),
+            ElementType::Line2 => Some(1),
+            ElementType::Triangle3 => Some(2),
+            ElementType::Quad4 => Some(3),
+            ElementType::Tetrahedron4 => Some(4),
+            ElementType::Hexahedron8 => Some(5),
+            ElementType::Prism6 => Some(6),
+            ElementType::Pyramid5 => Some(7),
+            ElementType::Line3 => Some(8),
+            ElementType::Line4 => Some(26),
+            ElementType::Triangle6 => Some(9),
+            ElementType::Triangle9 => Some(20),
+            ElementType::Triangle10 => Some(21),
+            ElementType::Quad8 => Some(16),
+            ElementType::Quad9 => Some(10),
+            ElementType::Quad12 => Some(39),
+            ElementType::Quad16 => Some(36),
+            ElementType::Tetrahedron10 => Some(11),
+            ElementType::Tetrahedron20 => Some(29),
+            ElementType::Hexahedron20 => Some(17),
+            ElementType::Hexahedron27 => Some(12),
+            ElementType::Hexahedron64 => Some(92),
+            ElementType::Prism15 => Some(18),
+            ElementType::Prism18 => Some(13),
+            ElementType::Prism40 => Some(90),
+            ElementType::Pyramid13 => Some(19),
+            ElementType::Pyramid14 => Some(14),
+            ElementType::Pyramid30 => Some(118),
+            ElementType::Unknown(id) => {
+                if gmsh_node_count(*id).is_some() {
+                    Some(*id)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Number of nodes for this element type. Every type with a verified
+    /// Gmsh table entry (semantic variants included) resolves through the
+    /// table; genuinely unknown ids report 0 (callers treat 0 as "not
+    /// validated").
     pub fn node_count(&self) -> usize {
         match self {
-            ElementType::Point1 => 1,
-            ElementType::Line2 => 2,
-            ElementType::Triangle3 => 3,
-            ElementType::Quad4 => 4,
-            ElementType::Tetrahedron4 => 4,
-            ElementType::Hexahedron8 => 8,
-            ElementType::Prism6 => 6,
-            ElementType::Pyramid5 => 5,
             ElementType::Unknown(id) => gmsh_node_count(*id).unwrap_or(0),
+            other => other
+                .to_gmsh_type_id()
+                .and_then(gmsh_node_count)
+                .unwrap_or(0),
         }
     }
 
     /// Topological dimension of this element (0=point, 1=edge, 2=face, 3=volume).
     pub fn dimension(&self) -> u8 {
-        match self {
-            ElementType::Point1 => 0,
-            ElementType::Line2 => 1,
-            ElementType::Triangle3 | ElementType::Quad4 => 2,
-            ElementType::Tetrahedron4
-            | ElementType::Hexahedron8
-            | ElementType::Prism6
-            | ElementType::Pyramid5 => 3,
-            ElementType::Unknown(id) => gmsh_dimension_from_type_id(*id),
+        let id = match self {
+            ElementType::Unknown(id) => *id,
+            other => match other.to_gmsh_type_id() {
+                Some(id) => id,
+                None => return 0,
+            },
+        };
+        match family_from_gmsh_type_id(id) {
+            Some(ElementFamily::Point) => 0,
+            Some(ElementFamily::Line) => 1,
+            Some(ElementFamily::Triangle) | Some(ElementFamily::Quadrilateral) => 2,
+            Some(ElementFamily::Tetrahedron)
+            | Some(ElementFamily::Hexahedron)
+            | Some(ElementFamily::Prism)
+            | Some(ElementFamily::Pyramid) => 3,
+            None => 0,
         }
     }
 
     /// Return the faces of a volume element as arrays of local node indices.
     /// Each face is a slice of node indices (3 for triangular faces, 4 for quad faces).
     pub fn faces(&self) -> &[&[usize]] {
-        match self {
-            ElementType::Tetrahedron4 => TET4_FACES,
-            ElementType::Hexahedron8 => HEX8_FACES,
-            ElementType::Prism6 => PRISM6_FACES,
-            ElementType::Pyramid5 => PYRAMID5_FACES,
-            ElementType::Unknown(id) => match family_from_gmsh_type_id(*id) {
-                Some(ElementFamily::Tetrahedron) => TET4_FACES,
-                Some(ElementFamily::Hexahedron) => HEX8_FACES,
-                Some(ElementFamily::Prism) => PRISM6_FACES,
-                Some(ElementFamily::Pyramid) => PYRAMID5_FACES,
-                _ => &[],
+        let id = match self {
+            ElementType::Unknown(id) => *id,
+            other => match other.to_gmsh_type_id() {
+                Some(id) => id,
+                None => return &[],
             },
+        };
+        match family_from_gmsh_type_id(id) {
+            Some(ElementFamily::Tetrahedron) => TET4_FACES,
+            Some(ElementFamily::Hexahedron) => HEX8_FACES,
+            Some(ElementFamily::Prism) => PRISM6_FACES,
+            Some(ElementFamily::Pyramid) => PYRAMID5_FACES,
             _ => &[],
         }
     }
 
     /// Return the edges of an element as pairs of local node indices.
     pub fn edges(&self) -> &[[usize; 2]] {
-        match self {
-            ElementType::Line2 => LINE2_EDGES,
-            ElementType::Triangle3 => TRI3_EDGES,
-            ElementType::Quad4 => QUAD4_EDGES,
-            ElementType::Tetrahedron4 => TET4_EDGES,
-            ElementType::Hexahedron8 => HEX8_EDGES,
-            ElementType::Prism6 => PRISM6_EDGES,
-            ElementType::Pyramid5 => PYRAMID5_EDGES,
-            ElementType::Unknown(id) => match family_from_gmsh_type_id(*id) {
-                Some(ElementFamily::Line) => LINE2_EDGES,
-                Some(ElementFamily::Triangle) => TRI3_EDGES,
-                Some(ElementFamily::Quadrilateral) => QUAD4_EDGES,
-                Some(ElementFamily::Tetrahedron) => TET4_EDGES,
-                Some(ElementFamily::Hexahedron) => HEX8_EDGES,
-                Some(ElementFamily::Prism) => PRISM6_EDGES,
-                Some(ElementFamily::Pyramid) => PYRAMID5_EDGES,
-                _ => &[],
+        let id = match self {
+            ElementType::Unknown(id) => *id,
+            other => match other.to_gmsh_type_id() {
+                Some(id) => id,
+                None => return &[],
             },
+        };
+        match family_from_gmsh_type_id(id) {
+            Some(ElementFamily::Line) => LINE2_EDGES,
+            Some(ElementFamily::Triangle) => TRI3_EDGES,
+            Some(ElementFamily::Quadrilateral) => QUAD4_EDGES,
+            Some(ElementFamily::Tetrahedron) => TET4_EDGES,
+            Some(ElementFamily::Hexahedron) => HEX8_EDGES,
+            Some(ElementFamily::Prism) => PRISM6_EDGES,
+            Some(ElementFamily::Pyramid) => PYRAMID5_EDGES,
             _ => &[],
         }
     }
@@ -501,5 +612,146 @@ mod tests {
         // Pyramid: 5 nodes
         assert_eq!(ElementType::Pyramid5.node_count(), 5);
         assert_eq!(ElementType::Pyramid5.dimension(), 3);
+    }
+
+    // ── P5: semantic high-order variants (orders 2-3, Gmsh type ids pinned
+    // by the verified node-count table and the real-Gmsh probe) ──
+
+    /// The 20 semantic high-order variants with their Gmsh MSH type ids.
+    const HIGH_ORDER_SEMANTIC: &[(ElementType, i32)] = &[
+        (ElementType::Line3, 8),
+        (ElementType::Line4, 26),
+        (ElementType::Triangle6, 9),
+        (ElementType::Triangle9, 20),
+        (ElementType::Triangle10, 21),
+        (ElementType::Quad8, 16),
+        (ElementType::Quad9, 10),
+        (ElementType::Quad12, 39),
+        (ElementType::Quad16, 36),
+        (ElementType::Tetrahedron10, 11),
+        (ElementType::Tetrahedron20, 29),
+        (ElementType::Hexahedron20, 17),
+        (ElementType::Hexahedron27, 12),
+        (ElementType::Hexahedron64, 92),
+        (ElementType::Prism15, 18),
+        (ElementType::Prism18, 13),
+        (ElementType::Prism40, 90),
+        (ElementType::Pyramid13, 19),
+        (ElementType::Pyramid14, 14),
+        (ElementType::Pyramid30, 118),
+    ];
+
+    #[test]
+    fn high_order_semantic_ids_round_trip_bidirectionally() {
+        for (etype, id) in HIGH_ORDER_SEMANTIC {
+            let back = ElementType::from_gmsh_type_id(*id);
+            assert_eq!(
+                back, *etype,
+                "type {id} must read back as its semantic variant"
+            );
+            let id_back = back.to_gmsh_type_id();
+            assert_eq!(
+                id_back,
+                Some(*id),
+                "semantic variant {back:?} must map back to type {id}"
+            );
+            assert_ne!(*etype, ElementType::Unknown(*id));
+        }
+    }
+
+    #[test]
+    fn high_order_semantic_node_counts_match_the_gmsh_table() {
+        for (etype, id) in HIGH_ORDER_SEMANTIC {
+            let expected = super::gmsh_node_count(*id)
+                .unwrap_or_else(|| panic!("type {id} must be in the verified table"));
+            assert_eq!(
+                etype.node_count(),
+                expected,
+                "{etype:?} node count must match the verified Gmsh table"
+            );
+        }
+    }
+
+    #[test]
+    fn high_order_semantic_dimensions() {
+        assert_eq!(ElementType::Line3.dimension(), 1);
+        assert_eq!(ElementType::Line4.dimension(), 1);
+        assert_eq!(ElementType::Triangle6.dimension(), 2);
+        assert_eq!(ElementType::Triangle9.dimension(), 2);
+        assert_eq!(ElementType::Triangle10.dimension(), 2);
+        assert_eq!(ElementType::Quad8.dimension(), 2);
+        assert_eq!(ElementType::Quad9.dimension(), 2);
+        assert_eq!(ElementType::Quad12.dimension(), 2);
+        assert_eq!(ElementType::Quad16.dimension(), 2);
+        assert_eq!(ElementType::Tetrahedron10.dimension(), 3);
+        assert_eq!(ElementType::Tetrahedron20.dimension(), 3);
+        assert_eq!(ElementType::Hexahedron20.dimension(), 3);
+        assert_eq!(ElementType::Hexahedron27.dimension(), 3);
+        assert_eq!(ElementType::Hexahedron64.dimension(), 3);
+        assert_eq!(ElementType::Prism15.dimension(), 3);
+        assert_eq!(ElementType::Prism18.dimension(), 3);
+        assert_eq!(ElementType::Prism40.dimension(), 3);
+        assert_eq!(ElementType::Pyramid13.dimension(), 3);
+        assert_eq!(ElementType::Pyramid14.dimension(), 3);
+        assert_eq!(ElementType::Pyramid30.dimension(), 3);
+    }
+
+    #[test]
+    fn high_order_semantic_volume_families_expose_canonical_faces_and_edges() {
+        // Corner topology only (the established family-table convention):
+        // face/edge tables describe the linear skeleton used for adjacency.
+        assert_eq!(ElementType::Tetrahedron10.faces().len(), 4);
+        assert_eq!(ElementType::Tetrahedron10.edges().len(), 6);
+        assert_eq!(ElementType::Tetrahedron20.faces().len(), 4);
+        assert_eq!(ElementType::Tetrahedron20.edges().len(), 6);
+        assert_eq!(ElementType::Hexahedron20.faces().len(), 6);
+        assert_eq!(ElementType::Hexahedron20.edges().len(), 12);
+        assert_eq!(ElementType::Hexahedron27.faces().len(), 6);
+        assert_eq!(ElementType::Hexahedron27.edges().len(), 12);
+        assert_eq!(ElementType::Hexahedron64.faces().len(), 6);
+        assert_eq!(ElementType::Hexahedron64.edges().len(), 12);
+        assert_eq!(ElementType::Prism15.faces().len(), 5);
+        assert_eq!(ElementType::Prism15.edges().len(), 9);
+        assert_eq!(ElementType::Prism18.faces().len(), 5);
+        assert_eq!(ElementType::Prism18.edges().len(), 9);
+        assert_eq!(ElementType::Prism40.faces().len(), 5);
+        assert_eq!(ElementType::Prism40.edges().len(), 9);
+        assert_eq!(ElementType::Pyramid13.faces().len(), 5);
+        assert_eq!(ElementType::Pyramid13.edges().len(), 8);
+        assert_eq!(ElementType::Pyramid14.faces().len(), 5);
+        assert_eq!(ElementType::Pyramid14.edges().len(), 8);
+        assert_eq!(ElementType::Pyramid30.faces().len(), 5);
+        assert_eq!(ElementType::Pyramid30.edges().len(), 8);
+        // Surface families carry edge skeletons.
+        assert_eq!(ElementType::Triangle6.edges().len(), 3);
+        assert_eq!(ElementType::Triangle9.edges().len(), 3);
+        assert_eq!(ElementType::Triangle10.edges().len(), 3);
+        assert_eq!(ElementType::Quad8.edges().len(), 4);
+        assert_eq!(ElementType::Quad9.edges().len(), 4);
+        assert_eq!(ElementType::Quad12.edges().len(), 4);
+        assert_eq!(ElementType::Quad16.edges().len(), 4);
+        // Lines are their own skeleton.
+        assert_eq!(ElementType::Line3.edges().len(), 1);
+        assert_eq!(ElementType::Line4.edges().len(), 1);
+    }
+
+    #[test]
+    fn orders_outside_the_semantic_set_stay_unknown() {
+        // Order 4+ types keep the Unknown(id) fidelity form.
+        assert_eq!(ElementType::from_gmsh_type_id(22), ElementType::Unknown(22)); // Tri12, order 4
+        assert_eq!(ElementType::from_gmsh_type_id(30), ElementType::Unknown(30)); // Tet35, order 4
+        assert_eq!(ElementType::from_gmsh_type_id(31), ElementType::Unknown(31)); // Tet56, order 5
+        assert_eq!(ElementType::from_gmsh_type_id(93), ElementType::Unknown(93)); // Hex125, order 4
+        assert_eq!(ElementType::from_gmsh_type_id(91), ElementType::Unknown(91)); // Prism75, order 4
+        assert_eq!(ElementType::from_gmsh_type_id(119), ElementType::Unknown(119)); // Pyramid55, order 4
+        assert_eq!(ElementType::from_gmsh_type_id(27), ElementType::Unknown(27)); // Line5, order 4
+    }
+
+    #[test]
+    fn high_order_semantic_survives_serde_json_cycle() {
+        let etype = ElementType::Tetrahedron10;
+        let json = serde_json::to_string(&etype).expect("serialize");
+        let back: ElementType = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back, ElementType::Tetrahedron10);
     }
 }

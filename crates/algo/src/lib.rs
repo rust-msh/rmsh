@@ -135,3 +135,9 @@ pub use multi_material::{
     MATERIAL_TAG_OUTER, MultiMaterialError, region_volumes, tetrahedralize_multi_material,
     tetrahedralize_region,
 };
+
+/// Curved high-order element geometry (P5): probe-pinned Gmsh reference
+/// layouts, isoparametric maps, sampled Jacobian validity and the
+/// evaluation primitive behind the geometric-error contract.
+pub mod high_order;
+pub use high_order::{CurvedElement, reference_layout, supports_curved_mapping};

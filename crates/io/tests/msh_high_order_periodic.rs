@@ -1,11 +1,14 @@
-// P1 tranche 2: high-order element fidelity + $Periodic semantics.
+// P1 tranche 2 + P5 upgrade: high-order element semantics + $Periodic.
 //
 // Contracts pinned here (all layouts verified against real Gmsh 4.14 output
 // generated on this machine, see the layout comments in msh.rs / msh_periodic.rs):
 // - A mesh carrying high-order elements (Gmsh types 11 = Tet10, 16 = Quad8,
-//   8 = Line3) round trips field-exact through all four MSH flavors.
+//   8 = Line3) round trips field-exact through all four MSH flavors, and
+//   since the P5 semantic-variant card the loaded element types are the
+//   SEMANTIC variants (Tetrahedron10 / Quad8 / Line3), not Unknown(id).
 // - Node-count guards refuse known-type/wrong-count elements (v2 ASCII guard,
-//   v4 binary structural check, writer-side validate_mesh).
+//   v4 binary structural check, writer-side validate_mesh — the writer guard
+//   covers semantic high-order variants too).
 // - $Periodic links round trip field-exact through all four flavors; a
 //   periodic-free mesh stays byte-identical to its pre-feature output.
 
@@ -38,17 +41,17 @@ fn high_order_mesh() -> Mesh {
 
     let mut tet10 = Element::new(
         1,
-        ElementType::Unknown(11),
+        ElementType::Tetrahedron10,
         vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     );
     tet10.physical_tag = Some(21);
     mesh.add_element(tet10);
 
-    let mut quad8 = Element::new(2, ElementType::Unknown(16), vec![11, 12, 13, 14, 15, 16, 17, 18]);
+    let mut quad8 = Element::new(2, ElementType::Quad8, vec![11, 12, 13, 14, 15, 16, 17, 18]);
     quad8.physical_tag = Some(22);
     mesh.add_element(quad8);
 
-    let mut line3 = Element::new(3, ElementType::Unknown(8), vec![19, 20, 21]);
+    let mut line3 = Element::new(3, ElementType::Line3, vec![19, 20, 21]);
     line3.physical_tag = Some(23);
     mesh.add_element(line3);
 
@@ -63,17 +66,29 @@ fn assert_high_order_mesh_agrees(loaded: &Mesh) {
     elements.sort_by_key(|e| e.id);
 
     let tet10 = elements[0];
-    assert_eq!(tet10.etype, ElementType::Unknown(11), "Tet10 must stay type 11");
+    assert_eq!(
+        tet10.etype,
+        ElementType::Tetrahedron10,
+        "type 11 must load as the semantic Tetrahedron10 variant"
+    );
     assert_eq!(tet10.node_ids, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     assert_eq!(tet10.physical_tag, Some(21));
 
     let quad8 = elements[1];
-    assert_eq!(quad8.etype, ElementType::Unknown(16), "Quad8 must stay type 16");
+    assert_eq!(
+        quad8.etype,
+        ElementType::Quad8,
+        "type 16 must load as the semantic Quad8 variant"
+    );
     assert_eq!(quad8.node_ids, vec![11, 12, 13, 14, 15, 16, 17, 18]);
     assert_eq!(quad8.physical_tag, Some(22));
 
     let line3 = elements[2];
-    assert_eq!(line3.etype, ElementType::Unknown(8), "Line3 must stay type 8");
+    assert_eq!(
+        line3.etype,
+        ElementType::Line3,
+        "type 8 must load as the semantic Line3 variant"
+    );
     assert_eq!(line3.node_ids, vec![19, 20, 21]);
     assert_eq!(line3.physical_tag, Some(23));
 }
@@ -227,6 +242,81 @@ fn validate_mesh_refuses_mismatched_unknown_element_at_write() {
     assert!(
         message.contains("10 node(s)") && message.contains("9"),
         "the error must name the expected and actual node counts: {message}"
+    );
+}
+
+#[test]
+fn validate_mesh_refuses_mismatched_semantic_high_order_element_at_write() {
+    // The same guard covers the semantic variants: a Tetrahedron10 carrying
+    // only its 4 corner nodes must be refused at write time.
+    let mut mesh = Mesh::new();
+    for id in 1..=4u64 {
+        let c = id as f64;
+        mesh.add_node(Node::new(id, c, 0.0, 0.0));
+    }
+    mesh.add_element(Element::new(
+        1,
+        ElementType::Tetrahedron10,
+        vec![1, 2, 3, 4],
+    ));
+
+    let mut out = Vec::new();
+    let err = write_msh_v2(&mut out, &mesh).expect_err("semantic count mismatch must be refused");
+    let message = err.to_string();
+    assert!(
+        message.contains("10 node(s)") && message.contains("4"),
+        "the error must name the expected and actual node counts: {message}"
+    );
+}
+
+#[test]
+fn semantic_high_order_elements_write_their_gmsh_type_ids() {
+    // The writer must emit the Gmsh type number for semantic variants:
+    // Tetrahedron10 -> 11, Quad9 -> 10, Prism15 -> 18.
+    let mut mesh = Mesh::new();
+    for id in 1..=18u64 {
+        let c = id as f64;
+        mesh.add_node(Node::new(id, c, 0.0, 0.0));
+    }
+    mesh.add_element(Element::new(
+        1,
+        ElementType::Tetrahedron10,
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    ));
+    mesh.add_element(Element::new(
+        2,
+        ElementType::Quad9,
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
+    ));
+    mesh.add_element(Element::new(
+        3,
+        ElementType::Prism15,
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    ));
+
+    let mut out = Vec::new();
+    write_msh_v2(&mut out, &mesh).expect("write");
+    let text = String::from_utf8(out).expect("utf8");
+    let element_lines: Vec<&str> = text
+        .lines()
+        .skip_while(|l| *l != "$Elements")
+        .skip(2)
+        .take_while(|l| *l != "$EndElements")
+        .collect();
+    assert!(
+        element_lines[0].starts_with("1 11 "),
+        "Tetrahedron10 must write as type 11: {}",
+        element_lines[0]
+    );
+    assert!(
+        element_lines[1].starts_with("2 10 "),
+        "Quad9 must write as type 10: {}",
+        element_lines[1]
+    );
+    assert!(
+        element_lines[2].starts_with("3 18 "),
+        "Prism15 must write as type 18: {}",
+        element_lines[2]
     );
 }
 
@@ -464,4 +554,44 @@ fn parse_expect_err(data: &[u8]) -> MshError {
 
 fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+#[test]
+fn v4_writer_declares_entities_for_element_blocks() {
+    // The v4.1 element blocks reference (dim, tag) entities that must be
+    // declared in $Entities — Gmsh's element reader refuses undeclared
+    // entities (its node reader auto-creates, its element reader does not).
+    // Each entity carries itself as its single physical tag.
+    let mut mesh = high_order_mesh();
+    mesh.physical_names.insert((3, 21), "volume".to_string());
+
+    let mut out = Vec::new();
+    write_msh_v4(&mut out, &mesh).expect("v4 ascii write");
+    let text = String::from_utf8(out).expect("utf8");
+    let at = find_subslice(&text.as_bytes(), b"$Entities").expect("$Entities present");
+    let end = find_subslice(&text.as_bytes(), b"$EndEntities").expect("$EndEntities present");
+    let section = &text[at..end + 13];
+    let expected = "$Entities\n0 1 1 1\n\
+                    23 0 0 19 0 0 21 1 23 0\n\
+                    22 0 11 0 0 18 0 1 22 0\n\
+                    21 1 0 0 10 0 0 1 21 0\n\
+                    $EndEntities\n";
+    assert_eq!(section, expected, "the $Entities layout must be Gmsh-exact");
+
+    // The section must round trip: the reader skips it and keeps the
+    // tag-as-physical mapping.
+    let loaded = load_msh_from_bytes(text.as_bytes()).expect("v4 read with entities");
+    let mut elements: Vec<_> = loaded.elements.iter().collect();
+    elements.sort_by_key(|e| e.id);
+    assert_eq!(elements[0].physical_tag, Some(21));
+    assert_eq!(elements[0].etype, ElementType::Tetrahedron10);
+
+    let mut out = Vec::new();
+    write_msh_v4_binary(&mut out, &mesh).expect("v4 binary write");
+    let loaded = load_msh_from_bytes(&out).expect("v4 binary read with entities");
+    let mut elements: Vec<_> = loaded.elements.iter().collect();
+    elements.sort_by_key(|e| e.id);
+    assert_eq!(elements[0].physical_tag, Some(21));
+    assert_eq!(elements[0].etype, ElementType::Tetrahedron10);
+    assert_eq!(elements[2].etype, ElementType::Line3);
 }

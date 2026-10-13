@@ -131,6 +131,7 @@ pub fn write_msh_v4<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), MshErro
     writeln!(writer, "4.1 0 8")?;
     writeln!(writer, "$EndMeshFormat")?;
     write_physical_names(writer, mesh)?;
+    write_entities_v4(writer, &declared_entities(mesh, &elements))?;
 
     writeln!(writer, "$Nodes")?;
     if nodes.is_empty() {
@@ -615,24 +616,22 @@ fn next_line_raw<R: BufRead>(
 fn validate_mesh(mesh: &Mesh) -> Result<(), MshError> {
     for element in &mesh.elements {
         gmsh_type_id(element.etype)?;
-        // A high-order Unknown element must carry exactly the node count
-        // its Gmsh type number prescribes: a mismatch would write a file
-        // no reader can parse back.
-        if let ElementType::Unknown(id) = element.etype {
-            if let Some(expected) = rmsh_model::gmsh_node_count(id) {
-                if element.node_ids.len() != expected {
-                    return Err(MshError::Parse {
-                        line: 0,
-                        message: format!(
-                            "element {} declares Gmsh type {} ({} node(s)) but carries {} node id(s)",
-                            element.id,
-                            id,
-                            expected,
-                            element.node_ids.len()
-                        ),
-                    });
-                }
-            }
+        // An element whose Gmsh type prescribes a node count must carry
+        // exactly that many node ids — semantic high-order variants and
+        // Unknown(id) forms alike: a mismatch would write a file no reader
+        // can parse back.
+        let expected = element.etype.node_count();
+        if expected > 0 && element.node_ids.len() != expected {
+            return Err(MshError::Parse {
+                line: 0,
+                message: format!(
+                    "element {} declares type {:?} ({} node(s)) but carries {} node id(s)",
+                    element.id,
+                    element.etype,
+                    expected,
+                    element.node_ids.len()
+                ),
+            });
         }
         for node_id in &element.node_ids {
             if !mesh.nodes.contains_key(node_id) {
@@ -667,6 +666,108 @@ fn sorted_nodes(mesh: &Mesh) -> Vec<&rmsh_model::Node> {
     nodes
 }
 
+/// The entities a v4.1 file must declare: every (dimension, entity tag)
+/// pair the element blocks reference, with the bounding box of the tag's
+/// nodes. Gmsh's element reader refuses blocks whose entity was never
+/// declared in `$Entities` (its node reader auto-creates, its element
+/// reader does not — pinned in GModelIO_MSH4.cpp), so the writer must
+/// emit the section. Each entity carries itself as its single physical
+/// tag, matching the writer's tag-as-physical convention.
+fn declared_entities(
+    mesh: &Mesh,
+    elements: &[&rmsh_model::Element],
+) -> BTreeMap<(u8, i32), ([f64; 3], [f64; 3])> {
+    let mut out: BTreeMap<(u8, i32), ([f64; 3], [f64; 3])> = BTreeMap::new();
+    for element in elements {
+        let tag = element.physical_tag.unwrap_or(1);
+        let entry = out
+            .entry((element.dimension(), tag))
+            .or_insert(([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]));
+        for node_id in &element.node_ids {
+            if let Some(node) = mesh.nodes.get(node_id) {
+                let p = [
+                    node.position.x,
+                    node.position.y,
+                    node.position.z,
+                ];
+                for d in 0..3 {
+                    entry.0[d] = entry.0[d].min(p[d]);
+                    entry.1[d] = entry.1[d].max(p[d]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Write the v4.1 `$Entities` section (ASCII): the four class counts, then
+/// per class one record per entity. Points carry three coordinates; every
+/// other entity a six-value bounding box; each record closes with the
+/// single self-referencing physical tag and (dim > 0) an empty bounding
+/// list. Layout pinned against Gmsh 4.14's readMSH4EntityInfo.
+fn write_entities_v4(
+    writer: &mut impl Write,
+    entities: &BTreeMap<(u8, i32), ([f64; 3], [f64; 3])>,
+) -> Result<(), MshError> {
+    writeln!(writer, "$Entities")?;
+    let count = |d: u8| entities.keys().filter(|key| key.0 == d).count();
+    writeln!(
+        writer,
+        "{} {} {} {}",
+        count(0),
+        count(1),
+        count(2),
+        count(3)
+    )?;
+    for ((dim, tag), (min, max)) in entities {
+        if *dim == 0 {
+            writeln!(writer, "{} {} {} {} 1 {}", tag, min[0], min[1], min[2], tag)?;
+        } else {
+            writeln!(
+                writer,
+                "{} {} {} {} {} {} {} 1 {} 0",
+                tag, min[0], min[1], min[2], max[0], max[1], max[2], tag
+            )?;
+        }
+    }
+    writeln!(writer, "$EndEntities")?;
+    Ok(())
+}
+
+/// Binary form of [`write_entities_v4`]: u64 class counts, then per entity
+/// an i32 tag, 3 (points) or 6 (dim > 0) f64 box values, a u64 physical
+/// count with the i32 self tag, and for dim > 0 a u64 zero bounding count.
+fn write_entities_v4_binary(
+    writer: &mut impl Write,
+    entities: &BTreeMap<(u8, i32), ([f64; 3], [f64; 3])>,
+) -> Result<(), MshError> {
+    writeln!(writer, "$Entities")?;
+    let count = |d: u8| entities.keys().filter(|key| key.0 == d).count();
+    le_u64(writer, count(0) as u64)?;
+    le_u64(writer, count(1) as u64)?;
+    le_u64(writer, count(2) as u64)?;
+    le_u64(writer, count(3) as u64)?;
+    for ((dim, tag), (min, max)) in entities {
+        le_i32(writer, i32::from(*tag))?;
+        if *dim == 0 {
+            le_f64(writer, min[0])?;
+            le_f64(writer, min[1])?;
+            le_f64(writer, min[2])?;
+        } else {
+            for value in min.iter().chain(max.iter()) {
+                le_f64(writer, *value)?;
+            }
+        }
+        le_u64(writer, 1)?;
+        le_i32(writer, *tag)?;
+        if *dim > 0 {
+            le_u64(writer, 0)?;
+        }
+    }
+    writeln!(writer, "$EndEntities")?;
+    Ok(())
+}
+
 fn sorted_elements(mesh: &Mesh) -> Vec<&rmsh_model::Element> {
     let mut elements: Vec<_> = mesh.elements.iter().collect();
     elements.sort_by_key(|element| element.id);
@@ -674,23 +775,12 @@ fn sorted_elements(mesh: &Mesh) -> Vec<&rmsh_model::Element> {
 }
 
 fn gmsh_type_id(element_type: ElementType) -> Result<i32, MshError> {
-    match element_type {
-        ElementType::Point1 => Ok(15),
-        ElementType::Line2 => Ok(1),
-        ElementType::Triangle3 => Ok(2),
-        ElementType::Quad4 => Ok(3),
-        ElementType::Tetrahedron4 => Ok(4),
-        ElementType::Hexahedron8 => Ok(5),
-        ElementType::Prism6 => Ok(6),
-        ElementType::Pyramid5 => Ok(7),
-        // A high-order element loaded as Unknown(id) writes back as its
-        // Gmsh type number when the verified node-count table knows the
-        // id; a genuinely unknown id stays unsupported.
-        ElementType::Unknown(id) => match rmsh_model::gmsh_node_count(id) {
-            Some(_) => Ok(id),
-            None => Err(MshError::UnsupportedElementType(element_type)),
-        },
-    }
+    // The model layer owns the canonical type-id table (semantic variants
+    // and the Unknown fidelity form share one mapping); an id with no
+    // verified node-count entry has no valid Gmsh element mapping.
+    element_type
+        .to_gmsh_type_id()
+        .ok_or(MshError::UnsupportedElementType(element_type))
 }
 
 fn skip_to_marker(pos: &mut usize, bytes: &[u8], marker: &[u8]) {
@@ -1266,14 +1356,16 @@ $EndElements
 
     #[test]
     fn test_load_msh_from_bytes_binary_v2_preserves_unknown_high_order_elements() {
+        // Type 119 (Pyramid55, order 4) is outside the P5 semantic variant
+        // set: it must keep the Unknown(id) fidelity form.
         let mut data = Vec::<u8>::new();
         data.extend_from_slice(b"$MeshFormat\n2.2 1 8\n");
         data.extend_from_slice(&1_i32.to_le_bytes());
         data.extend_from_slice(&1.0f64.to_le_bytes());
         data.extend_from_slice(b"\n$EndMeshFormat\n");
 
-        data.extend_from_slice(b"$Nodes\n30\n");
-        for id in 1_i32..=30_i32 {
+        data.extend_from_slice(b"$Nodes\n55\n");
+        for id in 1_i32..=55_i32 {
             let coord = id as f64;
             data.extend_from_slice(&id.to_le_bytes());
             data.extend_from_slice(&coord.to_le_bytes());
@@ -1283,24 +1375,24 @@ $EndElements
         data.extend_from_slice(b"\n$EndNodes\n");
 
         data.extend_from_slice(b"$Elements\n1\n");
-        data.extend_from_slice(&118_i32.to_le_bytes());
+        data.extend_from_slice(&119_i32.to_le_bytes());
         data.extend_from_slice(&1_i32.to_le_bytes());
         data.extend_from_slice(&2_i32.to_le_bytes());
         data.extend_from_slice(&7_i32.to_le_bytes());
         data.extend_from_slice(&123_i32.to_le_bytes());
         data.extend_from_slice(&0_i32.to_le_bytes());
-        for node_id in 1_i32..=30_i32 {
+        for node_id in 1_i32..=55_i32 {
             data.extend_from_slice(&node_id.to_le_bytes());
         }
         data.extend_from_slice(b"$EndElements\n");
 
         let mesh = load_msh_from_bytes(&data)
             .expect("binary v2 unknown high-order element should be preserved");
-        assert_eq!(mesh.node_count(), 30);
+        assert_eq!(mesh.node_count(), 55);
         assert_eq!(mesh.element_count(), 1);
-        assert_eq!(mesh.elements[0].etype, rmsh_model::ElementType::Unknown(118));
+        assert_eq!(mesh.elements[0].etype, rmsh_model::ElementType::Unknown(119));
         assert_eq!(mesh.elements[0].physical_tag, Some(123));
-        assert_eq!(mesh.elements[0].node_ids.len(), 30);
+        assert_eq!(mesh.elements[0].node_ids.len(), 55);
     }
 
     #[test]
@@ -1594,6 +1686,7 @@ pub fn write_msh_v4_binary<W: Write>(writer: &mut W, mesh: &Mesh) -> Result<(), 
     writeln!(writer)?;
     writeln!(writer, "$EndMeshFormat")?;
     write_physical_names(writer, mesh)?;
+    write_entities_v4_binary(writer, &declared_entities(mesh, &elements))?;
 
     writeln!(writer, "$Nodes")?;
     if nodes.is_empty() {

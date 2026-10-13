@@ -74,8 +74,22 @@ rcad → rmsh）。分层裁定（布尔不进 rmsh、曲率/特征查询挂 tra
 - [x] HXT 并行化（rayon）（`819718b`：图着色[6 色 box 实测钉]节点独立 + rayon 并行评估/串行升序确定性提交[任意线程数 bit-identical 钉] + 并行质量度量[to_bits 等价串行] + num_threads 生效 + 线程观测仪器化[强制 4 线程 size==4 钉]；box p95 并行反超串行 13%；全量并行插入[Hilbert/CAS]入档长期路径）
 - 验收：fTetWild benchmark 子集成功率 ≥ 95%；质量门全过线；边界层案例零碰撞
 
-### P5 — 高阶与重网格
-- [ ] 高阶弯曲单元（valid GE 映射，几何误差 ≤ 容差）
+### P5 — 高阶与重网格（✅ 关闭，2026-10-13）
+- [x] 高阶弯曲单元（模型层 20 个 2-3 阶语义变体 + 规范双向 Gmsh id 映射
+  `to_gmsh_type_id`/`from_gmsh_type_id`；io 读侧语义变体往返四 flavor、写侧
+  节点数守卫泛化到全部有表类型；algo `high_order.rs` 弯曲单元机构——17 个正则
+  族的参考布局全部真 Gmsh 4.14 探针实证（transfinite/extrude 单元素 + 逐角点
+  仿射反推，产物 D:/tmp/rmsh-p5），等参映射 = 截断幂重心格点基（单纯形）×
+  1D Lagrange 乘积（张量族）× serendip 单项式集数值构造（quad8/12、hex20、
+  prism15、tri9——tri9 是不完备单纯形，直接乘积公式不构成基，单项式集 =
+  Gmsh 自己的 gmshGenerateMonomialsTriangle serendip 集）；`.valid` = 采样
+  有符号雅可比度量（线=弦向投影、面=角点法向投影面积、体=行列式且相对
+  角点标架符号——真网格存在整体反向元）> 0；几何误差钉：90° 弧 Line3
+  1.078e-2 ≤ 1.5e-2、Line4 2.727e-3 ≤ 4e-3、直线弦 2.929e-1（27 倍差），
+  四分之一圆柱 Tri6 同钉；金字塔三型 io 完整、弯曲映射诚实缓议（Bergot 基，
+  探针节点序已入模块文档）。附带修复：v4.1 写侧缺 `$Entities`（元素块引用
+  未声明实体，Gmsh 元素读侧拒读而节点读侧会自建——真实缺陷，交叉验证探针
+  抓到），ASCII/二进制双路补齐 + Gmsh-exact 布局钉 + 四 flavor 零错互操作）
 - [x] MMG 式各向异性重网格补完（`0d56204`：Metric3::intersect 同时约化载波基逐方向 max[Gmsh mostaniso 形，对角平均回退被证据驳回] + collapse_edge_3d[度量空间门 + P4a 序有效性门 + 点名拒绝] + coarsen_pass 接线 + 12/12 测）
 - 验收：高阶 corpus 场景 + 重网格 metric 收敛
 
