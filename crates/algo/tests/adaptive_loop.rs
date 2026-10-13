@@ -18,7 +18,6 @@ use rmsh_algo::adaptive::ErrorEstimator;
 use rmsh_algo::traits::{Domain2D, MeshParams, Mesher2D};
 use rmsh_algo::FrontalDelaunay2D;
 use rmsh_model::{ElementType, Mesh};
-use glam::DVec3 as _GlamGuard;
 
 /// A structured-enough plate with a hole (the corpus domain shape).
 fn plate_with_hole_domain() -> Domain2D {
@@ -49,14 +48,22 @@ fn linear_mesh() -> Mesh {
         .expect("linear mesh")
 }
 
+/// The nodal solution in the estimator's dense order (sorted ids) — the
+/// documented contract; a HashMap-order construction scrambles the
+/// solution across nodes and poisons every indicator.
+fn dense_solution(mesh: &Mesh, u_h: impl Fn([f64; 3]) -> f64) -> Vec<f64> {
+    let mut sorted: Vec<_> = mesh.nodes.values().collect();
+    sorted.sort_by_key(|n| n.id);
+    sorted
+        .iter()
+        .map(|n| u_h([n.position.x, n.position.y, n.position.z]))
+        .collect()
+}
+
 #[test]
 fn gradient_recovery_is_exact_for_a_linear_field() {
     let mesh = linear_mesh();
-    let u: Vec<f64> = mesh
-        .nodes
-        .values()
-        .map(|n| 2.0 * n.position.x + 3.0 * n.position.y)
-        .collect();
+    let u = dense_solution(&mesh, |p| 2.0 * p[0] + 3.0 * p[1]);
     let rec = GradientRecovery;
     let indicators = rec.indicators(&mesh, &u).expect("indicators");
     assert_eq!(indicators.len(), mesh.elements.len());
@@ -82,11 +89,7 @@ fn indicators_shrink_under_refinement() {
         let mesh = FrontalDelaunay2D::new()
             .mesh_2d(&domain, &MeshParams::with_size(lc))
             .expect("mesh");
-        let u: Vec<f64> = mesh
-            .nodes
-            .values()
-            .map(|n| n.position.x * n.position.x)
-            .collect();
+        let u = dense_solution(&mesh, |p| p[0] * p[0]);
         let rec = GradientRecovery;
         rec.indicators(&mesh, &u)
             .expect("indicators")

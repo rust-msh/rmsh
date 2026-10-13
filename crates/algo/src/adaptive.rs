@@ -29,6 +29,41 @@
 //! - The solution is provided nodally per iteration (a closure); a
 //!   persistent discrete solution transported across meshes is the
 //!   caller's business, not the loop's.
+//!
+//! # Empirical loop contracts (probed, not assumed)
+//!
+//! - **The ZZ indicator is not a monotone convergence gauge at a sharp
+//!   front.** While h enters the front's feature scale, the band-mean
+//!   indicator GROWS first (the estimator sees more of the front as the
+//!   elements resolve it) and only then falls. The global max carries
+//!   boundary-anchored noise on top (the P3 lesson: recovery at boundary
+//!   nodes averages fewer samples). The honest loop contract is therefore
+//!   GEOMETRIC CONCENTRATION — the feature band's triangle count grows
+//!   and the band's mean triangle size drops under half the far field's —
+//!   not indicator monotonicity; the loop terminates on
+//!   `max_indicator <= error_tolerance` OR `max_steps`, and tests pin the
+//!   geometric contract.
+//! - **The solution order is part of the estimator's contract.** `u_h`
+//!   values are consumed in dense sorted-node-id order (the order
+//!   [`AdaptiveLoop2D::run`] samples in, and the order direct callers
+//!   must build). The id -> index map is built once per call with the
+//!   keys sorted first — a raw HashMap-order enumerate scrambles the
+//!   solution across nodes, every indicator becomes noise, the derived
+//!   size field collapses to `h_min` domain-wide, and the next mesh
+//!   explodes (32k seeds on a domain that needs 70). The linear-field
+//!   exactness test doubles as the regression pin for the ordering.
+//! - **The loop's `MeshParams` must carry the clamp range** `[h_min,
+//!   h_max]` as `min_size`/`max_size`: the mesher clamps every size-field
+//!   answer into `[min_size, max_size]`, so `element_size: h_max` alone
+//!   would silently floor the refinement at `h_max / 10` (the mesher's
+//!   uniform default floor) instead of the loop's `h_min`.
+//! - **Performance line (v1):** a loop step is a full re-mesh, and the
+//!   mesher's per-iteration structures (the `worst_active` scan, the
+//!   frozen size-snapshot clones, the relocation passes) are quadratic
+//!   overall in debug builds — invisible at the P3a mesh sizes, but a
+//!   loop step on a few-thousand-triangle mesh costs tens of seconds.
+//!   Fine for the interface card; a mesher perf card if the loop ever
+//!   lands on a hot path.
 
 use std::collections::HashMap;
 
@@ -179,13 +214,20 @@ impl ErrorEstimator for GradientRecovery {
 
 /// The node-index for a nodal-solution lookup: the solution array is
 /// indexed by the DENSE node order (sorted ids), the same convention the
-/// I/O readers produce. Callers MUST build the id -> index map once per
-/// call (a per-lookup scan would be quadratic).
+/// loop driver uses when it samples `u_h` (and the one this module
+/// documents for direct callers). The map is built once per call (a
+/// per-lookup scan would be quadratic); the keys are SORTED first — a
+/// raw `keys().enumerate()` walks the HashMap's internal order, which is
+/// neither the sorted order nor stable across runs, and a mismatch
+/// scrambles the solution across nodes (every indicator becomes noise,
+/// the derived size field collapses to h_min domain-wide, and the next
+/// mesh explodes).
 fn build_index(mesh: &Mesh) -> HashMap<u64, usize> {
-    mesh.nodes
-        .keys()
+    let mut ids: Vec<u64> = mesh.nodes.keys().copied().collect();
+    ids.sort_unstable();
+    ids.into_iter()
         .enumerate()
-        .map(|(i, k)| (*k, i))
+        .map(|(i, k)| (k, i))
         .collect()
 }
 
