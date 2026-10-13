@@ -9,6 +9,12 @@ pub use triangulate2d::{MeshError, Polygon2D, mesh_polygon, triangulate_points};
 /// Delaunay codes).
 pub(crate) mod predicates;
 
+/// Convex polyhedron clipping / plane-split machinery (internal machinery of
+/// the multi-material conforming carve).
+/// The conforming multi-material carve (internal machinery of
+/// `multi_material`).
+pub(crate) mod multi_material_v2;
+
 pub(crate) mod planar_meshing;
 
 /// Constrained Delaunay triangulation with incremental insertion (internal
