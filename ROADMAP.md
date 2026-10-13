@@ -149,8 +149,24 @@ rcad → rmsh）。分层裁定（布尔不进 rmsh、曲率/特征查询挂 tra
   ASCII flavor（legacy binary / appended base64 记为后续），三阶类
   VTK 规范本身无对应。验收 = ParaView 可读（meshio 生态解析等价
   验证）+ 高阶单元类型正确 ✅
-- [ ] **a posteriori 自适应循环接口**（用户裁定推进）：误差估计 ←
+- [x] **a posteriori 自适应循环接口**（用户裁定推进）：误差估计 ←
   网格/解反馈 → 尺寸场更新的迭代闭环 trait 面（消费 P2b 尺寸场框架）
+  （✅ 2026-10-14 闭环，`d931643`）：闭环面 = crates/algo/src/adaptive.rs
+  的 ErrorEstimator trait + GradientRecovery（ZZ 梯度恢复：P1 常梯度 →
+  面积加权节点恢复 → η_K = h_K·sqrt(mean|∇rec−∇K|²)，线性场精确归零钉）
+  + AdaptiveSizeField（h_new = h_old·tol/η clamp [h_min,h_max]，节点值取
+  incident 单元 min，按 id 排序确定性保留，nearest-node 传递）+
+  AdaptiveLoop2D（clamp 范围必须随 MeshParams 进 mesher——否则
+  with_size(h_max) 把细化地板抬到 h_max/10）。**收口根因** = build_index
+  必须按 id 排序后 enumerate：raw keys().enumerate() 走 HashMap 内部序，
+  与驱动的 dense sorted 解数组错位 → 解被打散、指标全域变噪声、尺寸场
+  全域塌到 h_min、下一网格种子爆炸（70 → 32,939，O(N²) 磨盘小时级）；
+  排序修复后 5/0 绿（h_min 0.05 / tol 0.1 / max_steps 3 预算）。契约注记
+  入模块文档：ZZ 指标在尖锐前沿先升后降属预期——循环契约 = 特征带
+  几何集中（带内三角数增长、带内均尺寸 < 远场一半）而非指标单调；
+  全局 max 带边界锚定噪声（P3 教训）；debug 性能线 = 循环步是全量
+  重网格，几千三角形单步数十秒（mesher 既有 O(N²) 结构，性能卡另立）。
+  workspace 391/0/0（+5）。
 - [ ] **golden corpus + 公开基准跑分**（用户裁定推进）：
   按场景族的语料钉 + 可复现的公开跑分
 - [ ] 文档站 + 发布准备（crates.io / GitHub Release 流水线）——
