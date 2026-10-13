@@ -97,11 +97,35 @@ rcad → rmsh）。分层裁定（布尔不进 rmsh、曲率/特征查询挂 tra
 - [x] MMG 式各向异性重网格补完（`0d56204`：Metric3::intersect 同时约化载波基逐方向 max[Gmsh mostaniso 形，对角平均回退被证据驳回] + collapse_edge_3d[度量空间门 + P4a 序有效性门 + 点名拒绝] + coarsen_pass 接线 + 12/12 测）
 - 验收：高阶 corpus 场景 + 重网格 metric 收敛
 
-### P6 — 产品化
-- [ ] Python 绑定（py crate 移植重写）
-- [ ] CLI（convert / refine / quality 三动词起步）
-- [ ] 文档站 + 发布准备（crates.io / GitHub Release 流水线）
-- 验收：绑定 e2e、文档完整、发布流水线绿
+### P6 — 产品化（2026-10-13 排期裁定更新）
+- [x] CLI（convert / refine / quality 三动词起步）——早已建成
+  （crates/cli，rmsh bin 26 测全绿），勾账补正 2026-10-13
+- [ ] **Python 绑定**（py crate 移植重写）——**下一卡**。入场更新
+  （2026-10-13 用户裁定）：rcad 内核自旧 API 冻结以来大幅演进，
+  重写时按当前 rcad checkout 重新盘点绑定面——旧时不可用的建模 API
+  现可能完全可用，绑定面不止 rmsh mesh（model/io/algo）也含 rcad
+  建模能力（kernel/modeling/step）。现状：pyo3 0.23、abi3-py39、
+  127 fn 待移植；旧 Cargo.toml 还挂着 P0 已退役的 rmsh-viewer 依赖
+  （Rule 4 清除）；etype 穷举匹配按 P5 语义变体 + to_gmsh_type_id
+  重写。验收 = 绑定 e2e
+- [ ] **$Partitioned 分区语义**（用户裁定需要）：对齐 Gmsh MSH 4.1
+  的 $PartitionedEntities（numPartitions / ghost / parent /
+  partitions 四路读写，真 Gmsh METIS 分区夹具探针实证），
+  四 flavor 完整往返。验收 = 分区网格互操作闭环
+- [ ] **VTK/VTU 互操作**（归属裁定：放 rmsh）：格式层是 meshio
+  形态的本职；宪章依赖方向恒 rcad → rmsh，VTK 读写只需 rmsh-model
+  （核心四库零 rcad 依赖不破）；放 rcad-io 则 rmsh 独立产品永远缺
+  这块且方向反了。真 VTK cell 类型映射（含 P5 高阶单元——外仓
+  vtk.rs 的 Gmsh-id 兜底臂届时退役）。验收 = ParaView 可读 +
+  高阶单元类型正确
+- [ ] **a posteriori 自适应循环接口**（用户裁定推进）：误差估计 ←
+  网格/解反馈 → 尺寸场更新的迭代闭环 trait 面（消费 P2b 尺寸场框架）
+- [ ] **golden corpus + 公开基准跑分**（用户裁定推进）：
+  按场景族的语料钉 + 可复现的公开跑分
+- [ ] 文档站 + 发布准备（crates.io / GitHub Release 流水线）——
+  **用户缓议**（2026-10-13：以后合适的时候做；保留排队不排期）
+- 验收：绑定 e2e、分区与 VTK/VTU 互操作、基准公开、文档完整、
+  发布流水线绿（缓议项除外）
 
 ## 3. 里程碑依赖
 
