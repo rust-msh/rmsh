@@ -18,6 +18,26 @@
 // radius-edge against a local Gmsh 4.14 CLI) live in the mesher's own
 // test module and run through the Gmsh-comparison tests there; this
 // harness reports rmsh-only numbers.
+//
+// # Archived runs
+//
+// 2026-10-14, release profile, 13th Gen Intel Core i7-13700 (24 logical
+// cores), Windows 10.0.26200, min-of-3 — the publishable artifact:
+//
+// | family | elements | best time |
+// |---|---|---|
+// | plate_with_hole_uniform (h=0.5) | 1155 | 62.4 ms |
+// | plate_with_hole_graded (rim field) | 95 | 2.70 ms |
+// | l_shape_concave (h=0.4) | 44 | 624 µs |
+// | cube_delaunay3d (h=0.4) | 76 | 5.35 ms |
+// | cube_frontal3d (h=0.4) | 76 | 5.24 ms |
+// | cube_hxt3d (h=0.4) | 73 | 83.5 ms |
+// | sharp_front_adaptive (2 steps) | 2573 | 1.75 s |
+//
+// Same day, debug profile (the numbers the perf cards quote): uniform
+// 160 ms, graded 7.2 ms, l_shape 1.9 ms, cubes 20.3/20.6/295 ms,
+// sharp_front_adaptive 9.17 s (12.29 s before the AdaptiveSizeField
+// grid index, same session — the Fix-C A/B).
 
 use rmsh_algo::{
     box_surface, format_tet_stats, format_tri_stats, l_shape_polygon, mesh_polygon,
