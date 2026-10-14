@@ -238,10 +238,32 @@ fn build_index(mesh: &Mesh) -> HashMap<u64, usize> {
 /// elements, answered through nearest-node interpolation.
 #[derive(Debug)]
 pub struct AdaptiveSizeField {
-    /// (position, size) per retained node of the old mesh.
+    /// (position, size) per retained node of the old mesh, in the
+    /// deterministic retention order (sorted node id).
     nodes: Vec<(DVec3, f64)>,
+    /// Uniform grid over the nodes' xy bounding box: bucket -> retained
+    /// ranks (the `nodes` indices). The nearest-node query walks cell
+    /// rings outward and stops once the ring's minimum possible xy
+    /// distance exceeds the best true distance squared — exact, and the
+    /// rank tie-break preserves the linear-scan semantics (lowest
+    /// retention rank wins an exact-distance tie).
+    grid: Vec<Vec<u32>>,
+    nx: usize,
+    ny: usize,
+    min_x: f64,
+    min_y: f64,
+    cell_x: f64,
+    cell_y: f64,
     h_min: f64,
     h_max: f64,
+}
+
+/// Grid resolution: ~one cell per retained node, clamped so tiny meshes
+/// stay 1x1 and huge meshes cannot blow the bucket vector up.
+fn grid_dims(n: usize) -> (usize, usize) {
+    let side = (n as f64).sqrt().ceil() as usize;
+    let side = side.clamp(1, 256);
+    (side, side)
 }
 
 impl AdaptiveSizeField {
@@ -307,29 +329,122 @@ impl AdaptiveSizeField {
                 ));
             }
         }
-        Ok(AdaptiveSizeField {
+
+        Ok(Self::from_nodes(nodes, h_min, h_max))
+    }
+
+    /// Assemble the field over retained `(position, size)` nodes (the
+    /// deterministic retention order — the nearest-node tie-break reads
+    /// it) and build the xy bucket grid.
+    fn from_nodes(nodes: Vec<(DVec3, f64)>, h_min: f64, h_max: f64) -> Self {
+        let (nx, ny) = grid_dims(nodes.len());
+        let mut min_x = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for (p, _) in &nodes {
+            min_x = min_x.min(p.x);
+            max_x = max_x.max(p.x);
+            min_y = min_y.min(p.y);
+            max_y = max_y.max(p.y);
+        }
+        let cell_x = ((max_x - min_x) / nx as f64).max(1e-12);
+        let cell_y = ((max_y - min_y) / ny as f64).max(1e-12);
+        let mut grid: Vec<Vec<u32>> = vec![Vec::new(); nx * ny];
+        for (rank, (p, _)) in nodes.iter().enumerate() {
+            let ix = (((p.x - min_x) / cell_x) as usize).min(nx - 1);
+            let iy = (((p.y - min_y) / cell_y) as usize).min(ny - 1);
+            grid[iy * nx + ix].push(rank as u32);
+        }
+
+        AdaptiveSizeField {
             nodes,
+            grid,
+            nx,
+            ny,
+            min_x,
+            min_y,
+            cell_x,
+            cell_y,
             h_min,
             h_max,
-        })
+        }
+    }
+
+    /// The cell index of a query coordinate, clamped into the grid (the
+    /// ring expansion is exact regardless of the clamping: the stopping
+    /// bound is derived from the true best distance, see `size_at`).
+    fn cell_index(&self, v: f64, min: f64, cell: f64, n: usize) -> usize {
+        (((v - min) / cell).floor().max(0.0) as usize).min(n - 1)
     }
 }
 
 impl SizeField for AdaptiveSizeField {
     fn size_at(&self, p: DVec3) -> f64 {
-        // nearest-node interpolation on the old mesh (documented v1
-        // transfer); ties break toward the first node in retention order
-        let mut best: Option<(f64, f64)> = None;
-        for (pos, h) in &self.nodes {
-            let dx = pos.x - p.x;
-            let dy = pos.y - p.y;
-            let dz = pos.z - p.z;
-            let d2 = dx * dx + dy * dy + dz * dz;
-            if best.map(|(bd, _)| d2 < bd).unwrap_or(true) {
-                best = Some((d2, *h));
+        // Nearest-node interpolation on the old mesh (documented v1
+        // transfer). Equivalent to the historical full linear scan over
+        // `self.nodes` in retention order (min d2, ties to the lowest
+        // rank) — answered through xy ring expansion with an exact
+        // stopping bound, so a few-thousand-node field query is O(ring)
+        // instead of O(n).
+        if self.nodes.is_empty() {
+            return self.h_max;
+        }
+        let cx = self.cell_index(p.x, self.min_x, self.cell_x, self.nx);
+        let cy = self.cell_index(p.y, self.min_y, self.cell_y, self.ny);
+        let min_cell = self.cell_x.min(self.cell_y);
+
+        let mut best: Option<(f64, u32)> = None; // (true d2, rank)
+        let mut r: i64 = 0;
+        loop {
+            // scan the ring at Chebyshev radius r (r = 0: the cell itself)
+            let lo_i = (cx as i64 - r).max(0);
+            let hi_i = (cx as i64 + r).min(self.nx as i64 - 1);
+            let lo_j = (cy as i64 - r).max(0);
+            let hi_j = (cy as i64 + r).min(self.ny as i64 - 1);
+            let mut ring_cells = 0usize;
+            for j in lo_j..=hi_j {
+                for i in lo_i..=hi_i {
+                    // annulus only: skip the cells already scanned at r-1
+                    let on_ring = (i - cx as i64).abs() == r || (j - cy as i64).abs() == r;
+                    if r > 0 && !on_ring {
+                        continue;
+                    }
+                    ring_cells += 1;
+                    for &rank in &self.grid[j as usize * self.nx + i as usize] {
+                        let (pos, _) = &self.nodes[rank as usize];
+                        let dx = pos.x - p.x;
+                        let dy = pos.y - p.y;
+                        let dz = pos.z - p.z;
+                        let d2 = dx * dx + dy * dy + dz * dz;
+                        let better = match best {
+                            None => true,
+                            Some((bd, br)) => d2 < bd || (d2 == bd && rank < br),
+                        };
+                        if better {
+                            best = Some((d2, rank));
+                        }
+                    }
+                }
+            }
+            if r > 0 && ring_cells == 0 {
+                // the annulus left the grid entirely: everything is scanned
+                break;
+            }
+            r += 1;
+            // exact stop: every unscanned node is at Chebyshev cell
+            // distance >= r, so its xy distance is >= (r-1) * min_cell
+            // (holds for clamped queries too — out-of-bbox queries are
+            // only farther from the in-bbox nodes)
+            if let Some((bd, _)) = best {
+                let bound = (r as f64 - 1.0) * min_cell;
+                if bound * bound > bd {
+                    break;
+                }
             }
         }
-        best.map(|(_, h)| h.clamp(self.h_min, self.h_max))
+
+        best.map(|(_, rank)| self.nodes[rank as usize].1.clamp(self.h_min, self.h_max))
             .unwrap_or(self.h_max)
     }
 }
@@ -494,5 +609,80 @@ impl<'a> AdaptiveLoop2D<'a> {
             mesh: current.unwrap_or_default(),
             converged,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The historical linear-scan nearest-node answer (min d2, ties to
+    /// the lowest retention rank) — the reference the grid query must
+    /// reproduce bit-for-bit.
+    fn brute_force_size(nodes: &[(DVec3, f64)], p: DVec3, h_min: f64, h_max: f64) -> f64 {
+        let mut best: Option<(f64, f64)> = None;
+        for (pos, h) in nodes {
+            let dx = pos.x - p.x;
+            let dy = pos.y - p.y;
+            let dz = pos.z - p.z;
+            let d2 = dx * dx + dy * dy + dz * dz;
+            if best.map(|(bd, _)| d2 < bd).unwrap_or(true) {
+                best = Some((d2, *h));
+            }
+        }
+        best.map(|(_, h)| h.clamp(h_min, h_max)).unwrap_or(h_max)
+    }
+
+    #[test]
+    fn size_at_grid_matches_brute_force_scan() {
+        // Deterministic xorshift point cloud, deliberately including
+        // cluster corners and equidistant-ish pairs; the queries cover
+        // the bbox interior, the bbox exterior (clamped cells) and a
+        // degenerate single-node field.
+        let mut state = 0x2545_4914_F6CD_D1D_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut nodes: Vec<(DVec3, f64)> = Vec::new();
+        for i in 0..500usize {
+            let x = (next() % 10_000) as f64 / 10_000.0 * 4.0 - 2.0;
+            let y = (next() % 10_000) as f64 / 10_000.0 * 4.0 - 2.0;
+            nodes.push((DVec3::new(x, y, 0.0), 0.01 + (i % 7) as f64 * 0.01));
+        }
+        let (h_min, h_max) = (0.01, 0.08);
+        let field = AdaptiveSizeField::from_nodes(nodes.clone(), h_min, h_max);
+
+        let mut queries: Vec<DVec3> = Vec::new();
+        for _ in 0..400 {
+            let x = (next() % 10_000) as f64 / 10_000.0 * 6.0 - 3.0;
+            let y = (next() % 10_000) as f64 / 10_000.0 * 6.0 - 3.0;
+            queries.push(DVec3::new(x, y, 0.0));
+        }
+        // exact-distance ties: query equidistant between two nodes
+        queries.push(DVec3::new(0.0, 0.0, 0.0));
+        for w in nodes.windows(2) {
+            let m = DVec3::new(
+                (w[0].0.x + w[1].0.x) * 0.5,
+                (w[0].0.y + w[1].0.y) * 0.5,
+                0.0,
+            );
+            queries.push(m);
+        }
+        for q in &queries {
+            let got = field.size_at(*q);
+            let want = brute_force_size(&nodes, *q, h_min, h_max);
+            assert_eq!(got.to_bits(), want.to_bits(), "grid query diverged at {q:?}");
+        }
+
+        // degenerate fields
+        let single = AdaptiveSizeField::from_nodes(
+            vec![(DVec3::new(1.0, 2.0, 0.0), 0.05)],
+            h_min,
+            h_max,
+        );
+        assert_eq!(single.size_at(DVec3::new(50.0, 50.0, 0.0)).to_bits(), 0.05f64.to_bits());
     }
 }
