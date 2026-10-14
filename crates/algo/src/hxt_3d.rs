@@ -845,8 +845,12 @@ mod tests {
         let used = colors.iter().copied().max().unwrap_or(0) + 1;
         eprintln!("box fixture node-adjacency colors: {used}");
         // Measured color-count pin (greedy first-fit on the box fixture):
-        // 6 colors for the Delaunay box volume at size 0.4.
-        assert_eq!(used, 6, "measured box-fixture color count drifted");
+        // 7 colors for the Delaunay box volume at size 0.4 (re-measured
+        // when the 3-D quality card wired the flip-convergence arm into
+        // Delaunay3D — the seed volume changed, the adjacency graph with
+        // it; the coloring stays valid + deterministic, this pin only
+        // records the new measured count).
+        assert_eq!(used, 7, "measured box-fixture color count drifted");
     }
 
     #[test]

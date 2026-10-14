@@ -16,10 +16,17 @@ use rmsh_algo::{
 fn assert_quality_baseline(name: &str, stats: TetQualityStats) {
     eprintln!("{}", format_tet_stats(name, &stats));
 
+    // Cube-family regression bound at the measured levels (re-pinned by
+    // the 3-D quality card: the wired flip-convergence arm moved the
+    // cube from p95 20.6 / sliver 3.3% to p95 8.9 / sliver 2.6%).
     assert!(stats.tet_count > 0, "{} produced no tets", name);
-    assert!(stats.min_dihedral_deg > 0.10, "{} min dihedral too low", name);
-    assert!(stats.p95_radius_edge < 120.0, "{} radius-edge exploded", name);
-    assert!(stats.sliver_fraction < 0.40, "{} too many slivers", name);
+    assert!(stats.min_dihedral_deg > 5.0, "{} min dihedral too low", name);
+    assert!(
+        stats.p95_radius_edge <= 10.0,
+        "{} radius-edge above the measured bound",
+        name
+    );
+    assert!(stats.sliver_fraction < 0.035, "{} too many slivers", name);
 }
 
 #[test]

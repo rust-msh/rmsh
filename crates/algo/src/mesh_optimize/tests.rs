@@ -703,3 +703,34 @@ after(min={:.3}, p95={:.3}, sliver={:.4}, n={}) stats={stats:?}",
         assert!(after.sliver_fraction <= before.sliver_fraction);
     }
 
+    #[test]
+    fn segment_pierces_triangle_gate_pins() {
+        // Geometry pins for the shared bistellar validity gate, on exactly
+        // the fixture coordinates used by the flip tests (moved here from
+        // tet_mesh when the flip optimizer retired into delaunay_3d).
+        let pa = [0.0, 0.0, 0.0];
+        let pb = [1.0, 0.0, 0.0];
+        // Non-piercing fan: triangle (3,4,5) in plane x = 0.5; the segment
+        // crosses at (0.5, 0, 0), outside the triangle.
+        let tri_miss = [
+            [0.5, 0.001, 0.0],
+            [0.5, 0.0, 0.001],
+            [0.5, 0.8, 0.8],
+        ];
+        assert!(!segment_pierces_triangle(pa, pb, tri_miss));
+        // Corrected fan: crossing point strictly inside the triangle.
+        let tri_hit = [
+            [0.5, -0.002, -0.001],
+            [0.5, -0.001, -0.002],
+            [0.5, 0.8, 0.8],
+        ];
+        assert!(segment_pierces_triangle(pa, pb, tri_hit));
+        // 2-3 sibling case: both apices on the SAME side of the face plane
+        // (segment endpoint on the plane counts as grazing, not piercing).
+        let above_a = [0.5, 0.2, 0.4];
+        let above_b = [0.5, 0.3, 0.5];
+        assert!(!segment_pierces_triangle(above_a, above_b, tri_hit));
+        // Endpoint exactly on the triangle plane: no strict piercing.
+        let on_plane = [0.5, 0.1, 0.2];
+        assert!(!segment_pierces_triangle(pa, on_plane, tri_hit));
+    }

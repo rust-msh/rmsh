@@ -210,27 +210,32 @@ fn corpus_l_shape_concave() {
 // ── F4: unit cube, tetrahedral, three meshers ────────────────────────────────
 
 fn corpus_cube_gate(name: &str, stats: &TetQualityStats) {
-    println!("{}", format_tet_stats(name, stats));
+    println!("{}", format_tet_stats(name, &stats));
     assert!(stats.tet_count > 0, "{name} produced no tets");
-    // the measured regression baseline (the mesher3d regression bounds):
-    // the ROADMAP hard gate is the post-optimization target and is
-    // REPORTED here, not asserted — the quality card owns that gap
+    // Regression bound at the measured levels (re-pinned by the 3-D
+    // quality card: wiring the flip-convergence arm into Delaunay3D
+    // moved the cube family from p95 20.6 / sliver 3.3% to p95 8.9 /
+    // sliver 2.6%; stretched + slender stay at their boundary-locked
+    // levels — the spindle residue the local flips cannot touch). The
+    // ROADMAP hard gate is the post-optimization target and is
+    // REPORTED here, not asserted — the remaining gap is bounded by
+    // the corner-diagonal spindle family (see ROADMAP P4).
     let hard = QualityGate::roadmap_hard_gate();
     for v in hard.violations(stats) {
         println!("  [hard-gate distance] {name}: {v}");
     }
     assert!(
-        stats.min_dihedral_deg > 0.10,
+        stats.min_dihedral_deg > 5.0,
         "{name} min dihedral too low: {}",
         stats.min_dihedral_deg
     );
     assert!(
-        stats.p95_radius_edge < 120.0,
-        "{name} radius-edge exploded: {}",
+        stats.p95_radius_edge <= 10.0,
+        "{name} radius-edge above the measured bound: {}",
         stats.p95_radius_edge
     );
     assert!(
-        stats.sliver_fraction < 0.40,
+        stats.sliver_fraction < 0.035,
         "{name} too many slivers: {}",
         stats.sliver_fraction
     );

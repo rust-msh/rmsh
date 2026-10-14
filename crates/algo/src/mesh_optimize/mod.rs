@@ -405,7 +405,7 @@ fn quality_tuple_holds(new: (f64, f64), old: (f64, f64)) -> bool {
 }
 
 /// Sliver-relaxed acceptance, mirroring the `sliver_relaxed_improves`
-/// pattern of `crate::tet_mesh::optimize_tetmesh_flips`: the secondary
+/// pattern of `crate::delaunay_3d::optimize_local_face_flips`: the secondary
 /// (radius-edge) must improve strongly (>= 30% reduction of the worst
 /// ratio) while the primary degrades by at most 30% of its magnitude. This
 /// unlocks flips over corner-to-corner boundary diagonals that no strictly
@@ -1145,8 +1145,8 @@ pub(crate) fn edge_collapse_pass(tm: &mut TetMesh, threshold: f64, floor_deg: f6
 /// pierce the interior of the removed shared face (the new edge lies inside
 /// the union of the two tets). Direct segment-triangle form of the
 /// in-circumsphere predicate; `false` for coplanar / grazing configurations.
-/// Shared with `crate::tet_mesh::optimize_tetmesh_flips`, whose 2-3 and 3-2
-/// candidate loops must apply the same bistellar validity condition.
+/// Shared with `crate::delaunay_3d::optimize_local_face_flips`, whose 2-3 and
+/// 3-2 candidate loops must apply the same bistellar validity condition.
 pub(crate) fn segment_pierces_triangle(p: [f64; 3], q: [f64; 3], tri: [[f64; 3]; 3]) -> bool {
     let n = cross3(sub3(tri[1], tri[0]), sub3(tri[2], tri[0]));
     let ln = len3(n);

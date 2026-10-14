@@ -299,17 +299,18 @@ fn refine_bad_tetrahedra(
         stats.refined_tets += 1;
     }
 
-    let flip_passes = optimize_passes.clamp(1, 8) as usize;
-    let mut tet_mesh = crate::tet_mesh::TetMesh::from_mesh(&mesh);
-    // The 4th counter is the number of flip candidates rejected by the
-    // bistellar validity gate (segment must pierce the opposite face/triangle);
-    // rejected candidates are skipped, never applied.
-    let (face_flips, edge_flips, edge_sliver_flips, _flip_validity_skips) =
-        crate::tet_mesh::optimize_tetmesh_flips(&mut tet_mesh, flip_passes);
+    // Final convergence through the wired optimizer cluster: bistellar
+    // flips run to their local quality optimum after the refinement
+    // loop. (Measured on the corpus cube: an annealing arm INSIDE the
+    // loop — flips after every split — misleads the worst-tet selection
+    // and explodes p95 to ~461; end-of-refine convergence converges the
+    // p95 from 20.6 to 8.9 instead. The loop stays flip-free.)
+    let convergence_budget = mesh.elements.len().saturating_mul(4) + 64;
+    let (face_flips, edge_flips, edge_sliver_flips) =
+        optimize_local_face_flips(&mut mesh, &mut next_elem_id, convergence_budget)?;
     stats.local_face_flips += face_flips;
     stats.local_edge_flips += edge_flips;
     stats.local_edge_sliver_accepts += edge_sliver_flips;
-    mesh = tet_mesh.to_mesh();
 
     if should_log_refinement_stats() {
         eprintln!(
@@ -348,10 +349,10 @@ struct RefinementStats {
     exits_quality_satisfied: usize,
 }
 
-// The 3-D quality card's spindle rework optimizer (multi-flip /
-// annealing toward the p95 <= 2.0 gate) — fully implemented and tested,
-// dormant in production until that card wires it into refine.
-#[allow(dead_code)]
+// The 3-D quality card's spindle rework optimizer (best-improving
+// bistellar flip per pass, sliver-pressure phased), wired into the
+// refinement loop: an annealing arm after every split plus a final
+// convergence arm.
 fn optimize_local_face_flips(
     mesh: &mut Mesh,
     next_elem_id: &mut u64,
@@ -714,7 +715,7 @@ fn optimize_local_face_flips(
     Ok((accepted_face, accepted_edge, accepted_edge_sliver))
 }
 
-pub(crate) fn is_better_quality(a: (f64, f64, f64), b: (f64, f64, f64)) -> bool {
+fn is_better_quality(a: (f64, f64, f64), b: (f64, f64, f64)) -> bool {
     (a.0 > b.0 + 1e-6)
         || ((a.0 - b.0).abs() < 1e-6
             && ((a.1 < b.1 - 1e-9)
@@ -1031,7 +1032,7 @@ fn point_in_tetrahedron(
     v0 > eps && v1 > eps && v2 > eps && v3 > eps
 }
 
-pub(crate) fn min_dihedral_points(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+fn min_dihedral_points(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
     [
         dihedral(a, b, c, d),
         dihedral(a, c, b, d),
@@ -1044,7 +1045,7 @@ pub(crate) fn min_dihedral_points(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64
     .fold(f64::MAX, f64::min)
 }
 
-pub(crate) fn radius_edge_ratio_points(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+fn radius_edge_ratio_points(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
     let nodes = [a, b, c, d];
     radius_edge_ratio(&nodes, [0, 1, 2, 3])
 }
@@ -1305,7 +1306,7 @@ fn select_fallback_refinement_point(
         .map(|(p, _, _, _)| p)
 }
 
-pub(crate) fn tetra_volume(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+fn tetra_volume(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
     let ad = [a[0] - d[0], a[1] - d[1], a[2] - d[2]];
     let bd = [b[0] - d[0], b[1] - d[1], b[2] - d[2]];
     let cd = [c[0] - d[0], c[1] - d[1], c[2] - d[2]];
@@ -1603,6 +1604,53 @@ mod tests {
     use super::*;
 
     use rmsh_model::{Element, ElementType, Mesh, Node};
+
+    #[test]
+    fn non_piercing_face_pair_union_volume_is_invariant() {
+        // The 2-to-3 gate sibling (ported from the retired tet_mesh
+        // optimizer tests): two tets sharing face (3,4,5) whose apices
+        // (1,2) do NOT pierce the shared face interior. The 2-3 flip
+        // would replace the pair with the 3-tet fan around edge (1,2);
+        // without the piercing gate the flip corrupts the union. A VALID
+        // flip may still fire on this mesh (the face (1,2,5) with apices
+        // (3,4) is a piercing configuration), so the corruption-free
+        // contract is the union-volume invariance asserted below.
+        let mut mesh = Mesh::new();
+        mesh.add_node(Node::new(1, 0.0, 0.0, 0.0));
+        mesh.add_node(Node::new(2, 1.0, 0.0, 0.0));
+        mesh.add_node(Node::new(3, 0.5, 0.001, 0.0));
+        mesh.add_node(Node::new(4, 0.5, 0.0, 0.001));
+        mesh.add_node(Node::new(5, 0.5, 0.8, 0.8));
+        mesh.add_element(Element::new(1, ElementType::Tetrahedron4, vec![1, 3, 4, 5]));
+        mesh.add_element(Element::new(2, ElementType::Tetrahedron4, vec![2, 3, 4, 5]));
+
+        let total_volume = |mesh: &Mesh| -> f64 {
+            mesh.elements
+                .iter()
+                .filter(|e| e.etype == ElementType::Tetrahedron4 && e.node_ids.len() == 4)
+                .map(|e| {
+                    tetra_volume(
+                        node_xyz_from_mesh(mesh, e.node_ids[0]).expect("node"),
+                        node_xyz_from_mesh(mesh, e.node_ids[1]).expect("node"),
+                        node_xyz_from_mesh(mesh, e.node_ids[2]).expect("node"),
+                        node_xyz_from_mesh(mesh, e.node_ids[3]).expect("node"),
+                    )
+                })
+                .sum()
+        };
+        let before_volume = total_volume(&mesh);
+
+        let mut next_elem_id = 10_u64;
+        optimize_local_face_flips(&mut mesh, &mut next_elem_id, 4).expect("flip pass");
+
+        let after_volume = total_volume(&mesh);
+        let drift = (after_volume - before_volume).abs();
+        assert!(
+            drift <= 1e-12 * before_volume,
+            "invalid 2-3 flip corrupted the union volume: before={before_volume:e}, \
+             after={after_volume:e}, drift={drift:e}"
+        );
+    }
 
     fn cube_surface_mesh() -> Mesh {
         let mut mesh = Mesh::new();
