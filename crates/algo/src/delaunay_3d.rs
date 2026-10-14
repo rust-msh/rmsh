@@ -348,6 +348,10 @@ struct RefinementStats {
     exits_quality_satisfied: usize,
 }
 
+// The 3-D quality card's spindle rework optimizer (multi-flip /
+// annealing toward the p95 <= 2.0 gate) — fully implemented and tested,
+// dormant in production until that card wires it into refine.
+#[allow(dead_code)]
 fn optimize_local_face_flips(
     mesh: &mut Mesh,
     next_elem_id: &mut u64,

@@ -992,32 +992,13 @@ fn aabb_overlap_strict(a: (Point3, Point3), b: (Point3, Point3), tol: f64) -> bo
 
 #[cfg(test)]
 mod tests {
+    use crate::corpus::box_surface as cube_surface;
+
     use super::*;
     use rmsh_model::{Element, ElementType, Node};
 
     /// A closed unit-ish cube surface `[lo, hi]` with 8 nodes and 6
     /// consistently OUTWARD-oriented quads.
-    fn cube_surface(lo: [f64; 3], hi: [f64; 3]) -> Mesh {
-        let [lx, ly, lz] = lo;
-        let [hx, hy, hz] = hi;
-        let mut m = Mesh::new();
-        m.add_node(Node::new(1, lx, ly, lz));
-        m.add_node(Node::new(2, hx, ly, lz));
-        m.add_node(Node::new(3, hx, hy, lz));
-        m.add_node(Node::new(4, lx, hy, lz));
-        m.add_node(Node::new(5, lx, ly, hz));
-        m.add_node(Node::new(6, hx, ly, hz));
-        m.add_node(Node::new(7, hx, hy, hz));
-        m.add_node(Node::new(8, lx, hy, hz));
-
-        m.add_element(Element::new(1, ElementType::Quad4, vec![1, 4, 3, 2])); // z=lo, outward -z
-        m.add_element(Element::new(2, ElementType::Quad4, vec![5, 6, 7, 8])); // z=hi, outward +z
-        m.add_element(Element::new(3, ElementType::Quad4, vec![1, 2, 6, 5])); // y=lo, outward -y
-        m.add_element(Element::new(4, ElementType::Quad4, vec![2, 3, 7, 6])); // x=hi, outward +x
-        m.add_element(Element::new(5, ElementType::Quad4, vec![3, 4, 8, 7])); // y=hi, outward +y
-        m.add_element(Element::new(6, ElementType::Quad4, vec![4, 1, 5, 8])); // x=lo, outward -x
-        m
-    }
 
     /// A hand-built outward-oriented tetrahedron surface:
     /// (0,0,0), (1,0,0), (0,1,0), (0,0,1).
@@ -1649,7 +1630,7 @@ mod tests {
         let lo = |i: usize| 2 * i as u64 + 1;
         let hi = |i: usize| 2 * i as u64 + 2;
         let mut eid = 1u64;
-        let mut tri = |m: &mut Mesh, eid: &mut u64, a: u64, b: u64, c: u64| {
+        let tri = |m: &mut Mesh, eid: &mut u64, a: u64, b: u64, c: u64| {
             m.add_element(Element::new(*eid, ElementType::Triangle3, vec![a, b, c]));
             *eid += 1;
         };

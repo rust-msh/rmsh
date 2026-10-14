@@ -196,19 +196,6 @@ pub fn gmsh_node_count(id: i32) -> Option<usize> {
     Some(count)
 }
 
-fn gmsh_dimension_from_type_id(id: i32) -> u8 {
-    match family_from_gmsh_type_id(id) {
-        Some(ElementFamily::Point) => 0,
-        Some(ElementFamily::Line) => 1,
-        Some(ElementFamily::Triangle) | Some(ElementFamily::Quadrilateral) => 2,
-        Some(ElementFamily::Tetrahedron)
-        | Some(ElementFamily::Hexahedron)
-        | Some(ElementFamily::Prism)
-        | Some(ElementFamily::Pyramid) => 3,
-        None => 0,
-    }
-}
-
 const LINE2_EDGES: &[[usize; 2]] = &[[0, 1]];
 const TRI3_EDGES: &[[usize; 2]] = &[[0, 1], [1, 2], [2, 0]];
 const QUAD4_EDGES: &[[usize; 2]] = &[[0, 1], [1, 2], [2, 3], [3, 0]];

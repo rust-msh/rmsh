@@ -1238,32 +1238,6 @@ impl TriMesh2d {
         p
     }
 
-    /// The live neighbour vertices of a vertex (unique, sorted).
-    #[cfg(test)]
-    pub(crate) fn vertex_neighbours(&self, v: usize) -> Vec<usize> {
-        use std::collections::BTreeSet;
-        let mut s: BTreeSet<usize> = BTreeSet::new();
-        for t in self.live() {
-            if self.tri[t].contains(&v) {
-                for k in 0..3 {
-                    if self.tri[t][k] != v {
-                        s.insert(self.tri[t][k]);
-                    }
-                }
-            }
-        }
-        s.into_iter().collect()
-    }
-
-    /// The live triangles incident to a vertex.
-    #[cfg(test)]
-    pub(crate) fn vertex_tris(&self, v: usize) -> Vec<usize> {
-        self.live()
-            .into_iter()
-            .filter(|&t| self.tri[t].contains(&v))
-            .collect()
-    }
-
     /// The distinct vertices referenced by live triangles.
     pub(crate) fn live_vertices(&self) -> Vec<usize> {
         let mut s: Vec<usize> = self

@@ -226,7 +226,7 @@ impl<'a> Mesher2D for FrontalDelaunay2D<'a> {
         while iters < max_iters {
             iters += 1;
             let mut worst = None;
-            while let Some(&(bits, ti)) = candidates.last() {
+            while let Some(&(_bits, ti)) = candidates.last() {
                 candidates.pop_last();
                 let t = !(ti as usize);
                 if tmesh.dead[t] || processed.contains(&t) || !tmesh.is_active(t, LIMIT_) {
@@ -638,6 +638,8 @@ fn on_segment(a: [f64; 2], b: [f64; 2], p: [f64; 2], eps: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::corpus::{circle_ring, rim_distance, square_ring};
+
     use super::*;
     use crate::geometry_source::{GeometryHit, GeometrySource};
     use crate::size_field::{CurvatureField, FieldFn, UniformField};
@@ -973,27 +975,7 @@ mod tests {
     }
 
     /// CCW square ring with `segs_per_side` segments per side.
-    fn square_ring(half: f64, segs_per_side: usize) -> Vec<[f64; 2]> {
-        let mut ring = Vec::with_capacity(segs_per_side * 4);
-        let side = 2.0 * half;
-        for k in 0..segs_per_side {
-            let t = side * k as f64 / segs_per_side as f64;
-            ring.push([-half + t, -half]);
-        }
-        for k in 0..segs_per_side {
-            let t = side * k as f64 / segs_per_side as f64;
-            ring.push([half, -half + t]);
-        }
-        for k in 0..segs_per_side {
-            let t = side * k as f64 / segs_per_side as f64;
-            ring.push([half - t, half]);
-        }
-        for k in 0..segs_per_side {
-            let t = side * k as f64 / segs_per_side as f64;
-            ring.push([-half, half - t]);
-        }
-        ring
-    }
+
 
     /// A regular n-gon ring (CCW) with the given circumradius: no two
     /// adjacent edges are collinear (unlike a subdivided straight-sided
@@ -1008,25 +990,11 @@ mod tests {
     }
 
     /// A regular n-gon ring approximating a circle (clockwise when `cw`).
-    fn circle_ring(radius: f64, n: usize, cw: bool) -> Vec<[f64; 2]> {
-        (0..n)
-            .map(|k| {
-                let t = 2.0 * std::f64::consts::PI * k as f64 / n as f64;
-                let t = if cw { -t } else { t };
-                [radius * t.cos(), radius * t.sin()]
-            })
-            .collect()
-    }
+
 
     /// Distance from a point to the nearest point of the radius-1 rim
     /// circle at the origin (the corpus scenario geometry).
-    fn distance_to_unit_rim(p: [f64; 2]) -> f64 {
-        let rho = (p[0] * p[0] + p[1] * p[1]).sqrt();
-        if rho <= 0.0 {
-            return 1.0;
-        }
-        (rho - 1.0).abs()
-    }
+
 
     // ── feature preservation helpers (test-visible) ───────────────────────
 
@@ -1451,13 +1419,13 @@ mod tests {
         // the field's bulk response, free of boundary discretization
         let mut rim_lengths = Vec::new();
         for (len, mid) in triangle_edges(&mesh) {
-            if distance_to_unit_rim(mid) <= 0.3 {
+            if rim_distance(mid) <= 0.3 {
                 rim_lengths.push(len);
             }
         }
         let mut far_lengths = Vec::new();
         for (len, mid) in interior_triangle_edges(&mesh) {
-            if distance_to_unit_rim(mid) >= 2.0 {
+            if rim_distance(mid) >= 2.0 {
                 far_lengths.push(len);
             }
         }

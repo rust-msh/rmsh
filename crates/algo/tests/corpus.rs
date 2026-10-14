@@ -19,10 +19,6 @@ use rmsh_model::ElementType;
 #[allow(unused_imports)]
 use rmsh_algo::tetrahedralize_multi_material;
 
-fn triangle_area_sum(mesh: &rmsh_model::Mesh) -> f64 {
-    rmsh_algo::tri_quality_stats(mesh).total_area
-}
-
 fn interior_edge_stats(
     mesh: &rmsh_model::Mesh,
 ) -> (Vec<f64>, Vec<f64>) {

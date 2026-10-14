@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 
+use crate::cdt_2d::edge_key;
 use rmsh_model::{Element, ElementType, Mesh, Node};
 use thiserror::Error;
 
@@ -128,14 +129,6 @@ pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
     all.push(st2);
 
     /// The unordered edge key of (u, v).
-    fn edge_key2(u: usize, v: usize) -> [usize; 2] {
-        if u <= v {
-            [u, v]
-        } else {
-            [v, u]
-        }
-    }
-
     /// The CCW edge slot carrying the unordered edge (u, v).
     fn edge_slot_of(tri: &[usize; 3], u: usize, v: usize) -> Option<usize> {
         for k in 0..3 {
@@ -206,27 +199,22 @@ pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
         if nbr.len() < need {
             nbr.resize(need, [-1; 3]);
         }
-        let mut external: std::collections::HashMap<[usize; 2], (usize, usize)> =
+        let mut external: std::collections::HashMap<(usize, usize), (usize, usize)> =
             std::collections::HashMap::new();
         for (di, dtri, _dn) in dead {
             for k in 0..3 {
-                external.insert(edge_key2(dtri[k], dtri[(k + 1) % 3]), (*di, k));
+                external.insert(edge_key(dtri[k], dtri[(k + 1) % 3]), (*di, k));
             }
         }
-        for (ni, ntri) in new {
+        for (_ni, ntri) in new {
             for k in 0..3 {
-                let key = edge_key2(ntri[k], ntri[(k + 1) % 3]);
-                if external.remove(&key).is_some() {
-                    continue;
-                }
-                // interior edge: the twin is another NEW triangle (matched
-                // when its turn comes; both directions set there)
+                let key = edge_key(ntri[k], ntri[(k + 1) % 3]);
+                external.remove(&key);
             }
         }
         // interior pairing among the new triangles
         for (ni, ntri) in new {
             for k in 0..3 {
-                let key = edge_key2(ntri[k], ntri[(k + 1) % 3]);
                 for (nj, ntri2) in new {
                     if nj == ni {
                         continue;
@@ -242,7 +230,7 @@ pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
         // external relinks
         for (ni, ntri) in new {
             for k in 0..3 {
-                let key = edge_key2(ntri[k], ntri[(k + 1) % 3]);
+                let key = edge_key(ntri[k], ntri[(k + 1) % 3]);
                 if let Some(&(di, dk)) = external.get(&key) {
                     let Some((_, _, dn)) = dead.iter().find(|(di2, _, _)| *di2 == di) else {
                         continue;
@@ -406,38 +394,18 @@ pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
         // legalize: every edge of every new triangle is checked against its
         // opposite triangle; the stack grows with each flip's new edges and
         // drains when no edge violates the in-circumcircle criterion
-        let mut stack: Vec<([usize; 3], usize)> = Vec::with_capacity(16);
-        for (tidx, t) in &new_tris {
+        let mut stack: Vec<[usize; 3]> = Vec::with_capacity(16);
+        for (_tidx, t) in &new_tris {
             for k in 0..3 {
-                stack.push(([t[k], t[(k + 1) % 3], t[(k + 2) % 3]], *tidx));
+                stack.push([t[k], t[(k + 1) % 3], t[(k + 2) % 3]]);
             }
         }
         let mut guard = 0usize;
-        while let Some(([a, b, w], carrier)) = stack.pop() {
+        while let Some([a, b, w]) = stack.pop() {
             guard += 1;
             if guard > 64 * triangles.len() + 4096 {
                 break;
             }
-            // the two live carriers of the edge (a, b): the recorded
-            // carrier + its current link (both O(1)); either stale hint
-            // falls back to the exhaustive scan
-            let found = if tri_has_edge(triangles[carrier], a, b) {
-                let k = edge_slot_of(&triangles[carrier], a, b).expect("carrier has the edge");
-                let o = nbr[carrier][k];
-                if o >= 0 && tri_has_edge(triangles[o as usize], a, b) {
-                    let o = o as usize;
-                    // exactly two carriers in a valid triangulation
-                    Some(vec![
-                        (carrier, triangles[carrier]),
-                        (o, triangles[o]),
-                    ])
-                } else {
-                    // boundary edge: no opposite triangle
-                    None
-                }
-            } else {
-                None
-            };
             // the carriers of (a, b) live in endpoint a's star: the same
             // census the old full scan took, at star size instead of O(T)
             let mut found: Vec<(usize, [usize; 3])> = adjv[a]
@@ -535,9 +503,9 @@ pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
                 &[(ti0, tri0, d0), (ti1, tri1, d1)],
                 &[(ti0, n0), (ti1, n1)],
             );
-            for (tidx, t) in [(ti0, n0), (ti1, n1)] {
+            for t in [n0, n1] {
                 for k in 0..3 {
-                    stack.push(([t[k], t[(k + 1) % 3], t[(k + 2) % 3]], tidx));
+                    stack.push([t[k], t[(k + 1) % 3], t[(k + 2) % 3]]);
                 }
             }
         }

@@ -120,7 +120,7 @@ impl TetMesh {
         // Build face → [(tet_idx, face_idx)] map with sorted keys.
         let mut face_map: HashMap<[u32; 3], Vec<(u32, u32)>> =
             HashMap::with_capacity(self.tets.len() * 2);
-        for (ti, tet) in self.tets.iter().enumerate() {
+        for (ti, _tet) in self.tets.iter().enumerate() {
             for fi in 0..4u32 {
                 let mut face = self.face_nodes(ti, fi as usize);
                 face.sort_unstable();

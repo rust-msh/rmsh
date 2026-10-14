@@ -234,14 +234,6 @@ pub fn read_vtk_legacy(bytes: &[u8]) -> Result<Mesh, MshError> {
     let mut cell_nodes: Vec<Vec<u64>> = Vec::new();
     let mut physical: Vec<i32> = Vec::new();
 
-    let get_word = |p: &mut usize| -> Option<&'static str> {
-        // SAFETY-free: words are &'str borrowed from `text` which outlives;
-        // re-typed as 'static is invalid, so return owned via leak-free
-        // approach: use indices instead.
-        None::<&'static str>
-    };
-    let _ = get_word;
-
     // sequential scan with an index (no lifetimes games)
     let at = |i: usize| -> Option<&str> { words.get(i).copied() };
     while p < words.len() {
@@ -306,7 +298,7 @@ pub fn read_vtk_legacy(bytes: &[u8]) -> Result<Mesh, MshError> {
                     })?;
                     // perm is already the inverse of the write permutation
                     let node_ids = permute_nodes(&perm, ids);
-                    let mut element = Element::new(next_element_id, etype, node_ids);
+                    let element = Element::new(next_element_id, etype, node_ids);
                     next_element_id += 1;
                     mesh.add_element(element);
                 }

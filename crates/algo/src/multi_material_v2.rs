@@ -97,6 +97,9 @@ pub(crate) type CarveResult<T> = Result<T, CarveError>;
 
 #[derive(Error, Debug)]
 pub(crate) enum CarveError {
+    // Never constructed today — the convex carve is infallible; the
+    // general-cavity 3-D CDT card makes it fallible and constructs this.
+    #[allow(dead_code)]
     #[error("cavity carve failed: {0}")]
     Generation(String),
 }
@@ -207,11 +210,6 @@ impl NodePool {
         self.map.insert(k, self.coords.len() - 1);
         self.coords.len() - 1
     }
-}
-
-/// One edge crossing of the plane (shared by both cut pieces verbatim).
-struct Cut {
-    p: [f64; 3],
 }
 
 fn plane_value(plane: &([f64; 3], f64), p: [f64; 3]) -> f64 {
