@@ -250,9 +250,62 @@ fn corpus_cube_tet_three_meshers() {
     let f = Frontal3D::default().mesh_3d(&surface, &params).unwrap();
     let h = Hxt3D::default().mesh_3d(&surface, &params).unwrap();
 
-    corpus_cube_gate("cube_delaunay3d", &tet_quality_stats(&d));
-    corpus_cube_gate("cube_frontal3d", &tet_quality_stats(&f));
-    corpus_cube_gate("cube_hxt3d", &tet_quality_stats(&h));
+    let qd = tet_quality_stats(&d);
+    let qf = tet_quality_stats(&f);
+    let qh = tet_quality_stats(&h);
+    corpus_cube_gate("cube_delaunay3d", &qd);
+    corpus_cube_gate("cube_frontal3d", &qf);
+    corpus_cube_gate("cube_hxt3d", &qh);
+
+    // Golden exact pins — all THREE meshers. The Hxt3D "cross-binary
+    // drift" ledger entry resolved as an input-confusion artifact (the
+    // hxt-test box fixture has an inward bottom face, the corpus box is
+    // outward; 19.777 vs 21.944 were the two DIFFERENT fixtures), and
+    // five-process digest equality over the whole fixture family pins
+    // the pipeline cross-process bit-deterministic (2026-10-14). A
+    // drift here owes the review an explanation.
+    assert_eq!(qd.tet_count, 76, "delaunay3d golden count drifted");
+    assert_eq!(qf.tet_count, 76, "frontal3d golden count drifted");
+    assert_eq!(qh.tet_count, 73, "hxt3d golden count drifted");
+    for (name, q, min_d, p95, sliver) in [
+        (
+            "delaunay3d",
+            &qd,
+            5.624_999_999_999_975,
+            8.855_231_606_230_609,
+            0.026_315_789_473_684_21,
+        ),
+        (
+            "frontal3d",
+            &qf,
+            5.624_999_999_999_975,
+            8.855_231_606_230_609,
+            0.026_315_789_473_684_21,
+        ),
+        (
+            "hxt3d",
+            &qh,
+            21.751_817_807_142_02,
+            4.586_175_512_861_971,
+            0.0,
+        ),
+    ] {
+        assert!(
+            (q.min_dihedral_deg - min_d).abs() < 1e-6,
+            "{name} golden min dihedral drifted: {}",
+            q.min_dihedral_deg
+        );
+        assert!(
+            (q.p95_radius_edge - p95).abs() < 1e-6,
+            "{name} golden p95 radius-edge drifted: {}",
+            q.p95_radius_edge
+        );
+        assert!(
+            (q.sliver_fraction - sliver).abs() < 1e-9,
+            "{name} golden sliver fraction drifted: {}",
+            q.sliver_fraction
+        );
+    }
 }
 
 // ── F5: nested cubes, multi-material ─────────────────────────────────────────

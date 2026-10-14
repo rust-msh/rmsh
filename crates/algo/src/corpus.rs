@@ -17,13 +17,19 @@
 //! The ROADMAP's post-optimization hard gate — min dihedral ≥ 5°,
 //! p95 radius-edge ≤ 2.0, sliver fraction ≤ 0.1% — is the long-term
 //! target ([`QualityGate::roadmap_hard_gate`]). Where the current
-//! meshers do not meet it yet (the raw 3-D output predates the quality
-//! card's spindle rework), the corpus pins the MEASURED baseline as the
-//! regression bound and REPORTS the distance to the hard gate — never a
-//! fake green. The 2-D families already clear a strict quality band
-//! (the P3a Gmsh x1.15 relative lines are the acceptance oracle for the
-//! plate family; those Gmsh-CLI comparisons stay in the mesher's own
-//! test module).
+//! meshers do not meet it yet, the corpus pins the MEASURED baseline as
+//! the regression bound and REPORTS the distance to the hard gate —
+//! never a fake green. For the cube family the remaining gap is the
+//! corner-diagonal spindle residue (boundary-locked long edges the
+//! local flip/collapse/relocate family cannot touch — the ROADMAP P4
+//! spindle decision): the 3-D quality card's wired flip-convergence arm
+//! moved the Delaunay3D/Frontal3D p95 from 20.6 to 8.9, and Hxt3D's own
+//! optimizer sits at 4.6. All three meshers are deterministic (the
+//! Hxt3D "drift" was an input-confusion artifact, see its module docs),
+//! so the corpus exact pins cover all of them. The 2-D families already
+//! clear a strict quality band (the P3a Gmsh x1.15 relative lines are
+//! the acceptance oracle for the plate family; those Gmsh-CLI
+//! comparisons stay in the mesher's own test module).
 //!
 //! # Families (v1)
 //!

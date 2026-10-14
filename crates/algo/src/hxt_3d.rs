@@ -53,7 +53,17 @@
 //!
 //! Same input + same config ⇒ **bit-identical output mesh for any
 //! `num_threads`** (pinned by tests, including a 1-thread vs all-core
-//! bit-equality check). The policy that delivers this:
+//! bit-equality check) **and across processes**: 2026-10-14 (the drift
+//! card) verified five separate test-binary runs over the cube /
+//! stretched / slender fixture family byte-identical (connectivity +
+//! coordinate digests). The earlier "cross-binary min-dihedral drift"
+//! (19.777 vs 21.944 in the defect ledger) resolved as an
+//! input-confusion artifact — the two numbers came from two DIFFERENT
+//! box fixtures: this file's `box_surface` test helper has an inward
+//! bottom face while `corpus::box_surface` is outward-oriented, so
+//! 19.777 (this fixture) and 21.944 (the corpus fixture, pre-quality-
+//! card seed) were never the same input. The policy that delivers the
+//! determinism:
 //!
 //! * Per-node relocation evaluation is a **pure function** of the node
 //!   positions at the moment its color class is processed (the evaluation
