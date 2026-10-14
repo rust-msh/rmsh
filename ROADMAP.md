@@ -51,7 +51,14 @@ rcad → rmsh）。分层裁定（布尔不进 rmsh、曲率/特征查询挂 tra
 
 ### P2 — 几何接口与自适应地基（依赖倒置首卡）
 - [x] `GeometrySource` trait（`ce2fcac`：closest_hit + principal_curvatures v1 面；特征尺寸随特征捕捉卡）
-- [ ] rcad 侧适配（rmsh-adaptor crate 或单体内核侧）实现 trait + **BRep 细分桥收编**
+- [x] rcad 侧适配（rmsh-adaptor crate 或单体内核侧）实现 trait + **BRep 细分桥收编**
+  （✅ 2026-10-14 收编落地：P2a 裁定的 rmsh-bridge = 适配器的实际落点
+  ——`RcadGeometrySource` 在桥内，依赖方向 rcad → rmsh 不变；pro 侧
+  rcad-io 的 `brep_to_mesh.rs` 按 Rule 4 退役旧走读、整体委托
+  `rmsh_bridge::brep_surface_mesh`（workspace `exclude = ["rmsh",
+  "rcad"]` + 一行 dep），两处文档化偏离随桥生效：两级间接寻址 +
+  节点量化去重；消费者三件套验证 rcad-io 10/0、feflow 14/0、
+  drawing 编译过）
 - [x] 尺寸场框架（`b023d45`：SizeField trait + 均匀/解析/曲率/距离四源 + Min/Max 合成 + 背景格点限梯度——26 邻域真欧氏 GS 传播、无变化早退即 Bellman 不动点；带孔板验收数字全钉：孔缘 factor·r 精确、过渡带 0.8 fp 精确、梯度超调实测最差 0.82 < 1.05 钉容差）
 - [x] 曲率场 + 距离场两个几何派生源（消费 GeometrySource）
 - 验收：**达成**——带孔板曲率自适应场景字段级 corpus 钉（P3 把场接入 Frontal-Delaunay 即网格级自适应）；裁剪分类器单列独立卡
