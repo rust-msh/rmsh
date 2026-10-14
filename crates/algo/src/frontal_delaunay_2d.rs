@@ -204,13 +204,54 @@ impl<'a> Mesher2D for FrontalDelaunay2D<'a> {
         // the pop; a successful insertion re-activates the new triangles'
         // neighbours)
         let mut processed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        // The incremental worst-active candidates (Gmsh keeps an ordered
+        // set of MTri3 by normalized radius). A triangle's normalized
+        // radius is IMMUTABLE through the front — pts only grows, vsize/
+        // bgm are frozen per vertex, insert() only appends — so the set
+        // keyed by (radius bits, !index) supports lazy validation: pop the
+        // max radius (ties: smallest index, exactly the old ascending
+        // scan's strict-> pick), skip stale entries (dead, processed, or
+        // no active edge). Push points: the initial live set, the
+        // neighbours of every processed triangle, and the re-activated
+        // fan + neighbours after each commit. A fallback full scan keeps
+        // the old behaviour should the push invariant ever miss.
+        let mut candidates: std::collections::BTreeSet<(u64, u64)> =
+            std::collections::BTreeSet::new();
+        for t in 0..tmesh.tri.len() {
+            if !tmesh.dead[t] {
+                push_active_candidate(&mut candidates, &tmesh, LIMIT_, t);
+            }
+        }
         let mut iters = 0usize;
         while iters < max_iters {
             iters += 1;
-            let Some(worst) = tmesh.worst_active(LIMIT_, &processed) else {
+            let mut worst = None;
+            while let Some(&(bits, ti)) = candidates.last() {
+                candidates.pop_last();
+                let t = !(ti as usize);
+                if tmesh.dead[t] || processed.contains(&t) || !tmesh.is_active(t, LIMIT_) {
+                    continue;
+                }
+                worst = Some(t);
                 break;
+            }
+            let worst = match worst {
+                Some(t) => t,
+                None => {
+                    // invariant fallback: one full scan (identical to the
+                    // old behaviour; repairs the set if a push was ever
+                    // missed)
+                    match tmesh.worst_active(LIMIT_, &processed) {
+                        Some(t) => {
+                            push_neighborhood(&mut candidates, &tmesh, LIMIT_, t);
+                            t
+                        }
+                        None => break,
+                    }
+                }
             };
             processed.insert(worst);
+            push_neighborhood(&mut candidates, &tmesh, LIMIT_, worst);
             let Some(first_active) = tmesh.active_edge(worst, LIMIT_) else {
                 continue;
             };
@@ -226,16 +267,6 @@ impl<'a> Mesher2D for FrontalDelaunay2D<'a> {
             let (pa, pb, pc) = (tmesh.pts[tri[0]], tmesh.pts[tri[1]], tmesh.pts[tri[2]]);
             let Some(cc) = circumcenter(pa, pb, pc) else {
                 continue;
-            };
-            let vsize_snapshot = tmesh.vsize.clone();
-            let bgm_snapshot = tmesh.bgm.clone();
-            let vsize_at = |v: usize| -> f64 {
-                let s = vsize_snapshot[v];
-                if s.is_finite() && s > 0.0 {
-                    s
-                } else {
-                    bgm_snapshot[v]
-                }
             };
             let mut inserted = false;
             for ek in [first_active, (first_active + 1) % 3, (first_active + 2) % 3] {
@@ -257,9 +288,26 @@ impl<'a> Mesher2D for FrontalDelaunay2D<'a> {
                 let dir = [dir[0] / norm, dir[1] / norm];
                 // rho: the smaller of the mesh-implied local size and the
                 // field size at the edge's endpoints (vSizes / vSizesBGM,
-                // both frozen per-vertex entries)
-                let v1 = vsize_at(tri[ip1]);
-                let v2 = vsize_at(tri[ip2]);
+                // both frozen per-vertex entries — insert() only ever
+                // APPENDS entries for the new vertex, so the live vectors
+                // equal any snapshot at every read here; the former
+                // per-iteration clones were pure O(n) overhead)
+                let v1 = {
+                    let s = tmesh.vsize[tri[ip1]];
+                    if s.is_finite() && s > 0.0 {
+                        s
+                    } else {
+                        tmesh.bgm[tri[ip1]]
+                    }
+                };
+                let v2 = {
+                    let s = tmesh.vsize[tri[ip2]];
+                    if s.is_finite() && s > 0.0 {
+                        s
+                    } else {
+                        tmesh.bgm[tri[ip2]]
+                    }
+                };
                 let rho_m1 = 0.5 * (v1 + v2);
                 let rho_m2 = 0.5 * (tmesh.bgm[tri[ip1]] + tmesh.bgm[tri[ip2]]);
                 let rho = rho_m1.min(rho_m2);
@@ -284,6 +332,7 @@ impl<'a> Mesher2D for FrontalDelaunay2D<'a> {
                     // re-activate the new triangles and their neighbours
                     for t in new_first..tmesh.tri.len() {
                         processed.remove(&t);
+                        push_neighborhood(&mut candidates, &tmesh, LIMIT_, t);
                         for k in 0..3 {
                             let n = tmesh.neigh[t][k];
                             if n >= 0 {
@@ -466,6 +515,44 @@ fn domain_center(domain: &Domain2D) -> [f64; 2] {
         max_y = max_y.max(p[1]);
     }
     [(min_x + max_x) * 0.5, (min_y + max_y) * 0.5]
+}
+
+/// Enter triangle `t` into the worst-active candidate set when its
+/// normalized radius exceeds the activity limit. The f64 bits order
+/// monotonically for the non-negative radii `radius()` returns; the
+/// second key is the BITWISE-NOT index, so an ascending `pop_last` yields
+/// the maximum radius with the SMALLEST index on ties — exactly the old
+/// ascending scan's strict-greater pick.
+fn push_active_candidate(
+    candidates: &mut std::collections::BTreeSet<(u64, u64)>,
+    tmesh: &TriMesh2d,
+    limit: f64,
+    t: usize,
+) {
+    let r = tmesh.radius(t);
+    if r > limit {
+        candidates.insert((r.to_bits(), !(t as u64)));
+    }
+}
+
+/// Push `t` (if live) and its live neighbours into the candidate set —
+/// the complete re-activation neighbourhood of one commit/pop step.
+fn push_neighborhood(
+    candidates: &mut std::collections::BTreeSet<(u64, u64)>,
+    tmesh: &TriMesh2d,
+    limit: f64,
+    t: usize,
+) {
+    if tmesh.dead[t] {
+        return;
+    }
+    push_active_candidate(candidates, tmesh, limit, t);
+    for k in 0..3 {
+        let n = tmesh.neigh[t][k];
+        if n >= 0 && !tmesh.dead[n as usize] {
+            push_active_candidate(candidates, tmesh, limit, n as usize);
+        }
+    }
 }
 
 // geometry helpers (the mesher itself uses cdt_2d/mesh_quality_2d)

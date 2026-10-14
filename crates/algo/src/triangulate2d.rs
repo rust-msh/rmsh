@@ -127,6 +127,26 @@ pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
     all.push(st1);
     all.push(st2);
 
+    /// The unordered edge key of (u, v).
+    fn edge_key2(u: usize, v: usize) -> [usize; 2] {
+        if u <= v {
+            [u, v]
+        } else {
+            [v, u]
+        }
+    }
+
+    /// The CCW edge slot carrying the unordered edge (u, v).
+    fn edge_slot_of(tri: &[usize; 3], u: usize, v: usize) -> Option<usize> {
+        for k in 0..3 {
+            let (a, b) = (tri[k], tri[(k + 1) % 3]);
+            if (a == u && b == v) || (a == v && b == u) {
+                return Some(k);
+            }
+        }
+        None
+    }
+
     // ── Lawson incremental construction ──────────────────────────────────
     // Every point is inserted into its containing triangle (a fan of 3, or
     // an exact edge split when the point lies EXACTLY on an edge) and the
@@ -139,21 +159,163 @@ pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
     // cocircular ties leave a valid weakly-Delaunay triangulation instead
     // of overlapping triangles (the concave-domain leak the P3 quality card
     // traced to cavity ties on the super-triangle circles).
+    //
+    // Per-triangle neighbour links (`nbr[ti][k]` = the live carrier across
+    // the CCW edge (tri[k], tri[k+1]), -1 = none) are maintained through
+    // every mutation: the point location walks from the previous host
+    // (expected sub-linear), and the legalization carrier lookup reads the
+    // link in O(1) (full-scan fallbacks preserve the old behaviour on any
+    // stale hint). Both were full O(T) scans and dominated the build time
+    // (measured 94% at n = 5000).
     let mut triangles: Vec<[usize; 3]> = vec![tri_ccw([st_start, st_start + 1, st_start + 2], &all)];
+    let mut nbr: Vec<[i32; 3]> = vec![[-1; 3]];
+    // vertex -> incident live triangles (Gmsh's adjv): the legalize
+    // carrier lookup scans one endpoint's star instead of the whole
+    // triangle vector
+    let mut adjv: Vec<Vec<usize>> = vec![Vec::new(); all.len()];
+    for v in &triangles[0] {
+        adjv[*v].push(0);
+    }
 
+    // Rewire the neighbourhoods after replacing `dead` triangles (index +
+    // old value + old links) with `new` ones (index + value): interior
+    // edges pair the new triangles mutually; the surviving external edges
+    // relink to their old neighbours and fix the neighbours' back links.
+    // In-place index reuse keeps most back links valid; the back-link fix
+    // handles the slots that moved.
+    fn patch_neighbours(
+        nbr: &mut Vec<[i32; 3]>,
+        adjv: &mut [Vec<usize>],
+        dead: &[(usize, [usize; 3], [i32; 3])],
+        new: &[(usize, [usize; 3])],
+    ) {
+        // star maintenance: the replaced triangles leave their corners'
+        // stars, the new ones enter them
+        for (di, dtri, _) in dead {
+            for &v in dtri {
+                adjv[v].retain(|t| *t != *di);
+            }
+        }
+        for (ni, ntri) in new {
+            for &v in ntri {
+                adjv[v].push(*ni);
+            }
+        }
+        // grow alongside the triangle vector (new slots start unlinked)
+        let need = new.iter().map(|(i, _)| i + 1).max().unwrap_or(0);
+        if nbr.len() < need {
+            nbr.resize(need, [-1; 3]);
+        }
+        let mut external: std::collections::HashMap<[usize; 2], (usize, usize)> =
+            std::collections::HashMap::new();
+        for (di, dtri, _dn) in dead {
+            for k in 0..3 {
+                external.insert(edge_key2(dtri[k], dtri[(k + 1) % 3]), (*di, k));
+            }
+        }
+        for (ni, ntri) in new {
+            for k in 0..3 {
+                let key = edge_key2(ntri[k], ntri[(k + 1) % 3]);
+                if external.remove(&key).is_some() {
+                    continue;
+                }
+                // interior edge: the twin is another NEW triangle (matched
+                // when its turn comes; both directions set there)
+            }
+        }
+        // interior pairing among the new triangles
+        for (ni, ntri) in new {
+            for k in 0..3 {
+                let key = edge_key2(ntri[k], ntri[(k + 1) % 3]);
+                for (nj, ntri2) in new {
+                    if nj == ni {
+                        continue;
+                    }
+                    if let Some(k2) = edge_slot_of(ntri2, ntri[k], ntri[(k + 1) % 3]) {
+                        nbr[*ni][k] = *nj as i32;
+                        nbr[*nj][k2] = *ni as i32;
+                        break;
+                    }
+                }
+            }
+        }
+        // external relinks
+        for (ni, ntri) in new {
+            for k in 0..3 {
+                let key = edge_key2(ntri[k], ntri[(k + 1) % 3]);
+                if let Some(&(di, dk)) = external.get(&key) {
+                    let Some((_, _, dn)) = dead.iter().find(|(di2, _, _)| *di2 == di) else {
+                        continue;
+                    };
+                    let old_nb = dn[dk];
+                    nbr[*ni][k] = old_nb;
+                    if old_nb >= 0 {
+                        let on = old_nb as usize;
+                        if let Some(kk) = (0..3).find(|&kk| nbr[on][kk] == di as i32) {
+                            nbr[on][kk] = *ni as i32;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut hint = 0usize;
     for i in 0..n {
-        // locate the first triangle whose three edge orientations accept i
-        // (CCW storage: all signs >= 0); the scan is deterministic
+        // locate: walk from the hint triangle across the first violated
+        // edge (deterministic CCW-first rule; the mesh is weakly Delaunay
+        // between insertions, so the walk terminates), falling back to the
+        // exhaustive scan on a tripped guard
         let mut host: Option<(usize, [i32; 3])> = None;
-        for (ti, &tri) in triangles.iter().enumerate() {
-            let s = [
-                crate::predicates::orient2d_sign(all[tri[0]], all[tri[1]], all[i]),
-                crate::predicates::orient2d_sign(all[tri[1]], all[tri[2]], all[i]),
-                crate::predicates::orient2d_sign(all[tri[2]], all[tri[0]], all[i]),
-            ];
-            if s[0] >= 0 && s[1] >= 0 && s[2] >= 0 {
-                host = Some((ti, s));
-                break;
+        {
+            let mut t = hint;
+            let mut guard = 0usize;
+            loop {
+                guard += 1;
+                if guard > 4 * triangles.len() + 64 {
+                    break;
+                }
+                let tri = triangles[t];
+                let mut signs = [0i32; 3];
+                let mut violated = None;
+                for k in 0..3 {
+                    let s = crate::predicates::orient2d_sign(
+                        all[tri[k]],
+                        all[tri[(k + 1) % 3]],
+                        all[i],
+                    );
+                    signs[k] = s;
+                    if s < 0 {
+                        violated = Some(k);
+                        break;
+                    }
+                }
+                match violated {
+                    None => {
+                        host = Some((t, signs));
+                        break;
+                    }
+                    Some(k) => {
+                        let nx = nbr[t][k];
+                        if nx < 0 {
+                            break; // walked off the hull: exhaustive fallback
+                        }
+                        t = nx as usize;
+                    }
+                }
+            }
+        }
+        if host.is_none() {
+            for (ti, tri) in triangles.iter().enumerate() {
+                let s = [
+                    crate::predicates::orient2d_sign(all[tri[0]], all[tri[1]], all[i]),
+                    crate::predicates::orient2d_sign(all[tri[1]], all[tri[2]], all[i]),
+                    crate::predicates::orient2d_sign(all[tri[2]], all[tri[0]], all[i]),
+                ];
+                if s[0] >= 0 && s[1] >= 0 && s[2] >= 0 {
+                    host = Some((ti, s));
+                    break;
+                }
             }
         }
         let Some((ti, s)) = host else {
@@ -161,8 +323,9 @@ pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
             // the unit box, which the super-triangle covers with margin
             continue;
         };
+        hint = ti;
         let tri = triangles[ti];
-        let mut new_tris: Vec<[usize; 3]> = Vec::with_capacity(4);
+        let mut new_tris: Vec<(usize, [usize; 3])> = Vec::with_capacity(4);
         if s[0] == 0 || s[1] == 0 || s[2] == 0 {
             // exactly on edge k (exact collinearity, e.g. an axis-aligned
             // boundary chain): split the edge in both carrying triangles
@@ -184,14 +347,21 @@ pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
             }
             let t0 = tri_ccw([u, i, x], &all);
             let t1 = tri_ccw([i, v, x], &all);
+            // the neighbour across (u, v): the link, validated
+            let oj_find = {
+                let o = nbr[ti][k];
+                if o >= 0 && tri_has_edge(triangles[o as usize], u, v) {
+                    Some(o as usize)
+                } else {
+                    (0..triangles.len())
+                        .find(|&oj| oj != ti && tri_has_edge(triangles[oj], u, v))
+                }
+            };
             triangles[ti] = t0;
-            new_tris.push(t0);
+            new_tris.push((ti, t0));
             triangles.push(t1);
-            new_tris.push(t1);
-            // the neighbour across (u, v) splits too
-            let oj = (0..triangles.len())
-                .find(|&oj| oj != ti && tri_has_edge(triangles[oj], u, v));
-            if let Some(oj) = oj {
+            new_tris.push((triangles.len() - 1, t1));
+            if let Some(oj) = oj_find {
                 let ntri = triangles[oj];
                 let y = ntri
                     .iter()
@@ -200,44 +370,93 @@ pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
                     .expect("edge endpoints are triangle vertices");
                 let t2 = tri_ccw([u, y, i], &all);
                 let t3 = tri_ccw([i, y, v], &all);
+                let dead_nbr = nbr[oj];
                 triangles[oj] = t2;
-                new_tris.push(t2);
+                new_tris.push((oj, t2));
                 triangles.push(t3);
-                new_tris.push(t3);
+                new_tris.push((triangles.len() - 1, t3));
+                let dn0 = nbr[ti];
+                patch_neighbours(
+                    &mut nbr,
+                    &mut adjv,
+                    &[
+                        (ti, tri, dn0),
+                        (oj, ntri, dead_nbr),
+                    ],
+                    &new_tris,
+                );
+            } else {
+                let dn0 = nbr[ti];
+                patch_neighbours(&mut nbr, &mut adjv, &[(ti, tri, dn0)], &new_tris);
             }
         } else {
             // strictly inside: replace the host with the fan of 3
             let t0 = tri_ccw([tri[0], tri[1], i], &all);
             let t1 = tri_ccw([tri[1], tri[2], i], &all);
             let t2 = tri_ccw([tri[2], tri[0], i], &all);
+            let dead_nbr = nbr[ti];
             triangles[ti] = t0;
-            new_tris.push(t0);
+            new_tris.push((ti, t0));
             triangles.push(t1);
-            new_tris.push(t1);
+            new_tris.push((triangles.len() - 1, t1));
             triangles.push(t2);
-            new_tris.push(t2);
+            new_tris.push((triangles.len() - 1, t2));
+            patch_neighbours(&mut nbr, &mut adjv, &[(ti, tri, dead_nbr)], &new_tris);
         }
         // legalize: every edge of every new triangle is checked against its
         // opposite triangle; the stack grows with each flip's new edges and
         // drains when no edge violates the in-circumcircle criterion
-        let mut stack: Vec<[usize; 3]> = Vec::with_capacity(16);
-        for t in &new_tris {
+        let mut stack: Vec<([usize; 3], usize)> = Vec::with_capacity(16);
+        for (tidx, t) in &new_tris {
             for k in 0..3 {
-                stack.push([t[k], t[(k + 1) % 3], t[(k + 2) % 3]]);
+                stack.push(([t[k], t[(k + 1) % 3], t[(k + 2) % 3]], *tidx));
             }
         }
         let mut guard = 0usize;
-        while let Some([a, b, w]) = stack.pop() {
+        while let Some(([a, b, w], carrier)) = stack.pop() {
             guard += 1;
             if guard > 64 * triangles.len() + 4096 {
                 break;
             }
-            // the two live carriers of the edge (a, b)
-            let mut it = triangles
+            // the two live carriers of the edge (a, b): the recorded
+            // carrier + its current link (both O(1)); either stale hint
+            // falls back to the exhaustive scan
+            let found = if tri_has_edge(triangles[carrier], a, b) {
+                let k = edge_slot_of(&triangles[carrier], a, b).expect("carrier has the edge");
+                let o = nbr[carrier][k];
+                if o >= 0 && tri_has_edge(triangles[o as usize], a, b) {
+                    let o = o as usize;
+                    // exactly two carriers in a valid triangulation
+                    Some(vec![
+                        (carrier, triangles[carrier]),
+                        (o, triangles[o]),
+                    ])
+                } else {
+                    // boundary edge: no opposite triangle
+                    None
+                }
+            } else {
+                None
+            };
+            // the carriers of (a, b) live in endpoint a's star: the same
+            // census the old full scan took, at star size instead of O(T)
+            let mut found: Vec<(usize, [usize; 3])> = adjv[a]
                 .iter()
-                .enumerate()
-                .filter(|(_, t)| tri_has_edge(**t, a, b))
-                .map(|(ti, t)| (ti, *t));
+                .copied()
+                .filter(|t| tri_has_edge(triangles[*t], a, b))
+                .map(|ti| (ti, triangles[ti]))
+                .collect();
+            if found.len() != 2 {
+                // stale star (should not happen with maintained adjacency):
+                // the old exhaustive census, unchanged
+                found = triangles
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| tri_has_edge(**t, a, b))
+                    .map(|(ti, t)| (ti, *t))
+                    .collect();
+            }
+            let mut it = found.into_iter();
             let (Some((ti0, tri0)), Some((ti1, tri1))) = (it.next(), it.next()) else {
                 continue;
             };
@@ -306,11 +525,19 @@ pub fn triangulate_points(pts: &[[f64; 2]]) -> Vec<[usize; 3]> {
             }
             let n0 = tri_ccw([da, w, x], &all);
             let n1 = tri_ccw([w, db, x], &all);
+            let d0 = nbr[ti0];
+            let d1 = nbr[ti1];
             triangles[ti0] = n0;
             triangles[ti1] = n1;
-            for t in [&n0, &n1] {
+            patch_neighbours(
+                &mut nbr,
+                &mut adjv,
+                &[(ti0, tri0, d0), (ti1, tri1, d1)],
+                &[(ti0, n0), (ti1, n1)],
+            );
+            for (tidx, t) in [(ti0, n0), (ti1, n1)] {
                 for k in 0..3 {
-                    stack.push([t[k], t[(k + 1) % 3], t[(k + 2) % 3]]);
+                    stack.push(([t[k], t[(k + 1) % 3], t[(k + 2) % 3]], tidx));
                 }
             }
         }
