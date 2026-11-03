@@ -1,19 +1,19 @@
-pub mod element;
-pub mod mesh;
-pub mod partition;
-pub mod node;
+//! rmsh mesh-product model surface.
+//!
+//! The shared finite-element mesh data model ([`Mesh`], [`Node`],
+//! [`Element`], [`ElementType`], the MSH partition semantics) is defined
+//! ONCE in `rcad-mesh` and re-exported here, so the mesh product and the
+//! geometry kernel import the same types. What stays in this crate is the
+//! Gmsh-style geometry topology model ([`GModel`] and its entities), which
+//! is rmsh-specific and has no rcad counterpart.
+
 pub mod topology;
 
-pub use element::{Element, ElementType, gmsh_node_count};
-pub use mesh::{Mesh, PeriodicLink};
-pub use partition::{GhostElement, GhostEntity, PartitionInfo, PartitionedEntity};
-pub use node::Node;
-pub use topology::{GEdge, GFace, GModel, GRegion, GSelection, GVertex};
+pub use rcad_mesh::{
+    brep_surface_mesh, Element, ElementType, GhostElement, GhostEntity, Mesh, Node, PartitionInfo,
+    PartitionedEntity, PeriodicLink, Point3, Vector3, gmsh_node_count,
+};
 
 // Backward compatibility aliases
 pub use topology::{TopoEdge, TopoFace, TopoSelection, TopoVertex, TopoVolume, Topology};
-
-/// 3D point type alias
-pub type Point3 = nalgebra::Point3<f64>;
-/// 3D vector type alias
-pub type Vector3 = nalgebra::Vector3<f64>;
+pub use topology::{GEdge, GFace, GModel, GRegion, GSelection, GVertex};

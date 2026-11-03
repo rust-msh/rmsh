@@ -14,10 +14,9 @@ pyo3 = { version = "0.23", features = ["extension-module", "abi3-py39", "generat
 rmsh-model.workspace = true
 rmsh-io.workspace = true
 rmsh-algo.workspace = true
-rmsh-bridge.workspace = true
 rcad-kernel.workspace = true
 rcad-modeling.workspace = true
 rcad-step.workspace = true
-rcad-mesh.workspace = true
+rcad-tess.workspace = true
 rcad-algo.workspace = true
 glam.workspace = true

@@ -6,22 +6,12 @@ use std::sync::{Arc, RwLock};
 use glam::DVec3;
 use rcad_kernel::topo_shape::Shape;
 use rcad_kernel::topods::{BRep, Orientation, TShape};
-use rcad_mesh::b_rep_mesh::facade::IncrementalMesh;
-
-/// The triangle count the unit-box tessellation mounts (pinned after first
-/// observing the pipeline output; the walk must stay stable against it).
-pub(crate) const EXPECTED_BOX_TRIANGLES: usize = 12;
-
-/// The deduped node count of the unit-box tessellation (the 8 corners, when
-/// the deflection-0.1 mesh puts no interior or edge-midpoint nodes).
-pub(crate) const EXPECTED_BOX_NODES: usize = 8;
+use rcad_tess::b_rep_mesh::facade::IncrementalMesh;
 
 /// A unit box [0,1]^3 BRep tessellated through the open-source
 /// `IncrementalMesh` facade, returned shared because the mesher keeps its
-/// own handle while running.
-///
-/// This is the documented tessellation entry point of the bridge card:
-/// the walk under test only READS triangulations, the mounting happens here.
+/// own handle while running. The walk under test only READS triangulations;
+/// the mounting happens here.
 pub fn meshed_unit_box() -> Arc<RwLock<BRep>> {
     let brep = unit_box_brep();
 

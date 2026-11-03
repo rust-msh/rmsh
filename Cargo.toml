@@ -39,13 +39,14 @@ rmsh-renderer = { path = "crates/renderer" }
 # RCAD — the open-source rcad this project is built on, consumed from the
 # local monorepo checkout (the published standalone repo predates the
 # monorepo merge; the old rcad-algorithms package is now rcad-algo).
-rcad-kernel = { path = "../rcad/libs/rcad-kernel" }
-rcad-modeling = { path = "../rcad/libs/rcad-modeling" }
-rcad-algo = { path = "../rcad/libs/rcad-algo" }
-rcad-step = { path = "../rcad/libs/rcad-step" }
-rcad-render = { path = "../rcad/libs/rcad-render" }
-rcad-scene = { path = "../rcad/libs/rcad-scene" }
-rcad-mesh = { path = "../rcad/libs/rcad-mesh" }
+rcad-kernel = { path = "../libs/rcad-kernel" }
+rcad-modeling = { path = "../libs/rcad-modeling" }
+rcad-algo = { path = "../libs/rcad-algo" }
+rcad-step = { path = "../libs/rcad-step" }
+rcad-render = { path = "../libs/rcad-render" }
+rcad-scene = { path = "../libs/rcad-scene" }
+rcad-tess = { path = "../libs/rcad-tess" }
+rcad-mesh = { path = "../libs/rcad-mesh" }
 
 # Math
 nalgebra = { version = "0.33", features = ["serde-serialize"] }

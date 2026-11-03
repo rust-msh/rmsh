@@ -5,21 +5,24 @@
 
 ## 0. 产品定位与依赖宪章
 
-**定位**：rmsh 是一个**相对独立的开源 mesh 组件产品**——格式层（meshio 形态）
-+ 网格模型 + 可嵌入剖分算法组件（MeshGems 形态）。v1 **不做** GUI、求解器、
+**定位**：rmsh 是一个**开源 mesh 组件产品**——格式层（meshio 形态）
++ 可嵌入剖分算法组件（MeshGems 形态）。v1 **不做** GUI、求解器、
 正面 hex-dominant 战争。
 
 **依赖宪章（硬约束）**：rmsh 只允许依赖
 1. `std`；
 2. rmsh 自家 crate（`rmsh-model/geo/io/algo/...`）；
-3. **开源 rcad**（单体内核侧 crate：`rcad-kernel` / `rcad-algo` / `rcad-brep` /
-   `rcad-modeling` / `rcad-step` / `rcad-mesh`）。
+3. **开源 rcad**（`rcad-kernel` / `rcad-algo` / `rcad-brep` /
+   `rcad-modeling` / `rcad-step` / `rcad-tess` / `rcad-mesh`）。
 
 禁止依赖 pro 侧专有 crate（rcad-io / rcad-document / rcad-cam / rcad-pdm …）。
-**核心四库（model/geo/io/algo）保持零 rcad 依赖**——rcad 集成一律走依赖倒置：
-查询/几何源 trait 定义在 rmsh-algo，适配实现放 rcad 侧（依赖方向永远
-rcad → rmsh）。分层裁定（布尔不进 rmsh、曲率/特征查询挂 trait、边界层与
-尺寸场框架自长）见调研文档 §C。
+**依赖方向单向 rmsh → rcad**：rcad 不依赖 rmsh。共享网格模型
+（`Mesh`/`Node`/`Element`/`ElementType`/`partition`）定义在 `rcad-mesh`，
+`rmsh-model` re-export 同一套类型；rcad-io 的 CAE 写出器直接消费
+`rcad-mesh`，不再反向依赖 rmsh。rmsh 的 geo/io/algo 不直接依赖 rcad
+（仅经 `rmsh-model` 复用共享网格模型，网格算法与格式层自身不碰几何内核）；
+rcad 集成走 `rmsh-bridge` 的 `GeometrySource` 适配器。分层裁定（布尔不进 rmsh、曲率/特征查询挂 trait、
+边界层与尺寸场框架自长）见调研文档 §C。
 
 ## 1. 商业基准线（"达到商业产品"的可验收定义）
 
@@ -59,6 +62,11 @@ rcad → rmsh）。分层裁定（布尔不进 rmsh、曲率/特征查询挂 tra
   "rcad"]` + 一行 dep），两处文档化偏离随桥生效：两级间接寻址 +
   节点量化去重；消费者三件套验证 rcad-io 10/0、feflow 14/0、
   drawing 编译过）
+  > **2026-11-04 宪章更新**：共享网格模型已上移至 `rcad-mesh`（rcad
+  > 侧），`rmsh-model` re-export 同一套类型；BRep→Mesh 走查移入
+  > `rcad-mesh`，`rmsh-bridge` 只留 `GeometrySource` 适配器。依赖方向
+  > 由"rcad → rmsh"反转为**单向 rmsh → rcad**（rcad-io 的 CAE 写出器
+  > 直接消费 `rcad-mesh`，不再依赖 rmsh）。
 - [x] 尺寸场框架（`b023d45`：SizeField trait + 均匀/解析/曲率/距离四源 + Min/Max 合成 + 背景格点限梯度——26 邻域真欧氏 GS 传播、无变化早退即 Bellman 不动点；带孔板验收数字全钉：孔缘 factor·r 精确、过渡带 0.8 fp 精确、梯度超调实测最差 0.82 < 1.05 钉容差）
 - [x] 曲率场 + 距离场两个几何派生源（消费 GeometrySource）
 - 验收：**达成**——带孔板曲率自适应场景字段级 corpus 钉（P3 把场接入 Frontal-Delaunay 即网格级自适应）；裁剪分类器单列独立卡

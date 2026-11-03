@@ -805,7 +805,7 @@ fn triangulate_brep(brep: &mut rcad_kernel::BRep, deflection: f64) -> bool {
     let Some(root) = top_level_root(brep) else {
         return false;
     };
-    let mut params = rcad_mesh::i_mesh_tools::IMeshToolsParameters::default();
+    let mut params = rcad_tess::i_mesh_tools::IMeshToolsParameters::default();
     params.deflection = deflection;
     params.deflection_interior = deflection;
     let shared: Arc<RwLock<rcad_kernel::BRep>> =
@@ -815,7 +815,7 @@ fn triangulate_brep(brep: &mut rcad_kernel::BRep, deflection: f64) -> bool {
     // Rust panic crossing the FFI boundary aborts the Python process, so
     // the perform is contained here - the rcad-render R23 pattern.
     let perform = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mesher = rcad_mesh::b_rep_mesh::facade::IncrementalMesh::perform(
+        let mesher = rcad_tess::b_rep_mesh::facade::IncrementalMesh::perform(
             Arc::clone(&shared),
             &root,
             params,
@@ -937,7 +937,7 @@ pub fn model_occ_synchronize() -> PyResult<()> {
             if let OccShape::BRep { brep, .. } = shape {
                 let mut working = brep.clone();
                 triangulate_brep(&mut working, deflection);
-                let part = rmsh_bridge::brep_surface_mesh(&working);
+                let part = rmsh_model::brep_surface_mesh(&working);
                 let offset = mesh.nodes.keys().copied().max().unwrap_or(0);
                 let mut map: BTreeMap<u64, u64> = BTreeMap::new();
                 for node in part.nodes.values() {

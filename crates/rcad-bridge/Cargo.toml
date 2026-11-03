@@ -6,16 +6,14 @@ license.workspace = true
 
 [dependencies]
 rmsh-algo = { workspace = true }
-rmsh-model = { workspace = true }
 rcad-kernel = { workspace = true }
 glam = { workspace = true }
 
 [dev-dependencies]
-# The open-source tessellation path the tests use to mount triangulations on
-# the BRep before walking it: the bridge itself reads triangulations, it
-# never meshes.
-rcad-mesh = { workspace = true }
+# The geometry-source tests build their fixture with rcad-modeling; the
+# BRep -> Mesh consumability pins mount triangulations through rcad-tess and
+# consume the shared walk (rcad-mesh) plus the rmsh-algo / rmsh-io crates.
 rcad-modeling = { workspace = true }
-# The writer-consumability pin (the produced mesh round-trips through the
-# rmsh MSH writer).
+rcad-tess = { workspace = true }
+rcad-mesh = { workspace = true }
 rmsh-io = { workspace = true }
