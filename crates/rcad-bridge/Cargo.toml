@@ -6,14 +6,18 @@ license.workspace = true
 
 [dependencies]
 rmsh-algo = { workspace = true }
+# The shared mesh data model (Mesh / Node / Element) and the BRep -> Mesh
+# walk, consumed here through the rmsh re-export so the mesh product keeps a
+# single import path.
+rmsh-model = { workspace = true }
 rcad-kernel = { workspace = true }
 glam = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 # The geometry-source tests build their fixture with rcad-modeling; the
-# BRep -> Mesh consumability pins mount triangulations through rcad-tess and
-# consume the shared walk (rcad-mesh) plus the rmsh-algo / rmsh-io crates.
+# BRep -> Mesh consumability pins and the bridge tests mount triangulations
+# through rcad-tess and consume the rmsh-algo / rmsh-io crates.
 rcad-modeling = { workspace = true }
 rcad-tess = { workspace = true }
-rcad-mesh = { workspace = true }
 rmsh-io = { workspace = true }

@@ -1,10 +1,11 @@
 //! Downstream consumability pins for the shared BRep -> Mesh walk
-//! (`rcad_mesh::brep_surface_mesh`): the walked surface mesh feeds rmsh's
-//! closed-surface tetrahedralizer directly and round-trips through the
-//! rmsh-io MSH writer. These tests live on the rmsh side because they
-//! consume rmsh crates; the walk itself stays rcad-side.
+//! (`rmsh_model::brep_surface_mesh`, re-exported from `rcad-mesh`): the
+//! walked surface mesh feeds rmsh's closed-surface tetrahedralizer directly
+//! and round-trips through the rmsh-io MSH writer. These tests live on the
+//! rmsh side because they consume rmsh crates; the walk itself stays
+//! rcad-side.
 
-use rcad_mesh::brep_surface_mesh;
+use rmsh_model::brep_surface_mesh;
 
 use crate::test_support::meshed_unit_box;
 
@@ -29,7 +30,6 @@ fn walked_box_mesh_round_trips_through_the_msh_writer() {
     let brep = meshed_unit_box();
     let brep = brep.read().unwrap();
     let mesh = brep_surface_mesh(&brep);
-
     let mut bytes = Vec::new();
     rmsh_io::write_msh_v2(&mut bytes, &mesh).expect("the mesh writes as MSH v2");
     let parsed = rmsh_io::load_msh_from_bytes(&bytes).expect("the written file parses");

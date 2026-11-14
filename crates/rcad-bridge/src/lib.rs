@@ -11,7 +11,11 @@
 //!
 //! The BRep → Mesh tessellation walk now lives in `rcad-mesh` (the shared mesh
 //! data model crate), which both the kernel side and the mesh product consume.
+//! On top of it this crate carries the BRep → volume mesh bridge
+//! ([`brep_to_volume_mesh`]) and the no-solver mesh validation
+//! ([`inspect_volume_mesh`]).
 
+pub mod brep_to_volume;
 pub mod geometry_source;
 
 #[cfg(test)]
@@ -19,4 +23,5 @@ mod brep_walk_consumability;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+pub use brep_to_volume::{BridgeError, VolumeMeshReport, brep_to_volume_mesh, inspect_volume_mesh};
 pub use geometry_source::RcadGeometrySource;
