@@ -1,0 +1,32 @@
+{
+  "cases": {
+    "box_unit": {
+      "min_dihedral_deg": 5.624999999999975,
+      "p95_radius_edge": 8.855231606230618,
+      "sliver_fraction": 0.02702702702702703,
+      "tet_count": 74,
+      "volume": 0.9999999999999998
+    },
+    "cylinder_r1_h2": {
+      "min_dihedral_deg": 7.855767551479343,
+      "p95_radius_edge": 5.927655723508459,
+      "sliver_fraction": 0.0,
+      "tet_count": 161,
+      "volume": 6.1229349178414285
+    },
+    "sphere_r1": {
+      "min_dihedral_deg": 0.002569288767968627,
+      "p95_radius_edge": 20.607159144998437,
+      "sliver_fraction": 0.02176278563656148,
+      "tet_count": 919,
+      "volume": 4.118620020997873
+    }
+  },
+  "note": "Measured rmsh BRep -> volume-mesh half bridge (rmsh_algo::Delaunay3D). Volume is also checked against the analytic value in the test; tet_count is an exact pin and the quality fields are regression bands. Re-bless with RMSH_BRIDGE_BLESS=1.",
+  "notes": {
+    "box_unit": "Planar faces, so the tetrahedralization conserves the volume exactly.",
+    "cylinder_r1_h2": "A coarse angular deflection (0.8 rad) trades volume accuracy for a sliver-free mesh; the caps are planar and the lateral surface chordal.",
+    "sphere_r1": "The lat-long boundary triangulation's pole fan limits min_dihedral; the mesher respects the boundary, so the pole tets stay thin. The angular deflection is the accuracy/quality knob."
+  },
+  "version": 1
+}

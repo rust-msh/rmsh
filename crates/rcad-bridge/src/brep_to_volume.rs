@@ -18,6 +18,12 @@
 //! [`inspect_volume_mesh`] is the no-solver validation: total volume and the
 //! tetrahedral quality statistics, so a bridge consumer can assert volume
 //! conservation and quality without a solver in the loop.
+//!
+//! This crate is the general meshing half only: it names `rcad-mesh` types
+//! and stays clear of the CAE contract. Projecting the mesh into
+//! `rcad_cae::VolumeMesh` (and composing the two) belongs to the domain
+//! consumer, not to rmsh (rmsh ROADMAP §0 whitelists the rcad crates it may
+//! depend on, and `rcad-cae` is not one of them).
 
 use std::collections::HashMap;
 

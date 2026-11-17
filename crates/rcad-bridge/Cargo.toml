@@ -21,3 +21,6 @@ thiserror = { workspace = true }
 rcad-modeling = { workspace = true }
 rcad-tess = { workspace = true }
 rmsh-io = { workspace = true }
+# The tracked volume-bridge baseline is a JSON corpus read (and re-blessed)
+# by tests/volume_bridge_baseline.rs.
+serde_json = "1"
