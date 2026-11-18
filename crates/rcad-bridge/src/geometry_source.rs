@@ -52,11 +52,6 @@ use rcad_kernel::base::geom_lprop::SLProps;
 use rcad_kernel::topods::{BRep, TShape};
 use rmsh_algo::{GeometryHit, GeometrySource};
 
-/// Sampling density for the numeric fallback path of
-/// `closest_point_on_surface` (the analytic families never sample; 16 is the
-/// density the kernel's own spherical/cylindrical tests use).
-const PROJECTION_SAMPLES: usize = 16;
-
 /// Linear tolerance handed to the `SLProps` evaluations (the kernel's own
 /// tests use the same order).
 const SLPROPS_TOLERANCE: f64 = 1.0e-12;
@@ -101,7 +96,7 @@ impl<'a> RcadGeometrySource<'a> {
             };
             let location = self.brep.get_location(fd.surface_location);
             let local_query = location.inverse().transform_point3(query);
-            let proj = closest_point_on_surface(surface, local_query, PROJECTION_SAMPLES);
+            let proj = closest_point_on_surface(surface, local_query);
             let is_better = match &best {
                 // Strict `<` keeps the FIRST face on exact ties (pool order).
                 None => true,
